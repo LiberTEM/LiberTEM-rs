@@ -11,23 +11,24 @@ use crate::common::{
 };
 
 use bincode::serialize;
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender};
+use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use pyo3::{
     exceptions,
     prelude::*,
-    types::{PyBytes, PyType},
+    types::{PyBytes, PyType}, create_exception,
 };
 use zmq::{Message, Socket};
 
 /// A Python module implemented in Rust.
 #[pymodule]
-fn rusted_dectris(_py: Python, m: &PyModule) -> PyResult<()> {
+fn rusted_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Frame>().unwrap();
     m.add_class::<FrameIterator>().unwrap();
     m.add_class::<FrameStack>().unwrap();
     m.add_class::<FrameChunkedIterator>().unwrap();
     m.add_class::<PixelType>().unwrap();
     m.add_class::<DectrisSim>().unwrap();
+    m.add("TimeoutError", py.get_type::<TimeoutError>())?;
     Ok(())
 }
 
@@ -120,43 +121,82 @@ pub struct DectrisReceiver {
     pub status: ReceiverStatus,
 }
 
-fn recv_frame(socket: &Socket) -> FrameData {
-    // FIXME: error handling! timeouts!
+fn recv_part(
+    msg: &mut Message,
+    socket: &Socket,
+    control_channel: &Receiver<ControlMsg>,
+) -> Result<(), AcquisitionError> {
+    loop {
+        match socket.recv(msg, 0) {
+            Ok(_) => break,
+            Err(zmq::Error::EAGAIN) => {
+                check_for_control(control_channel)?;
+                continue;
+            },
+            Err(err) => AcquisitionError::ZmqError { err }
+        };
+    }
+    Ok(())
+}
+
+fn recv_frame(
+    socket: &Socket,
+    control_channel: &Receiver<ControlMsg>,
+) -> Result<FrameData, AcquisitionError> {
     let mut msg: Message = Message::new();
     let mut data: Vec<u8> = Vec::with_capacity(512 * 512 * 4);
 
-    socket.recv(&mut msg, 0).unwrap();
+    recv_part(&mut msg, socket, control_channel)?;
     let dimage: DImage = serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
-    socket.recv(&mut msg, 0).unwrap();
+    recv_part(&mut msg, socket, control_channel)?;
     let dimaged: DImageD = serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
     // compressed image data:
-    socket.recv(&mut msg, 0).unwrap();
+    recv_part(&mut msg, socket, control_channel)?;
     data.truncate(0);
     data.extend_from_slice(&msg);
 
     // DConfig:
-    socket.recv(&mut msg, 0).unwrap();
+    recv_part(&mut msg, socket, control_channel)?;
     let dconfig: DConfig = serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
-    FrameData {
+    Ok(FrameData {
         dimage,
         dimaged,
         image_data: data,
         dconfig,
-    }
+    })
 }
 
 #[derive(Debug, Clone)]
 enum AcquisitionError {
     Disconnected,
     SeriesMismatch,
+    Cancelled,
+    ZmqError { err: zmq::Error },
 }
 
 impl Display for AcquisitionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "acquisition has stopped")
+    }
+}
+
+fn check_for_control(
+    control_channel: &Receiver<ControlMsg>,
+) -> Result<(), AcquisitionError> {
+    match control_channel.try_recv() {
+        Ok(ControlMsg::StartAcquisition { series: _ }) => {
+            panic!("received StartAcquisition while an acquisition was already running");
+        }
+        Ok(ControlMsg::StopThread) => {
+            return Err(AcquisitionError::Cancelled);
+        }
+        Err(TryRecvError::Disconnected) => {
+            return Err(AcquisitionError::Cancelled);
+        }
+        Err(TryRecvError::Empty) => Ok(())
     }
 }
 
@@ -168,23 +208,14 @@ fn acquisition(
     series: u64,
 ) -> Result<(), AcquisitionError> {
     let t0 = Instant::now();
+    let mut last_control_check = Instant::now();
     loop {
-        // FIXME: might want to try to
-        // let control = to_thread_r.try_recv();
-        // match control {
-        //     Ok(ControlMsg::StartAcquisition) => {
-        //         panic!("received StartAcquisition while an acquisition was already running");
-        //     }
-        //     Ok(ControlMsg::StopThread) => {
-        //         return Err(AcquisitionError);
-        //     }
-        //     Err(TryRecvError::Disconnected) => {
-        //         return Err(AcquisitionError);
-        //     }
-        //     Err(TryRecvError::Empty) => {}  // no message, nothing to do
-        // };
+        if last_control_check.elapsed() > Duration::from_millis(300) {
+            last_control_check = Instant::now();
+            check_for_control(&to_thread_r)?;
+        }
 
-        let frame = recv_frame(&socket);
+        let frame = recv_frame(&socket, &to_thread_r)?;
 
         if frame.dimage.series != series {
             return Err(AcquisitionError::SeriesMismatch);
@@ -222,6 +253,7 @@ fn acquisition(
 fn background_thread(to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Sender<ResultMsg>) {
     let ctx = zmq::Context::new();
     let socket = ctx.socket(zmq::PULL).unwrap();
+    socket.set_rcvtimeo(1000).unwrap();
     socket.connect("tcp://127.0.0.1:9999").unwrap();
     socket.set_rcvhwm(4 * 256).unwrap();
 
@@ -242,10 +274,18 @@ fn background_thread(to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Sender<
                     serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
                 match acquisition(detector_config, to_thread_r, from_thread_s, &socket, series) {
-                    Ok(_) => {}
-                    Err(AcquisitionError::Disconnected) => {
+                    Ok(_) => {},
+                    Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
                         break;
-                    }
+                    },
+                    Err(AcquisitionError::ZmqError { err }) => {
+                        from_thread_s
+                            .send(ResultMsg::Error {
+                                msg: err.to_string()
+                            })
+                            .unwrap();
+                        break;
+                    },
                     Err(AcquisitionError::SeriesMismatch) => {
                         from_thread_s
                             .send(ResultMsg::Error {
@@ -382,13 +422,22 @@ impl FrameIterator {
         slf
     }
 
-    fn __next__(mut slf: PyRefMut<Self>) -> Option<Frame> {
-        match slf.receiver.next() {
-            ResultMsg::Error { msg: _ } => {
-                None // FIXME: figure out how to raise from __next__
+    fn __next__(mut slf: PyRefMut<Self>, py: Python) -> PyResult<Option<Frame>> {
+        loop {
+            match slf.receiver.next_timeout(Duration::from_millis(100)) {
+                Some(ResultMsg::Error { msg }) => {
+                    return Err(exceptions::PyRuntimeError::new_err(msg));
+                }
+                Some(ResultMsg::End) => return Ok(None),
+                Some(ResultMsg::Frame { frame }) => return Ok(Some(Frame::with_data_cloned(&frame))),
+                None => {
+                    py.check_signals()?;
+                    py.allow_threads(|| {
+                        spin_sleep::sleep(Duration::from_millis(1));
+                    });
+                    continue;
+                }
             }
-            ResultMsg::End => None,
-            ResultMsg::Frame { frame } => Some(Frame::with_data_cloned(&frame)),
         }
     }
 }
@@ -532,6 +581,13 @@ impl FrameChunkedIterator {
     }
 }
 
+create_exception!(
+    rusted_dectris,
+    TimeoutError,
+    exceptions::PyException,
+    "Timeout while communicating"
+);
+
 #[pyclass]
 struct DectrisSim {
     frame_sender: FrameSender,
@@ -561,7 +617,7 @@ impl DectrisSim {
             //py.allow_threads(|| {
                 match slf.frame_sender.send_frame() {
                     Err(common::SendError::Timeout) => {
-                        return Err(exceptions::PyRuntimeError::new_err(
+                        return Err(TimeoutError::new_err(
                             "timeout while sending frames".to_string(),
                         ));
                     }
@@ -592,8 +648,8 @@ impl DectrisSim {
                 t0 = Instant::now();
                 py.check_signals()?;
 
+                // also drop GIL once in a while
                 py.allow_threads(|| { 
-                    // does this even work?
                     spin_sleep::sleep(Duration::from_micros(5));
                 });
             }
