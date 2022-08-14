@@ -14,6 +14,7 @@ pub struct DHeader {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[pyclass]
 pub enum TriggerMode {
     #[serde(rename = "exte")]
     EXTE,
@@ -26,18 +27,30 @@ pub enum TriggerMode {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[pyclass]
 pub struct DetectorConfig {
-    ntrigger: u64,
-    nimages: u64,
+    pub ntrigger: u64,
+    pub nimages: u64,
     trigger_mode: TriggerMode,
 }
 
 impl DetectorConfig {
-    pub fn get_num_frames(&self) -> u64 {
+    pub fn get_num_images(&self) -> u64 {
         match self.trigger_mode {
             TriggerMode::EXTE | TriggerMode::INTE => self.ntrigger,
-            TriggerMode::EXTS | TriggerMode::INTS => self.nimages,
+            TriggerMode::EXTS | TriggerMode::INTS => self.nimages * self.ntrigger,
         }
+    }
+}
+
+#[pymethods]
+impl DetectorConfig {
+    pub fn get_trigger_mode(slf: PyRef<Self>) -> TriggerMode {
+        slf.trigger_mode.clone()
+    }
+
+    pub fn get_num_frames(slf: PyRef<Self>) -> u64 {
+        slf.get_num_images()
     }
 }
 
@@ -265,18 +278,19 @@ impl From<zmq::Error> for SendError {
 pub struct FrameSender {
     socket: Socket,
     cursor: RecordCursor,
+    detector_config: DetectorConfig,
     series: u64,
     nimages: u64,
 }
 
 impl FrameSender {
-    pub fn new(filename: &str) -> Self {
+    pub fn new(uri: &str, filename: &str) -> Self {
         let ctx = Context::new();
         let socket = ctx
             .socket(PUSH)
             .expect("context should be able to create a socket");
         socket
-            .bind("tcp://127.0.0.1:9999")
+            .bind(uri)
             .expect("should be possible to bind the zmq socket");
         socket
             .set_sndhwm(4 * 256)
@@ -297,10 +311,7 @@ impl FrameSender {
         let detector_config: DetectorConfig = cursor.read_and_deserialize().unwrap();
         println!("{detector_config:?}");
 
-        // TODO: implement EXTS, INT{E,S}
-        assert_eq!(detector_config.trigger_mode, TriggerMode::EXTE);
-
-        let nimages = detector_config.ntrigger;
+        let nimages = detector_config.get_num_images();
         let series = dheader.series;
 
         FrameSender {
@@ -308,7 +319,12 @@ impl FrameSender {
             cursor: file.get_cursor(),
             series,
             nimages,
+            detector_config,
         }
+    }
+
+    pub fn get_detector_config(&self) -> &DetectorConfig {
+        &self.detector_config
     }
 
     pub fn send_frame(&mut self) -> Result<(), SendError> {

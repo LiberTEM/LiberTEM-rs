@@ -7,7 +7,7 @@ use std::{
 
 use crate::common::{
     self, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig, FrameData, FrameSender,
-    PixelType,
+    PixelType, TriggerMode,
 };
 
 use bincode::serialize;
@@ -28,6 +28,8 @@ fn rusted_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<FrameChunkedIterator>().unwrap();
     m.add_class::<PixelType>().unwrap();
     m.add_class::<DectrisSim>().unwrap();
+    m.add_class::<DetectorConfig>().unwrap();
+    m.add_class::<TriggerMode>().unwrap();
     m.add("TimeoutError", py.get_type::<TimeoutError>())?;
     Ok(())
 }
@@ -222,7 +224,7 @@ fn acquisition(
         }
 
         // we will be done after this frame:
-        let done = frame.dimage.frame == detector_config.get_num_frames() - 1;
+        let done = frame.dimage.frame == detector_config.get_num_images() - 1;
 
         // send to our queue:
         match from_thread_s.send(ResultMsg::Frame { frame }) {
@@ -597,22 +599,33 @@ struct DectrisSim {
 #[pymethods]
 impl DectrisSim {
     #[new]
-    fn new(filename: &str, dwelltime: Option<u64>) -> Self {
+    fn new(uri: &str, filename: &str, dwelltime: Option<u64>) -> Self {
         return DectrisSim {
-            frame_sender: FrameSender::new(filename),
+            frame_sender: FrameSender::new(uri, filename),
             dwelltime,
         };
+    }
+
+    fn get_detector_config(slf: PyRef<Self>) -> DetectorConfig {
+        slf.frame_sender.get_detector_config().clone()
     }
 
     fn send_headers(mut slf: PyRefMut<Self>) {
         slf.frame_sender.send_headers();
     }
 
-    fn send_frames(mut slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
+    /// send `nframes`, if given, or all frames in the acquisition, from the
+    /// current position in the file
+    fn send_frames(mut slf: PyRefMut<Self>, py: Python, nframes: Option<u64>) -> PyResult<()> {
         let mut t0 = Instant::now();
         let start_time = Instant::now();
 
-        for frame_idx in 0..slf.frame_sender.get_num_frames() {
+        let effective_nframes = match nframes {
+            None => slf.frame_sender.get_num_frames(),
+            Some(n) => n,
+        };
+
+        for frame_idx in 0..effective_nframes {
             // can't `allow_threads` because the zmq socket is not Send
             //py.allow_threads(|| {
                 match slf.frame_sender.send_frame() {
