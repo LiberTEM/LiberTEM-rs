@@ -10,10 +10,6 @@ name = "rusted_dectris"
 crate-type = ["cdylib"]
 
 [[bin]]
-name = "dectris_test"
-path = "src/bin.rs"
-
-[[bin]]
 name = "dectris_sim"
 path = "src/sim.rs"
 
