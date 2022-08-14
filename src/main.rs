@@ -1,7 +1,16 @@
+mod common;
+
+use crate::common::FrameSender;
+use crate::common::DImage;
+use crate::common::DHeader;
+use crate::common::DetectorConfig;
+use serde::Serialize;
+use std::collections::HashMap;
+use std::io;
 use std::io::Write;
 
 use clap::{Parser, Subcommand};
-use rusted_dectris::common::DumpRecordFile;
+use crate::common::DumpRecordFile;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -37,7 +46,7 @@ enum Action {
     },
 }
 
-pub fn action_cat(
+fn action_cat(
     cli: &Cli,
     start_idx: usize,
     end_idx: usize
@@ -107,7 +116,7 @@ fn get_summary(filename: &str) -> HashMap<String, usize> {
 
 
 fn inspect_print_summary(filename: &str) {
-    let summary = get_summary(filenmae);
+    let summary = get_summary(filename);
 
     println!("messages summary:");
     for (msg_type, count) in summary {
@@ -124,7 +133,7 @@ fn try_parse(raw_msg: &[u8]) -> Option<serde_json::Value> {
 }
 
 
-pub fn action_inspect(
+fn action_inspect(
     cli: &Cli,
     head: Option<usize>,
     summary: bool,
@@ -170,7 +179,7 @@ where
     write_raw_msg(&msg_raw);
 }
 
-pub fn action_repeat(
+fn action_repeat(
     cli: &Cli,
     repetitions: usize,
 ) {
@@ -193,7 +202,7 @@ pub fn action_repeat(
     // XXX the heaer may lie about the number of images:
     let summary = get_summary(&cli.filename);
     let nimages = summary.get("<binary>").unwrap();
-    let dest_num_images = nimages * cli.repetitions;
+    let dest_num_images = nimages * repetitions;
 
     let new_det_config = detector_config_value.as_object_mut().unwrap();
     new_det_config
@@ -209,7 +218,7 @@ pub fn action_repeat(
     write_serializable(&detector_config_value);
 
     let mut idx = 0;
-    for _ in 0..cli.repetitions {
+    for _ in 0..repetitions {
         let mut rep_cursor = file.get_cursor();
         rep_cursor.seek_to_first_header_of_type("dheader-1.0");
         let _dheader: DHeader = rep_cursor.read_and_deserialize().unwrap(); // discard dheader
@@ -237,8 +246,8 @@ pub fn action_repeat(
     }
 }
 
-fn action_sim(cli: &Cli, uri: String) {
-    let mut sender = FrameSender::new(&cli.uri, &cli.filename);
+fn action_sim(filename: &str, uri: &str) {
+    let mut sender = FrameSender::new(&uri, &filename);
     sender.send_headers();
     sender.send_frames();
     sender.send_footer();
@@ -251,6 +260,8 @@ pub fn main() {
         Action::Cat { start_idx, end_idx } => action_cat(&cli, start_idx, end_idx),
         Action::Inspect { head, summary } => action_inspect(&cli, head, summary),
         Action::Repeat { repetitions } => action_repeat(&cli, repetitions),
-        Action::Sim { uri } => action_sim(&cli, uri),
+        Action::Sim { uri } => {
+            action_sim(&cli.filename, &uri)
+        },
     }
 }
