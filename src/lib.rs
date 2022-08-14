@@ -1,2 +1,2 @@
 pub mod common;
-pub mod rusted_dectris;
+pub mod rusted_dectris_py;

@@ -1,20 +1,75 @@
-mod common;
+use std::io::Write;
 
-use std::{
-    collections::HashMap,
-    io::{self, Write},
-};
-
-use crate::common::{DHeader, DImage, DetectorConfig, DumpRecordFile};
-use clap::Parser;
-use serde::Serialize;
+use clap::{Parser, Subcommand};
+use rusted_dectris::common::DumpRecordFile;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Cli {
+    #[clap(subcommand)]
+    action: Action,
     filename: String,
+}
 
-    repetitions: usize,
+#[derive(Subcommand)]
+enum Action {
+    Cat {
+        /// start at this message index (zero-based, inclusive)
+        start_idx: usize,
+
+        /// stop at this message index (zero-based, inclusive)
+        end_idx: usize,
+    },
+    Inspect {
+        /// display the first N messages
+        #[clap(short, long)]
+        head: Option<usize>,
+
+        /// display a summary of all messages
+        #[clap(short, long, action)]
+        summary: bool,
+    },
+    Repeat {
+        repetitions: usize,
+    },
+    Sim {
+        uri: String,
+    },
+}
+
+pub fn action_cat(
+    cli: &Cli,
+    start_idx: usize,
+    end_idx: usize
+) {
+    let file = DumpRecordFile::new(&cli.filename);
+    let mut cursor = file.get_cursor();
+
+    eprintln!("writing from {start_idx} to {end_idx}");
+
+    cursor.seek_to_msg_idx(start_idx);
+
+    while cursor.get_msg_idx() <= end_idx {
+        let msg = cursor.read_raw_msg();
+        let length = (msg.len() as i64).to_le_bytes();
+        std::io::stdout().write(&length).unwrap();
+        std::io::stdout().write_all(msg).unwrap();
+    }
+}
+
+fn inspect_dump_msg(raw_msg: &[u8], idx: usize) {
+    let value_result: Result<serde_json::Value, _> = serde_json::from_slice(raw_msg);
+    match value_result {
+        Ok(value) => {
+            let fmt_value = serde_json::to_string_pretty(&value).expect("pretty please");
+            // let fmt_value = value.to_string();
+            println!("msg {idx}:\n\n{fmt_value}\n");
+        }
+        Err(_) => {
+            let len = raw_msg.len();
+            println!("msg {idx}: <binary> ({len} bytes)");
+        }
+    }
 }
 
 fn get_msg_type(maybe_value: &Option<serde_json::Value>) -> String {
@@ -34,14 +89,6 @@ fn get_msg_type(maybe_value: &Option<serde_json::Value>) -> String {
     }
 }
 
-fn try_parse(raw_msg: &[u8]) -> Option<serde_json::Value> {
-    let value_result: Result<serde_json::Value, _> = serde_json::from_slice(raw_msg);
-    match value_result {
-        Ok(value) => Some(value),
-        Err(_) => None,
-    }
-}
-
 fn get_summary(filename: &str) -> HashMap<String, usize> {
     let file = DumpRecordFile::new(&filename);
     let mut cursor = file.get_cursor();
@@ -56,6 +103,56 @@ fn get_summary(filename: &str) -> HashMap<String, usize> {
     }
 
     return msg_map;
+}
+
+
+fn inspect_print_summary(filename: &str) {
+    let summary = get_summary(filenmae);
+
+    println!("messages summary:");
+    for (msg_type, count) in summary {
+        println!("type {msg_type}: {count}");
+    }
+}
+
+fn try_parse(raw_msg: &[u8]) -> Option<serde_json::Value> {
+    let value_result: Result<serde_json::Value, _> = serde_json::from_slice(raw_msg);
+    match value_result {
+        Ok(value) => Some(value),
+        Err(_) => None,
+    }
+}
+
+
+pub fn action_inspect(
+    cli: &Cli,
+    head: Option<usize>,
+    summary: bool,
+) {
+
+    let file = DumpRecordFile::new(&cli.filename);
+    let mut cursor = file.get_cursor();
+
+    match head {
+        Some(head) => {
+            for i in 0..head {
+                let raw_msg = cursor.read_raw_msg();
+                inspect_dump_msg(raw_msg, i);
+            }
+        }
+        None => {
+            let mut i = 0;
+            while !cursor.is_at_end() {
+                let raw_msg = cursor.read_raw_msg();
+                inspect_dump_msg(raw_msg, i);
+                i += 1;
+            }
+        }
+    }
+
+    if summary {
+        inspect_print_summary(&cli.filename);
+    }
 }
 
 fn write_raw_msg(msg: &[u8]) {
@@ -73,9 +170,10 @@ where
     write_raw_msg(&msg_raw);
 }
 
-pub fn main() {
-    let cli = Cli::parse();
-
+pub fn action_repeat(
+    cli: &Cli,
+    repetitions: usize,
+) {
     let file = DumpRecordFile::new(&cli.filename);
     let mut cursor = file.get_cursor();
 
@@ -136,5 +234,23 @@ pub fn main() {
 
             idx += 1;
         }
+    }
+}
+
+fn action_sim(cli: &Cli, uri: String) {
+    let mut sender = FrameSender::new(&cli.uri, &cli.filename);
+    sender.send_headers();
+    sender.send_frames();
+    sender.send_footer();
+}
+
+pub fn main() {
+    let cli = Cli::parse();
+
+    match cli.action {
+        Action::Cat { start_idx, end_idx } => action_cat(&cli, start_idx, end_idx),
+        Action::Inspect { head, summary } => action_inspect(&cli, head, summary),
+        Action::Repeat { repetitions } => action_repeat(&cli, repetitions),
+        Action::Sim { uri } => action_sim(&cli, uri),
     }
 }
