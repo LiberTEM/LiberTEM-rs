@@ -252,7 +252,25 @@ fn acquisition(
     }
 }
 
-fn background_thread(to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Sender<ResultMsg>) {
+
+/// convert `AcquisitionError`s to messages on `from_threads_s`
+fn background_thread_wrap(to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Sender<ResultMsg>) {
+    match background_thread(to_thread_r, from_thread_s) {
+        Ok(()) => {},
+        Err(err) => {
+            from_thread_s
+                .send(ResultMsg::Error {
+                    msg: err.to_string()
+                })
+                .unwrap();
+            return;
+        }
+    }
+}
+
+fn background_thread(
+    to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Sender<ResultMsg>
+) -> Result<(), AcquisitionError> {
     let ctx = zmq::Context::new();
     let socket = ctx.socket(zmq::PULL).unwrap();
     socket.set_rcvtimeo(1000).unwrap();
@@ -265,37 +283,24 @@ fn background_thread(to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Sender<
         match control {
             Ok(ControlMsg::StartAcquisition { series }) => {
                 let mut msg: Message = Message::new();
-                socket.recv(&mut msg, 0).unwrap();
+                recv_part(&mut msg, &socket, &to_thread_r)?;
                 // panic in case of any other header type:
                 let dheader: DHeader = serde_json::from_str(msg.as_str().unwrap()).unwrap();
                 println!("dheader: {dheader:?}");
 
                 // second message: the header itself
-                socket.recv(&mut msg, 0).unwrap();
+                recv_part(&mut msg, &socket, &to_thread_r)?;
                 let detector_config: DetectorConfig =
                     serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
                 match acquisition(detector_config, to_thread_r, from_thread_s, &socket, series) {
                     Ok(_) => {},
                     Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
-                        break;
+                        return Ok(());
                     },
-                    Err(AcquisitionError::ZmqError { err }) => {
-                        from_thread_s
-                            .send(ResultMsg::Error {
-                                msg: err.to_string()
-                            })
-                            .unwrap();
-                        break;
+                    e => {
+                        return e;
                     },
-                    Err(AcquisitionError::SeriesMismatch) => {
-                        from_thread_s
-                            .send(ResultMsg::Error {
-                                msg: "series mismatch".to_string(),
-                            })
-                            .unwrap();
-                        break;
-                    }
                 }
             }
             Ok(ControlMsg::StopThread) => {
@@ -307,6 +312,7 @@ fn background_thread(to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Sender<
             Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do
         }
     }
+    Ok(())
 }
 
 pub struct ReceiverError {
@@ -331,7 +337,7 @@ impl DectrisReceiver {
             bg_thread: Some(
                 builder
                     .name("bg_thread".to_string())
-                    .spawn(move || background_thread(&to_thread_r, &from_thread_s))
+                    .spawn(move || background_thread_wrap(&to_thread_r, &from_thread_s))
                     .expect("failed to start background thread"),
             ),
             from_thread: from_thread_r,
