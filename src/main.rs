@@ -31,7 +31,7 @@ enum Action {
     },
     Inspect {
         /// display the first N messages
-        #[clap(short, long)]
+        #[clap(long)]
         head: Option<usize>,
 
         /// display a summary of all messages
