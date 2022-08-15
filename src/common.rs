@@ -177,8 +177,10 @@ impl DumpRecordFile {
                         .as_object()
                         .expect("all json messages should be objects")
                         .get("htype");
-                    if let Some(htype_str) = htype && htype_str == expected_htype {
-                        return Some(current_offset);
+                    if let Some(htype_str) = htype {
+                        if htype_str == expected_htype {
+                            return Some(current_offset);
+                        }
                     }
                 }
                 None => {}
