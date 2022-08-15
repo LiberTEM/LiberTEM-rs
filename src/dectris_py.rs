@@ -22,7 +22,9 @@ use zmq::{Message, Socket};
 
 #[pymodule]
 fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
-    pyo3_log::init();
+    // FIXME: logging integration deadlocks on close(), when trying to acquire
+    // the GIL
+    // pyo3_log::init();
 
     m.add_class::<Frame>().unwrap();
     m.add_class::<FrameIterator>().unwrap();
