@@ -12,11 +12,11 @@ use crate::common::{
 
 use bincode::serialize;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
-use log::{info, debug};
+use log::{debug, info};
 use pyo3::{
-    exceptions,
+    create_exception, exceptions,
     prelude::*,
-    types::{PyBytes, PyType}, create_exception,
+    types::{PyBytes, PyType},
 };
 use zmq::{Message, Socket};
 
@@ -137,8 +137,8 @@ fn recv_part(
             Err(zmq::Error::EAGAIN) => {
                 check_for_control(control_channel)?;
                 continue;
-            },
-            Err(err) => AcquisitionError::ZmqError { err }
+            }
+            Err(err) => AcquisitionError::ZmqError { err },
         };
     }
     Ok(())
@@ -188,9 +188,7 @@ impl Display for AcquisitionError {
     }
 }
 
-fn check_for_control(
-    control_channel: &Receiver<ControlMsg>,
-) -> Result<(), AcquisitionError> {
+fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), AcquisitionError> {
     match control_channel.try_recv() {
         Ok(ControlMsg::StartAcquisition { series: _ }) => {
             panic!("received StartAcquisition while an acquisition was already running");
@@ -201,7 +199,7 @@ fn check_for_control(
         Err(TryRecvError::Disconnected) => {
             return Err(AcquisitionError::Cancelled);
         }
-        Err(TryRecvError::Empty) => Ok(())
+        Err(TryRecvError::Empty) => Ok(()),
     }
 }
 
@@ -255,15 +253,14 @@ fn acquisition(
     }
 }
 
-
 /// convert `AcquisitionError`s to messages on `from_threads_s`
 fn background_thread_wrap(to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Sender<ResultMsg>) {
     match background_thread(to_thread_r, from_thread_s) {
-        Ok(()) => {},
+        Ok(()) => {}
         Err(err) => {
             from_thread_s
                 .send(ResultMsg::Error {
-                    msg: err.to_string()
+                    msg: err.to_string(),
                 })
                 .unwrap();
             return;
@@ -272,7 +269,8 @@ fn background_thread_wrap(to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Se
 }
 
 fn background_thread(
-    to_thread_r: &Receiver<ControlMsg>, from_thread_s: &Sender<ResultMsg>
+    to_thread_r: &Receiver<ControlMsg>,
+    from_thread_s: &Sender<ResultMsg>,
 ) -> Result<(), AcquisitionError> {
     let ctx = zmq::Context::new();
     let socket = ctx.socket(zmq::PULL).unwrap();
@@ -297,13 +295,13 @@ fn background_thread(
                     serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
                 match acquisition(detector_config, to_thread_r, from_thread_s, &socket, series) {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
                         return Ok(());
-                    },
+                    }
                     e => {
                         return e;
-                    },
+                    }
                 }
             }
             Ok(ControlMsg::StopThread) => {
@@ -440,7 +438,9 @@ impl FrameIterator {
                     return Err(exceptions::PyRuntimeError::new_err(msg));
                 }
                 Some(ResultMsg::End) => return Ok(None),
-                Some(ResultMsg::Frame { frame }) => return Ok(Some(Frame::with_data_cloned(&frame))),
+                Some(ResultMsg::Frame { frame }) => {
+                    return Ok(Some(Frame::with_data_cloned(&frame)))
+                }
                 None => {
                     py.check_signals()?;
                     py.allow_threads(|| {
@@ -602,7 +602,7 @@ create_exception!(
 #[pyclass]
 struct DectrisSim {
     frame_sender: FrameSender,
-    dwelltime: Option<u64>,  // in µseconds
+    dwelltime: Option<u64>, // in µseconds
 }
 
 #[pymethods]
@@ -637,19 +637,19 @@ impl DectrisSim {
         for frame_idx in 0..effective_nframes {
             // can't `allow_threads` because the zmq socket is not Send
             //py.allow_threads(|| {
-                match slf.frame_sender.send_frame() {
-                    Err(common::SendError::Timeout) => {
-                        return Err(TimeoutError::new_err(
-                            "timeout while sending frames".to_string(),
-                        ));
-                    }
-                    Err(_) => {
-                        return Err(exceptions::PyRuntimeError::new_err(
-                            "error while sending frames".to_string(),
-                        ));
-                    }
-                    Ok(_) => {} // Ok(())
+            match slf.frame_sender.send_frame() {
+                Err(common::SendError::Timeout) => {
+                    return Err(TimeoutError::new_err(
+                        "timeout while sending frames".to_string(),
+                    ));
                 }
+                Err(_) => {
+                    return Err(exceptions::PyRuntimeError::new_err(
+                        "error while sending frames".to_string(),
+                    ));
+                }
+                Ok(_) => {} // Ok(())
+            }
             //})?;
 
             // dwelltime
@@ -671,7 +671,7 @@ impl DectrisSim {
                 py.check_signals()?;
 
                 // also drop GIL once in a while
-                py.allow_threads(|| { 
+                py.allow_threads(|| {
                     spin_sleep::sleep(Duration::from_micros(5));
                 });
             }

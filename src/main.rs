@@ -1,16 +1,16 @@
 mod common;
 
-use crate::common::FrameSender;
-use crate::common::DImage;
 use crate::common::DHeader;
+use crate::common::DImage;
 use crate::common::DetectorConfig;
+use crate::common::FrameSender;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 
-use clap::{Parser, Subcommand};
 use crate::common::DumpRecordFile;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -46,11 +46,7 @@ enum Action {
     },
 }
 
-fn action_cat(
-    cli: &Cli,
-    start_idx: usize,
-    end_idx: usize
-) {
+fn action_cat(cli: &Cli, start_idx: usize, end_idx: usize) {
     let file = DumpRecordFile::new(&cli.filename);
     let mut cursor = file.get_cursor();
 
@@ -91,7 +87,10 @@ fn get_msg_type(maybe_value: &Option<serde_json::Value>) -> String {
                 .get("htype");
             if let Some(htype_str) = htype {
                 if htype_str.is_string() {
-                    htype_str.as_str().expect("htype should be string here").to_string()
+                    htype_str
+                        .as_str()
+                        .expect("htype should be string here")
+                        .to_string()
                 } else {
                     "<unknown>".to_string()
                 }
@@ -118,7 +117,6 @@ fn get_summary(filename: &str) -> HashMap<String, usize> {
     return msg_map;
 }
 
-
 fn inspect_print_summary(filename: &str) {
     let summary = get_summary(filename);
 
@@ -136,13 +134,7 @@ fn try_parse(raw_msg: &[u8]) -> Option<serde_json::Value> {
     }
 }
 
-
-fn action_inspect(
-    cli: &Cli,
-    head: Option<usize>,
-    summary: bool,
-) {
-
+fn action_inspect(cli: &Cli, head: Option<usize>, summary: bool) {
     let file = DumpRecordFile::new(&cli.filename);
     let mut cursor = file.get_cursor();
 
@@ -183,10 +175,7 @@ where
     write_raw_msg(&msg_raw);
 }
 
-fn action_repeat(
-    cli: &Cli,
-    repetitions: usize,
-) {
+fn action_repeat(cli: &Cli, repetitions: usize) {
     let file = DumpRecordFile::new(&cli.filename);
     let mut cursor = file.get_cursor();
 
@@ -264,8 +253,6 @@ pub fn main() {
         Action::Cat { start_idx, end_idx } => action_cat(&cli, start_idx, end_idx),
         Action::Inspect { head, summary } => action_inspect(&cli, head, summary),
         Action::Repeat { repetitions } => action_repeat(&cli, repetitions),
-        Action::Sim { uri } => {
-            action_sim(&cli.filename, &uri)
-        },
+        Action::Sim { uri } => action_sim(&cli.filename, &uri),
     }
 }
