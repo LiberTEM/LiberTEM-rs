@@ -25,7 +25,7 @@ def main(nimages: int):
         t0 = time.perf_counter()
         total = 0
         while True:
-            stack = frames.get_next_stack(32)
+            stack = frames.get_next_stack(max_size=32)
             stack.serialize()
             total += len(stack)
             if len(stack) == 0:
