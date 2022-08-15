@@ -12,6 +12,7 @@ use crate::common::{
 
 use bincode::serialize;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
+use log::{info, debug};
 use pyo3::{
     exceptions,
     prelude::*,
@@ -21,6 +22,8 @@ use zmq::{Message, Socket};
 
 #[pymodule]
 fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
+    pyo3_log::init();
+
     m.add_class::<Frame>().unwrap();
     m.add_class::<FrameIterator>().unwrap();
     m.add_class::<FrameStack>().unwrap();
@@ -62,7 +65,6 @@ impl Frame {
     }
 
     fn get_image_data(slf: PyRef<Self>, py: Python) -> Py<PyBytes> {
-        // slf.frame.image_data
         let bytes: &PyBytes = PyBytes::new(py, &slf.frame.image_data.as_slice());
         return bytes.into();
     }
@@ -233,14 +235,14 @@ fn acquisition(
 
         if done {
             let elapsed = t0.elapsed();
-            println!("done in {elapsed:?}, reading acquisition footer...");
+            info!("done in {elapsed:?}, reading acquisition footer...");
 
             let mut msg: Message = Message::new();
 
             socket.recv(&mut msg, 0).unwrap();
             let footer: DSeriesEnd = serde_json::from_str(msg.as_str().unwrap()).unwrap();
             let series = footer.series;
-            println!("series {series} done");
+            info!("series {series} done");
 
             match from_thread_s.send(ResultMsg::End) {
                 Ok(_) => (),
@@ -285,7 +287,7 @@ fn background_thread(
                 recv_part(&mut msg, &socket, &to_thread_r)?;
                 // panic in case of any other header type:
                 let dheader: DHeader = serde_json::from_str(msg.as_str().unwrap()).unwrap();
-                println!("dheader: {dheader:?}");
+                debug!("dheader: {dheader:?}");
 
                 // second message: the header itself
                 recv_part(&mut msg, &socket, &to_thread_r)?;
