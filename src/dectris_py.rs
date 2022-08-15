@@ -19,9 +19,8 @@ use pyo3::{
 };
 use zmq::{Message, Socket};
 
-/// A Python module implemented in Rust.
 #[pymodule]
-fn rusted_dectris(py: Python, m: &PyModule) -> PyResult<()> {
+fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Frame>().unwrap();
     m.add_class::<FrameIterator>().unwrap();
     m.add_class::<FrameStack>().unwrap();
@@ -34,7 +33,7 @@ fn rusted_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
-#[pyclass(module = "rusted_dectris")]
+#[pyclass(module = "libertem_dectris")]
 #[derive(Clone)]
 pub struct Frame {
     frame: FrameData,
@@ -590,7 +589,7 @@ impl FrameChunkedIterator {
 }
 
 create_exception!(
-    rusted_dectris,
+    libertem_dectris,
     TimeoutError,
     exceptions::PyException,
     "Timeout while communicating"

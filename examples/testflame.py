@@ -1,11 +1,11 @@
 import time
 import perf_utils
-import rusted_dectris
+import libertem_dectris
 from libertem_live.detectors.dectris.DEigerClient import DEigerClient
 
 if __name__ == "__main__":
     ec = DEigerClient("localhost", 8910)
-    frames = rusted_dectris.FrameChunkedIterator()
+    frames = libertem_dectris.FrameChunkedIterator()
 
     frames.start()
 
@@ -22,7 +22,7 @@ if __name__ == "__main__":
         while frames.is_running():
             stack = frames.get_next_stack(max_size=32)
             s = stack.serialize()
-            new_stack = rusted_dectris.FrameStack.deserialize(s)
+            new_stack = libertem_dectris.FrameStack.deserialize(s)
             # for i in range(len(new_stack)):
             #     frame = new_stack[i]
         t1 = time.perf_counter()

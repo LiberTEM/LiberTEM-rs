@@ -1,8 +1,8 @@
 import time
-import rusted_dectris
+import libertem_dectris
 
 if __name__ == "__main__":
-    frames = rusted_dectris.FrameIterator()
+    frames = libertem_dectris.FrameIterator()
 
     frames.start(series=14)
 

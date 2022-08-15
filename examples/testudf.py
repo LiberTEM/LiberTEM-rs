@@ -1,7 +1,7 @@
 import time
 import click
 import perf_utils
-import rusted_dectris
+import libertem_dectris
 from libertem_live.detectors.dectris.DEigerClient import DEigerClient
 from libertem_live.detectors.dectris import DectrisAcquisition
 from libertem_live.api import LiveContext

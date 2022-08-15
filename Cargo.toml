@@ -1,15 +1,17 @@
 [package]
-name = "rusted-dectris"
+name = "libertem-dectris"
+authors = ["Alexander Clausen <a.clausen@fz-juelich.de>"]
+license = "MIT"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
-name = "rusted_dectris"
+name = "libertem_dectris"
 crate-type = ["cdylib"]
 
 [[bin]]
-name = "rusted-dectris"
+name = "libertem-dectris"
 path = "src/main.rs"
 
 [dependencies]

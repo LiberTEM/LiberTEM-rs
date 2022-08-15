@@ -1,13 +1,13 @@
 import time
 import click
-import rusted_dectris
+import libertem_dectris
 from libertem_live.detectors.dectris.DEigerClient import DEigerClient
 
 
 @click.command()
 @click.argument('nimages', type=int)
 def main(nimages: int):
-    frames = rusted_dectris.FrameChunkedIterator()
+    frames = libertem_dectris.FrameChunkedIterator()
 
     ec = DEigerClient('localhost', 8910)
 

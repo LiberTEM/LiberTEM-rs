@@ -1,12 +1,12 @@
-import rusted_dectris
+import libertem_dectris
 
 if __name__ == "__main__":
-    frames = rusted_dectris.FrameChunkedIterator()
+    frames = libertem_dectris.FrameChunkedIterator()
     frames.start()
 
     frame_stack = frames.get_next_stack(max_size=32)
     serialized = frame_stack.serialize()
-    loaded = rusted_dectris.FrameStack.deserialize(serialized)
+    loaded = libertem_dectris.FrameStack.deserialize(serialized)
 
     print(serialized)
     print(len(loaded))

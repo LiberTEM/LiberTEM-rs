@@ -204,6 +204,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "505e71a4706fa491e9b1b55f51b95d4037d0821ee40131190475f692b35b009b"
 
 [[package]]
+name = "libertem-dectris"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "clap",
+ "crossbeam",
+ "crossbeam-channel",
+ "memmap2",
+ "pyo3",
+ "serde",
+ "serde_json",
+ "spin_sleep",
+ "zmq",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -400,22 +416,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb5a58c1855b4b6819d59012155603f0b22ad30cad752600aadfcb695265519a"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "rusted-dectris"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "clap",
- "crossbeam",
- "crossbeam-channel",
- "memmap2",
- "pyo3",
- "serde",
- "serde_json",
- "spin_sleep",
- "zmq",
 ]
 
 [[package]]
