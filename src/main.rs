@@ -89,8 +89,12 @@ fn get_msg_type(maybe_value: &Option<serde_json::Value>) -> String {
                 .as_object()
                 .expect("all json messages should be objects")
                 .get("htype");
-            if let Some(htype_str) = htype && htype_str.is_string() {
-                htype_str.as_str().expect("htype should be string here").to_string()
+            if let Some(htype_str) = htype {
+                if htype_str.is_string() {
+                    htype_str.as_str().expect("htype should be string here").to_string()
+                } else {
+                    "<unknown>".to_string()
+                }
             } else {
                 "<unknown>".to_string()
             }
