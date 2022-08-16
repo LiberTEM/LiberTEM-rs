@@ -57,7 +57,7 @@ fn action_cat(cli: &Cli, start_idx: usize, end_idx: usize) {
     while cursor.get_msg_idx() <= end_idx {
         let msg = cursor.read_raw_msg();
         let length = (msg.len() as i64).to_le_bytes();
-        std::io::stdout().write(&length).unwrap();
+        std::io::stdout().write_all(&length).unwrap();
         std::io::stdout().write_all(msg).unwrap();
     }
 }
@@ -102,19 +102,19 @@ fn get_msg_type(maybe_value: &Option<serde_json::Value>) -> String {
 }
 
 fn get_summary(filename: &str) -> HashMap<String, usize> {
-    let file = DumpRecordFile::new(&filename);
+    let file = DumpRecordFile::new(filename);
     let mut cursor = file.get_cursor();
 
     let mut msg_map = HashMap::<String, usize>::new();
 
     while !cursor.is_at_end() {
         let raw_msg = cursor.read_raw_msg();
-        let value = try_parse(&raw_msg);
+        let value = try_parse(raw_msg);
         let msg_type = get_msg_type(&value);
         msg_map.entry(msg_type).and_modify(|e| *e += 1).or_insert(1);
     }
 
-    return msg_map;
+    msg_map
 }
 
 fn inspect_print_summary(filename: &str) {
@@ -162,7 +162,7 @@ fn action_inspect(cli: &Cli, head: Option<usize>, summary: bool) {
 
 fn write_raw_msg(msg: &[u8]) {
     let length = (msg.len() as i64).to_le_bytes();
-    io::stdout().write(&length).unwrap();
+    io::stdout().write_all(&length).unwrap();
     io::stdout().write_all(msg).unwrap();
 }
 
@@ -172,7 +172,7 @@ where
 {
     let binding = serde_json::to_string(&value).expect("serialization should not fail");
     let msg_raw = binding.as_bytes();
-    write_raw_msg(&msg_raw);
+    write_raw_msg(msg_raw);
 }
 
 fn action_repeat(cli: &Cli, repetitions: usize) {
@@ -182,15 +182,13 @@ fn action_repeat(cli: &Cli, repetitions: usize) {
     cursor.seek_to_first_header_of_type("dheader-1.0");
     let dheader = cursor.read_raw_msg();
 
-    write_raw_msg(&dheader);
+    write_raw_msg(dheader);
 
     // detector config
     let detector_config_msg = cursor.read_raw_msg();
     let _detector_config: DetectorConfig = serde_json::from_slice(detector_config_msg).unwrap();
     let mut detector_config_value: serde_json::Value =
-        serde_json::from_slice::<serde_json::Value>(detector_config_msg)
-            .unwrap()
-            .to_owned();
+        serde_json::from_slice::<serde_json::Value>(detector_config_msg).unwrap();
 
     // XXX the heaer may lie about the number of images:
     let summary = get_summary(&cli.filename);
@@ -225,14 +223,14 @@ fn action_repeat(cli: &Cli, repetitions: usize) {
             write_serializable(&dimage);
 
             let dimaged = rep_cursor.read_raw_msg();
-            write_raw_msg(&dimaged);
+            write_raw_msg(dimaged);
 
             let image = rep_cursor.read_raw_msg();
-            write_raw_msg(&image);
+            write_raw_msg(image);
 
             // NOTE: we don't fake the timestamps (yet)
             let config = rep_cursor.read_raw_msg();
-            write_raw_msg(&config);
+            write_raw_msg(config);
 
             idx += 1;
         }
@@ -240,8 +238,8 @@ fn action_repeat(cli: &Cli, repetitions: usize) {
 }
 
 fn action_sim(filename: &str, uri: &str) {
-    let mut sender = FrameSender::new(&uri, &filename);
-    sender.send_headers();
+    let mut sender = FrameSender::new(uri, filename, false);
+    sender.send_headers(|| Some(())).unwrap();
     sender.send_frames();
     sender.send_footer();
 }

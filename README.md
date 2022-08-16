@@ -25,7 +25,7 @@ ec.setDetectorConfig('ntrigger', nimages)
 result = ec.sendDetectorCommand('arm')
 sequence_id = result['sequence id'] 
 
-frames = libertem_dectris.FrameChunkedIterator()
+frames = libertem_dectris.FrameChunkedIterator(uri="tcp://localhost:9999")
 # start to receive data for the given series
 # (can be called multiple times on the same `FrameChunkedIterator` instance)
 frames.start(series=sequence_id)
@@ -48,3 +48,38 @@ try:
 finally:
     frames.close()  # clean up background thread etc.
 ```
+
+## Changelog
+
+### v0.2.0 (unreleased)
+
+- Added `libertem_dectris.headers` submodule that exports header classes
+- Added ways to create `libertem_dectris.Frame` and `libertem_dectris.FrameStack`
+  objects from Python, mostly useful for testing
+- Added binding to random port for the simulator
+- Properly parametrize with zmq endpoint URI
+- Fix many clippy complaints
+
+### v0.1.0
+
+Initial release!
+
+## Development
+
+This package is using [pyo3](https://pyo3.rs/) with
+[maturin](https://maturin.rs/) to create the Python bindings.  First, make sure
+`maturin` is installed in your Python environment:
+
+```bash
+(venv) $ pip install maturin
+```
+
+Then, after each change to the rust code, run `maturin develop -r` to build and
+install a new version of the wheel.
+
+## Release
+
+- update changelog above
+- bump version in Cargo.toml if not already bumped, and push
+- create a release from the GitHub UI, creating a new tag vX.Y.Z
+- done!

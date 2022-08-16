@@ -5,7 +5,7 @@ from libertem_live.detectors.dectris.DEigerClient import DEigerClient
 
 if __name__ == "__main__":
     ec = DEigerClient("localhost", 8910)
-    frames = libertem_dectris.FrameChunkedIterator()
+    frames = libertem_dectris.FrameChunkedIterator(uri="tcp://127.0.0.1:9999")
 
     frames.start()
 

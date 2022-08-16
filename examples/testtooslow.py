@@ -2,7 +2,7 @@ import time
 import libertem_dectris
 
 if __name__ == "__main__":
-    frames = libertem_dectris.FrameIterator()
+    frames = libertem_dectris.FrameIterator(uri="tcp://127.0.0.1:9999")
 
     frames.start(series=14)
 

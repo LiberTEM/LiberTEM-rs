@@ -1,7 +1,7 @@
 import libertem_dectris
 
 if __name__ == "__main__":
-    frames = libertem_dectris.FrameChunkedIterator()
+    frames = libertem_dectris.FrameChunkedIterator(uri="tcp://127.0.0.1:9999")
     frames.start()
 
     frame_stack = frames.get_next_stack(max_size=32)

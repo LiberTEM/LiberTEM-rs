@@ -7,7 +7,7 @@ from libertem_live.detectors.dectris.DEigerClient import DEigerClient
 @click.command()
 @click.argument('nimages', type=int)
 def main(nimages: int):
-    frames = libertem_dectris.FrameChunkedIterator()
+    frames = libertem_dectris.FrameChunkedIterator(uri="tcp://127.0.0.1:9999")
 
     ec = DEigerClient('localhost', 8910)
 

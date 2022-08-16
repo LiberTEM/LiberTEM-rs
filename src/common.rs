@@ -1,19 +1,36 @@
+#![allow(clippy::borrow_deref_ref)]
+
 use std::fs;
 
+use log::{debug, info};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use pyo3::prelude::*;
 use serde_json::json;
-use zmq::{Context, Socket, SocketType::PUSH};
+use uuid::Uuid;
+use zmq::{Context, Message, Socket, SocketEvent, SocketType::PUSH};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[pyclass]
 pub struct DHeader {
     pub htype: String,
     pub header_detail: String,
     pub series: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[pymethods]
+impl DHeader {
+    #[new]
+    fn new(series: u64) -> Self {
+        DHeader {
+            htype: "dheader-1.0".to_string(),
+            header_detail: "basic".to_string(),
+            series,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[pyclass]
 pub enum TriggerMode {
     #[serde(rename = "exte")]
@@ -54,7 +71,8 @@ impl DetectorConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[pyclass]
 pub struct DImage {
     pub htype: String,
 
@@ -68,9 +86,21 @@ pub struct DImage {
     pub hash: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[pymethods]
+impl DImage {
+    #[new]
+    fn new(frame: u64, series: u64, hash: &str) -> Self {
+        DImage {
+            htype: "dimage-1.0".to_string(),
+            series,
+            frame,
+            hash: hash.to_string(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[pyclass]
-#[derive(PartialEq)]
 pub enum PixelType {
     #[serde(rename = "uint8")]
     Uint8,
@@ -80,7 +110,8 @@ pub enum PixelType {
     Uint32,
 }
 
-#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, Debug, Clone)]
+#[pyclass]
 pub struct DImageD {
     pub htype: String,
     pub shape: Vec<u64>,
@@ -89,23 +120,62 @@ pub struct DImageD {
     pub encoding: String, // [bs<BIT>][[-]lz4][<|>]
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[pymethods]
+impl DImageD {
+    #[new]
+    fn new(shape: Vec<u64>, type_: PixelType, encoding: &str) -> Self {
+        DImageD {
+            htype: "dimage_d-1.0".to_string(),
+            shape,
+            type_,
+            encoding: encoding.to_string(),
+        }
+    }
+}
+
+/// "footer" sent for each frame. all times in nanoseconds
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[pyclass]
 pub struct DConfig {
-    pub htype: String,
+    pub htype: String, // constant dconfig-1.0
     pub start_time: u64,
     pub stop_time: u64,
     pub real_time: u64,
 }
 
+#[pymethods]
+impl DConfig {
+    #[new]
+    fn new(start_time: u64, stop_time: u64, real_time: u64) -> Self {
+        DConfig {
+            htype: "dconfig-1.0".to_string(),
+            start_time,
+            stop_time,
+            real_time,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[pyclass]
 pub struct DSeriesEnd {
     pub htype: String,
     pub series: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[pymethods]
+impl DSeriesEnd {
+    #[new]
+    fn new(series: u64) -> Self {
+        DSeriesEnd {
+            htype: "dseries_end-1.0".to_string(),
+            series,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[pyclass]
-#[derive(PartialEq)]
 pub struct FrameData {
     pub dimage: DImage,
     pub dimaged: DImageD,
@@ -156,8 +226,7 @@ impl DumpRecordFile {
     }
 
     pub fn read_size(&self, offset: usize) -> usize {
-        let size = i64::from_le_bytes(self.mmap[offset..offset + 8].try_into().unwrap()) as usize;
-        size
+        i64::from_le_bytes(self.mmap[offset..offset + 8].try_into().unwrap()) as usize
     }
 
     pub fn read_msg_raw(&self, offset: usize) -> (&[u8], usize) {
@@ -188,16 +257,21 @@ impl DumpRecordFile {
 
             current_offset += size + 8;
         }
-        return None;
+        None
     }
 
     pub fn get_cursor(&self) -> RecordCursor {
-        return RecordCursor::new(self);
+        RecordCursor::new(self)
     }
 
     fn get_size(&self) -> usize {
-        return self.mmap.len();
+        self.mmap.len()
     }
+}
+
+pub struct CursorPos {
+    pub current_offset: usize,
+    pub current_msg_index: usize,
 }
 
 pub struct RecordCursor {
@@ -214,6 +288,18 @@ impl RecordCursor {
             file: file.clone(),
             current_offset: 0,
             current_msg_index: 0,
+        }
+    }
+
+    pub fn set_pos(&mut self, pos: CursorPos) {
+        self.current_msg_index = pos.current_msg_index;
+        self.current_offset = pos.current_offset;
+    }
+
+    pub fn get_pos(&self) -> CursorPos {
+        CursorPos {
+            current_offset: self.current_offset,
+            current_msg_index: self.current_msg_index,
         }
     }
 
@@ -238,23 +324,23 @@ impl RecordCursor {
         let (msg, size) = self.file.read_msg_raw(self.current_offset);
         self.current_offset += size + 8;
         self.current_msg_index += 1;
-        return msg;
+        msg
     }
 
-    pub fn read_and_deserialize<'de, T>(&mut self) -> Result<T, serde_json::error::Error>
+    pub fn read_and_deserialize<T>(&mut self) -> Result<T, serde_json::error::Error>
     where
         T: DeserializeOwned,
     {
-        let msg = self.read_raw_msg().clone();
-        return serde_json::from_slice::<T>(&msg);
+        let msg = self.read_raw_msg();
+        serde_json::from_slice::<T>(msg)
     }
 
     pub fn peek_size(&self) -> usize {
-        return self.file.read_size(self.current_offset);
+        self.file.read_size(self.current_offset)
     }
 
     pub fn is_at_end(&self) -> bool {
-        return self.current_offset == self.file.get_size();
+        self.current_offset == self.file.get_size()
     }
 
     pub fn get_msg_idx(&self) -> usize {
@@ -277,26 +363,83 @@ impl From<zmq::Error> for SendError {
     }
 }
 
+fn monitor_thread(ctx: Context, endpoint: &str, name: &str) {
+    let socket = ctx.socket(zmq::PAIR).unwrap();
+    socket.connect(endpoint).unwrap();
+
+    let mut msg: Message = Message::new();
+
+    loop {
+        // two parts:
+        // first part: "number and value"
+        socket.recv(&mut msg, 0).unwrap();
+
+        let event = u16::from_ne_bytes(msg[0..2].try_into().unwrap());
+        let socket_event: SocketEvent = SocketEvent::from_raw(event);
+
+        // second part: affected endpoint as string
+        socket.recv(&mut msg, 0).unwrap();
+
+        let endpoint = String::from_utf8_lossy(&msg);
+
+        info!("monitoring {name}: {socket_event:?} @ {endpoint}");
+
+        if socket_event == SocketEvent::MONITOR_STOPPED {
+            break;
+        }
+    }
+}
+
+pub fn setup_monitor(ctx: Context, name: String, socket: &Socket) {
+    // set up monitoring:
+    let monitor_uuid = Uuid::new_v4();
+    let monitor_endpoint = format!("inproc://monitor-{monitor_uuid}");
+    socket
+        .monitor(&monitor_endpoint, zmq::SocketEvent::ALL as i32)
+        .unwrap();
+
+    std::thread::Builder::new()
+        .name(format!("sender-monitor-{monitor_uuid}"))
+        .spawn(move || {
+            monitor_thread(ctx, &monitor_endpoint, &name);
+        })
+        .expect("should be able to start monitor thread");
+}
+
 pub struct FrameSender {
     socket: Socket,
     cursor: RecordCursor,
     detector_config: DetectorConfig,
     series: u64,
     nimages: u64,
+    uri: String,
 }
 
 impl FrameSender {
-    pub fn new(uri: &str, filename: &str) -> Self {
+    pub fn new(uri: &str, filename: &str, random_port: bool) -> Self {
         let ctx = Context::new();
         let socket = ctx
             .socket(PUSH)
             .expect("context should be able to create a socket");
-        socket
-            .bind(uri)
-            .expect("should be possible to bind the zmq socket");
+
+        if random_port {
+            let new_uri = format!("{uri}:*");
+            socket.bind(&new_uri).unwrap_or_else(|_| {
+                panic!("should be possible to bind the zmq socket at {new_uri}")
+            });
+        } else {
+            socket
+                .bind(uri)
+                .unwrap_or_else(|_| panic!("should be possible to bind the zmq socket at {uri}"));
+        }
+
+        setup_monitor(ctx, "FrameSender".to_string(), &socket);
+
+        let canonical_uri = socket.get_last_endpoint().unwrap().unwrap();
+
         socket
             .set_sndhwm(4 * 256)
-            .expect("should be possible to set sndhwn");
+            .expect("should be possible to set sndhwm");
 
         let file = DumpRecordFile::new(filename);
 
@@ -305,13 +448,13 @@ impl FrameSender {
 
         cursor.seek_to_first_header_of_type("dheader-1.0");
         let dheader_raw = cursor.read_raw_msg();
-        let dheader: DHeader = serde_json::from_slice(&dheader_raw)
+        let dheader: DHeader = serde_json::from_slice(dheader_raw)
             .expect("json should match our serialization schema");
 
-        println!("{dheader:?}");
+        debug!("{dheader:?}");
 
         let detector_config: DetectorConfig = cursor.read_and_deserialize().unwrap();
-        println!("{detector_config:?}");
+        debug!("{detector_config:?}");
 
         let nimages = detector_config.get_num_images();
         let series = dheader.series;
@@ -322,7 +465,12 @@ impl FrameSender {
             series,
             nimages,
             detector_config,
+            uri: canonical_uri,
         }
+    }
+
+    pub fn get_uri(&self) -> &str {
+        &self.uri
     }
 
     pub fn get_detector_config(&self) -> &DetectorConfig {
@@ -366,23 +514,66 @@ impl FrameSender {
         Ok(())
     }
 
-    fn send_msg_at_cursor(&mut self) {
+    /// Send the message from the current cursor position.
+    /// If a timeout occurs, the cursor is rewound to the old
+    /// position and a retry can be attempted
+    fn send_msg_at_cursor(&mut self) -> Result<(), SendError> {
         let socket = &self.socket;
         let cursor = &mut self.cursor;
 
+        let old_pos = cursor.get_pos();
+
         let m = cursor.read_raw_msg();
-        socket.send(m, 0).unwrap();
+        match socket.send(m, 0) {
+            Ok(_) => {}
+            Err(zmq::Error::EAGAIN) => {
+                cursor.set_pos(old_pos);
+                return Err(SendError::Timeout);
+            }
+            Err(_) => return Err(SendError::Other),
+        }
+
+        Ok(())
     }
 
-    pub fn send_headers(&mut self) {
+    fn send_msg_at_cursor_retry<CB>(&mut self, callback: &CB) -> Result<(), SendError>
+    where
+        CB: Fn() -> Option<()>,
+    {
+        loop {
+            match self.send_msg_at_cursor() {
+                Ok(_) => return Ok(()),
+                Err(SendError::Timeout) => {
+                    if let Some(()) = callback() {
+                        continue;
+                    } else {
+                        return Err(SendError::Timeout);
+                    }
+                }
+                e @ Err(_) => return e,
+            }
+        }
+    }
+
+    pub fn send_headers<CB>(&mut self, idle_callback: CB) -> Result<(), SendError>
+    where
+        CB: Fn() -> Option<()>,
+    {
+        // milliseconds
+        self.socket.set_sndtimeo(100)?;
+
         let cursor = &mut self.cursor;
         cursor.seek_to_first_header_of_type("dheader-1.0");
 
         // dheader
-        self.send_msg_at_cursor();
+        self.send_msg_at_cursor_retry(&idle_callback)?;
 
         // detector config
-        self.send_msg_at_cursor();
+        self.send_msg_at_cursor_retry(&idle_callback)?;
+
+        self.socket.set_sndtimeo(-1)?;
+
+        Ok(())
     }
 
     pub fn send_frames(&mut self) {
