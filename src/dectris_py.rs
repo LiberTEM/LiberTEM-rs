@@ -213,6 +213,7 @@ fn recv_frame(
 enum AcquisitionError {
     Disconnected,
     SeriesMismatch,
+    FrameIdMismatch { expected_id: u64, got_id: u64 },
     Cancelled,
     ZmqError { err: zmq::Error },
 }
@@ -228,6 +229,12 @@ impl Display for AcquisitionError {
             }
             AcquisitionError::SeriesMismatch => {
                 write!(f, "series mismatch")
+            }
+            AcquisitionError::FrameIdMismatch {
+                expected_id,
+                got_id,
+            } => {
+                write!(f, "frame id mismatch; got {got_id}, expected {expected_id}")
             }
             AcquisitionError::Disconnected => {
                 write!(f, "other end has disconnected")
@@ -256,6 +263,9 @@ fn acquisition(
 ) -> Result<(), AcquisitionError> {
     let t0 = Instant::now();
     let mut last_control_check = Instant::now();
+
+    let mut expected_frame_id = 0;
+
     loop {
         if last_control_check.elapsed() > Duration::from_millis(300) {
             last_control_check = Instant::now();
@@ -267,6 +277,15 @@ fn acquisition(
         if frame.dimage.series != series {
             return Err(AcquisitionError::SeriesMismatch);
         }
+
+        if frame.dimage.frame != expected_frame_id {
+            return Err(AcquisitionError::FrameIdMismatch {
+                expected_id: expected_frame_id,
+                got_id: frame.dimage.frame,
+            });
+        }
+
+        expected_frame_id += 1;
 
         // we will be done after this frame:
         let done = frame.dimage.frame == detector_config.get_num_images() - 1;
