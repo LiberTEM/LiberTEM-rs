@@ -51,7 +51,11 @@ finally:
 
 ## Changelog
 
-### v0.2.0 (unreleased)
+### v0.2.1
+
+- Catch frame ID mismatch, PR [#9](https://github.com/LiberTEM/LiberTEM-dectris-rs/pull/9)
+
+### v0.2.0
 
 - Added `libertem_dectris.headers` submodule that exports header classes
 - Added ways to create `libertem_dectris.Frame` and `libertem_dectris.FrameStack`
