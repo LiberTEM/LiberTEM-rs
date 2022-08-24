@@ -51,8 +51,6 @@ jobs:
 
   macos:
     runs-on: macos-latest
-    env:
-      LIBCLANG_PATH: $(brew --prefix llvm@14)/bin/clang
     steps:
     - name: Set LIBCLANG_PATH
       run: echo "LIBCLANG_PATH=$(brew --prefix llvm@14)/lib" >> $env:GITHUB_ENV
