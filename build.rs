@@ -14,26 +14,33 @@ fn main() {
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=vendor/wrapper.h");
 
-    cc::Build::new()
-        .include("vendor/bitshuffle/lz4")
-        .include("vendor/bitshuffle")
-        .file("vendor/bitshuffle/src/bitshuffle.c")
-        .file("vendor/bitshuffle/src/bitshuffle_core.c")
-        .file("vendor/bitshuffle/src/iochain.c")
-        .file("vendor/bitshuffle/lz4/lz4.c")
-        // FIXME: extract from bitshuffle setup.py directly?
-        .define("BSHUF_VERSION_MAJOR", "0")
-        .define("BSHUF_VERSION_MINOR", "4")
-        .define("BSHUF_VERSION_POINT", "2")
-        // compiler flags stolen from setup.py:
-        .flag_if_supported("-O3")
-        .flag_if_supported("-ffast-math")
-        .flag_if_supported("-std=c99")
-        .flag_if_supported("-fno-strict-aliasing")
-        .flag_if_supported("-fPIC")
-        .flag_if_supported("/Ox")
-        .flag_if_supported("/fp:fast")
-        .compile("bitshuffle");
+    let mut build = cc::Build::new();
+
+    build.include("vendor/bitshuffle/lz4")
+         .include("vendor/bitshuffle")
+         .file("vendor/bitshuffle/src/bitshuffle.c")
+         .file("vendor/bitshuffle/src/bitshuffle_core.c")
+         .file("vendor/bitshuffle/src/iochain.c")
+         .file("vendor/bitshuffle/lz4/lz4.c")
+         // FIXME: extract from bitshuffle setup.py directly?
+         .define("BSHUF_VERSION_MAJOR", "0")
+         .define("BSHUF_VERSION_MINOR", "4")
+         .define("BSHUF_VERSION_POINT", "2")
+         // compiler flags stolen from setup.py:
+         .flag_if_supported("-O3")
+         .flag_if_supported("-ffast-math")
+         .flag_if_supported("-std=c99")
+         .flag_if_supported("-fno-strict-aliasing")
+         .flag_if_supported("-fPIC")
+         .flag_if_supported("/Ox")
+         .flag_if_supported("/fp:fast")
+         .flag_if_supported("-w");
+
+    if let Ok(extra_include_path) = env::var("BINDGEN_C_INCLUDE_PATH") {
+        build.include(extra_include_path);
+    }
+
+    build.compile("bitshuffle");
 
     // The bindgen::Builder is the main entry point
     // to bindgen, and lets you build up options for
