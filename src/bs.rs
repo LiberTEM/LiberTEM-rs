@@ -96,7 +96,6 @@ pub fn decompress_lz4_into<T>(
             block_size,
         );
         if count < 0 {
-            let in_len = in_.len();
             return Err(count.into());
         }
         if count != i64::try_from(in_.len()).unwrap() {
