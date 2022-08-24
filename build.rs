@@ -36,16 +36,12 @@ fn main() {
          .flag_if_supported("/fp:fast")
          .flag_if_supported("-w");
 
-    if let Ok(extra_include_path) = env::var("BINDGEN_C_INCLUDE_PATH") {
-        build.include(extra_include_path);
-    }
-
     build.compile("bitshuffle");
 
     // The bindgen::Builder is the main entry point
     // to bindgen, and lets you build up options for
     // the resulting bindings.
-    let bindings = bindgen::Builder::default()
+    let mut bindings_builder = bindgen::Builder::default()
         // The input header we would like to generate
         // bindings for.
         .header("vendor/wrapper.h")
@@ -55,7 +51,14 @@ fn main() {
         .clang_arg("-Ivendor/bitshuffle/src/")
         .allowlist_function("bshuf_compress_lz4")
         .allowlist_function("bshuf_decompress_lz4")
-        .allowlist_function("bshuf_compress_lz4_bound")
+        .allowlist_function("bshuf_compress_lz4_bound");
+
+    if let Ok(extra_include_path) = env::var("BINDGEN_C_INCLUDE_PATH") {
+        let arg = format!("-I{extra_include_path}");
+        bindings_builder = bindings_builder.clang_arg(arg);
+    }
+
+    let bindings = bindings_builder
         // Finish the builder and generate the bindings.
         .generate()
         // Unwrap the Result and panic on failure.
