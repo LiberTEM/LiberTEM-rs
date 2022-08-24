@@ -22,8 +22,8 @@ crossbeam = "0.8.2"
 crossbeam-channel = "0.5.6"
 log = "0.4.17"
 memmap2 = "0.5.6"
-pyo3 = { version = "0.16.5", features = ["extension-module", "abi3-py37"] }
-pyo3-log = "0.6.0"
+numpy = "0.17.0"
+pyo3 = { version = "0.17", features = ["extension-module", "abi3-py37"] }
 serde = { version = "1.0.143", features = ["derive"] }
 serde_json = "1.0.83"
 spin_sleep = "1.1.1"
@@ -32,3 +32,7 @@ zmq = { version = "0.9.2", features = ["vendored"] }
 
 [profile.release]
 debug = true
+
+[build-dependencies]
+bindgen = "0.60.1"
+cc = "1.0.73"

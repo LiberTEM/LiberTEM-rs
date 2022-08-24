@@ -7,14 +7,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::common::{
-    self, setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig, FrameData,
-    FrameSender, PixelType, TriggerMode,
+use crate::{
+    bs::decompress_lz4_into,
+    common::{
+        self, setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig,
+        FrameData, FrameSender, PixelType, TriggerMode,
+    },
 };
 
 use bincode::serialize;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use log::{debug, info};
+use numpy::PyArray2;
 use pyo3::{
     create_exception, exceptions,
     prelude::*,
@@ -37,6 +41,7 @@ fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<DetectorConfig>()?;
     m.add_class::<TriggerMode>()?;
     m.add("TimeoutError", py.get_type::<TimeoutError>())?;
+    m.add("DecompressError", py.get_type::<DecompressError>())?;
 
     register_header_module(py, m)?;
     Ok(())
@@ -63,6 +68,24 @@ impl Frame {
     fn with_data_cloned(frame: &FrameData) -> Self {
         Frame {
             frame: frame.clone(),
+        }
+    }
+
+    fn get_size(&self) -> u64 {
+        return self.frame.dimaged.shape.iter().product();
+    }
+
+    fn decompress_into_impl<T: numpy::Element>(&self, out: &PyArray2<T>) -> PyResult<()> {
+        let mut out_rw = out.readwrite();
+        let out_slice = out_rw.as_slice_mut().expect("`out` must be C-contiguous");
+        let out_size = usize::try_from(self.get_size()).unwrap(); // number of elements
+        let out_ptr: *mut T = out_slice.as_mut_ptr().cast();
+        match decompress_lz4_into(&self.frame.image_data[12..], out_ptr, out_size, None) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let msg = format!("decompression failed: {e:?}");
+                Err(DecompressError::new_err(msg))
+            }
         }
     }
 }
@@ -92,6 +115,29 @@ impl Frame {
     fn get_image_data(slf: PyRef<Self>, py: Python) -> Py<PyBytes> {
         let bytes: &PyBytes = PyBytes::new(py, slf.frame.image_data.as_slice());
         bytes.into()
+    }
+
+    fn decompress_into(slf: PyRef<Self>, out: &PyAny) -> PyResult<()> {
+        let arr_u8: Result<&PyArray2<u8>, _> = out.downcast();
+        let arr_u16: Result<&PyArray2<u8>, _> = out.downcast();
+        let arr_u32: Result<&PyArray2<u8>, _> = out.downcast();
+
+        match slf.frame.dimaged.encoding.as_str() {
+            "bs32-lz4<" => {
+                slf.decompress_into_impl(arr_u32.unwrap())?;
+            }
+            "bs16-lz4<" => {
+                slf.decompress_into_impl(arr_u16.unwrap())?;
+            }
+            "bs8-lz4<" => {
+                slf.decompress_into_impl(arr_u8.unwrap())?;
+            }
+            e => {
+                let msg = format!("can't deal with encoding {e}");
+                return Err(exceptions::PyValueError::new_err(msg));
+            }
+        }
+        Ok(())
     }
 
     fn get_series_id(slf: PyRef<Self>) -> u64 {
@@ -683,6 +729,13 @@ create_exception!(
     "Timeout while communicating"
 );
 
+create_exception!(
+    libertem_dectris,
+    DecompressError,
+    exceptions::PyException,
+    "Decompression failed"
+);
+
 #[pyclass]
 struct DectrisSim {
     frame_sender: FrameSender,
@@ -711,12 +764,14 @@ impl DectrisSim {
         let sender = &mut slf.frame_sender;
         py.allow_threads(|| {
             if let Err(e) = sender.send_headers(|| {
-                let gil = Python::acquire_gil();
-                if let Err(e) = gil.python().check_signals() {
-                    eprintln!("got python error {e:?}, breaking");
-                    return None;
-                }
-                Some(())
+                Python::with_gil(|py| {
+                    if let Err(e) = py.check_signals() {
+                        eprintln!("got python error {e:?}, breaking");
+                        None
+                    } else {
+                        Some(())
+                    }
+                })
             }) {
                 let msg = format!("failed to send headers: {e:?}");
                 return Err(exceptions::PyRuntimeError::new_err(msg));

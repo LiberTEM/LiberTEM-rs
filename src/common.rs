@@ -30,6 +30,7 @@ impl DHeader {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[pyclass]
 pub enum TriggerMode {

@@ -1,0 +1,3 @@
+[submodule "vendor/bitshuffle"]
+	path = vendor/bitshuffle
+	url = git@github.com:kiyo-masui/bitshuffle.git

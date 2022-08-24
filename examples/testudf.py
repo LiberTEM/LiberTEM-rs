@@ -11,7 +11,8 @@ from libertem.udf.sumsigudf import SumSigUDF
 @click.command()
 @click.argument('width', type=int, default=512)
 @click.argument('height', type=int, default=512)
-def main(width: int, height: int):
+@click.option('--perf', type=bool, default=False)
+def main(width: int, height: int, perf: bool):
 
     ctx = LiveContext()
 
@@ -26,12 +27,21 @@ def main(width: int, height: int):
         frames_per_partition=1024,
     ) 
     aq = aq.initialize(ctx.executor)
-    # warmup:
+    print("warmup")
     ctx.run_udf(
         dataset=aq,
         udf=SumSigUDF(),
     )
-    with perf_utils.perf('testudf', output_dir='profiles', sample_frequency='max') as perf_data:
+    if perf:
+        with perf_utils.perf('testudf', output_dir='profiles', sample_frequency='max') as perf_data:
+            t0 = time.time()
+            ctx.run_udf(
+                dataset=aq,
+                udf=SumSigUDF(),
+            )
+            t1 = time.time()
+            print(t1-t0)
+    else:
         t0 = time.time()
         ctx.run_udf(
             dataset=aq,
@@ -39,6 +49,7 @@ def main(width: int, height: int):
         )
         t1 = time.time()
         print(t1-t0)
+        print(f"{aq.shape.nav.size/(t1-t0)}")
     ctx.close()
     print("done")
 
