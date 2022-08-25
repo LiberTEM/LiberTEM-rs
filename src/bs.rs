@@ -33,12 +33,31 @@ impl From<i64> for BitshuffleError {
     }
 }
 
+///
+/// Bound on size of data of type `T` compressed with `compress_lz4`.
+///
+/// # Arguments
+///
+/// * `size_in_elems` - the number of elements in your input data
+/// * `block_size` - the bitshuffle blocksize, default block size is chosen if `None`
+///
 pub fn compress_lz4_bound<T>(size_in_elems: u64, block_size: Option<u64>) -> u64 {
     let block_size = block_size.unwrap_or(0);
     let elem_size = u64::try_from(std::mem::size_of::<T>()).unwrap();
+    // size : number of elements in input
+    // elem_size : element size of typed data
+    // block_size : Process in blocks of this many elements.
     unsafe { bs_bindings::bshuf_compress_lz4_bound(size_in_elems, elem_size, block_size) }
 }
 
+///
+/// Bitshuffled and compress the data using LZ4.
+///
+/// # Arguments
+///
+/// * `in_` - the input array of type `T`
+/// * `block_size` - the bitshuffle blocksize, default block size is chosen if `None`
+///
 pub fn compress_lz4<T>(in_: &[T], block_size: Option<u64>) -> Result<Vec<u8>, BitshuffleError> {
     let block_size = block_size.unwrap_or(0);
     let c_in = in_.as_ptr().cast();
@@ -50,6 +69,12 @@ pub fn compress_lz4<T>(in_: &[T], block_size: Option<u64>) -> Result<Vec<u8>, Bi
     let mut out: Vec<u8> = Vec::with_capacity(usize::try_from(max_out_size_bytes).unwrap());
     let bytes_used = unsafe {
         let c_out = out.as_mut_ptr().cast();
+
+        // in : input buffer, must be of size * elem_size bytes
+        // out : output buffer, must be large enough to hold data.
+        // size : number of elements in input
+        // elem_size : element size of typed data
+        // block_size : Process in blocks of this many elements.
         bs_bindings::bshuf_compress_lz4(c_in, c_out, size_in_elems, elem_size, block_size)
     };
     if bytes_used < 0 {
@@ -63,6 +88,17 @@ pub fn compress_lz4<T>(in_: &[T], block_size: Option<u64>) -> Result<Vec<u8>, Bi
     Ok(out)
 }
 
+///
+/// Decompress data, then un-bitshuffle it and store it in a newly-allocated
+/// `Vec<T>`. `out_size`, `block_size` and `T` have to match the parameters used
+/// when compressing the data.
+///
+/// # Arguments
+///
+/// * `in_` - bitshuffled and compressed data as bytes
+/// * `out_size` - number of elements we expect to get back
+/// * `block_size` - the bitshuffle blocksize, default block size is chosen if `None`
+///
 pub fn decompress_lz4<T>(
     in_: &[u8],
     out_size: usize, // number of elements
@@ -76,9 +112,24 @@ pub fn decompress_lz4<T>(
     Ok(out)
 }
 
+///
+/// Decompress data, then un-bitshuffle it and store it in `out`.
+/// `out_size`, `block_size` and `T` have to match the parameters used when
+/// compressing the data.
+///
+/// # Arguments
+///
+/// * `in_` - bitshuffled and compressed data as bytes
+/// * `out` - pointer to memory where the results should be stored
+/// * `block_size` - the bitshuffle blocksize, default block size is chosen if `None`
+///
+/// # Safety
+///
+/// The memory pointed to by `out` must be large enough to fit the output, i.e.
+/// at least `std::mem::size_of::<T> * out_size`.
 pub fn decompress_lz4_into<T>(
     in_: &[u8],
-    out: *mut T,
+    out: *mut T, // FIXME: replace with slice of MaybeUninit from Vec::spare_capacity_mut?
     out_size: usize, // number of elements
     block_size: Option<u64>,
 ) -> Result<(), BitshuffleError> {

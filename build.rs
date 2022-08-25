@@ -16,25 +16,26 @@ fn main() {
 
     let mut build = cc::Build::new();
 
-    build.include("vendor/bitshuffle/lz4")
-         .include("vendor/bitshuffle")
-         .file("vendor/bitshuffle/src/bitshuffle.c")
-         .file("vendor/bitshuffle/src/bitshuffle_core.c")
-         .file("vendor/bitshuffle/src/iochain.c")
-         .file("vendor/bitshuffle/lz4/lz4.c")
-         // FIXME: extract from bitshuffle setup.py directly?
-         .define("BSHUF_VERSION_MAJOR", "0")
-         .define("BSHUF_VERSION_MINOR", "4")
-         .define("BSHUF_VERSION_POINT", "2")
-         // compiler flags stolen from setup.py:
-         .flag_if_supported("-O3")
-         .flag_if_supported("-ffast-math")
-         .flag_if_supported("-std=c99")
-         .flag_if_supported("-fno-strict-aliasing")
-         .flag_if_supported("-fPIC")
-         .flag_if_supported("/Ox")
-         .flag_if_supported("/fp:fast")
-         .flag_if_supported("-w");
+    build
+        .include("vendor/bitshuffle/lz4")
+        .include("vendor/bitshuffle")
+        .file("vendor/bitshuffle/src/bitshuffle.c")
+        .file("vendor/bitshuffle/src/bitshuffle_core.c")
+        .file("vendor/bitshuffle/src/iochain.c")
+        .file("vendor/bitshuffle/lz4/lz4.c")
+        // FIXME: extract from bitshuffle setup.py directly?
+        .define("BSHUF_VERSION_MAJOR", "0")
+        .define("BSHUF_VERSION_MINOR", "4")
+        .define("BSHUF_VERSION_POINT", "2")
+        // compiler flags stolen from setup.py:
+        .flag_if_supported("-O3")
+        .flag_if_supported("-ffast-math")
+        .flag_if_supported("-std=c99")
+        .flag_if_supported("-fno-strict-aliasing")
+        .flag_if_supported("-fPIC")
+        .flag_if_supported("/Ox")
+        .flag_if_supported("/fp:fast")
+        .flag_if_supported("-w");
 
     build.compile("bitshuffle");
 
