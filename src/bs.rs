@@ -203,10 +203,10 @@ mod tests {
         assert_eq!(err, Err(BitshuffleError::SizeMismatch));
 
         let err: Result<_, _> = decompress_lz4::<Vec<i32>>(&compressed, input.len() + 1, None);
-        assert_eq!(err, Err(BitshuffleError::SizeMismatch));
+        assert_eq!(err, Err(BitshuffleError::DecompressionError));
 
         let err: Result<_, _> = decompress_lz4::<Vec<i32>>(&compressed, input.len() + 1000, None);
-        assert_eq!(err, Err(BitshuffleError::SizeMismatch));
+        assert_eq!(err, Err(BitshuffleError::InternalError));
     }
 
     #[test]
