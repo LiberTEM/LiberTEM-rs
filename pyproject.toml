@@ -11,3 +11,5 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 
+[project.urls]
+repository = "https://github.com/LiberTEM/LiberTEM-dectris-rs/"
