@@ -2,7 +2,7 @@
 name = "libertem-dectris"
 authors = ["Alexander Clausen <a.clausen@fz-juelich.de>"]
 license = "MIT"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 readme = "README.md"
 

@@ -1,13 +1,12 @@
 # LiberTEM-dectris-rs
 
+[![LiberTEM-dectris-rs on GitHub](https://img.shields.io/badge/GitHub-MIT-informational)](https://github.com/LiberTEM/LiberTEM-dectris-rs)
+
 This is a Python package for efficiently receiving data from DECTRIS detectors
 with [the zeromq interface](https://media.dectris.com/210607-DECTRIS-SIMPLON-API-Manual_EIGER2-chip-based_detectros.pdf).
 The low-level, high-frequency operations are performed in a background thread
 implemented in rust, and multiple frames are batched together for further
 processing in Python.
-
-Decoding of compressed frames is not (yet) handled in this package, but may be
-added later.
 
 ## Usage
 
@@ -37,12 +36,17 @@ try:
         stack = frames.get_next_stack(max_size=32)
         for i in range(len(stack)):
             frame = stack[i]
-            # do something with the frame; compression
-            # is not handled in this module (yet)
-            image_data_bytes = frame.get_image_data()
+            image_data_bytes = frame.get_image_data()  # this is the raw data
             shape = frame.get_shape()
+            pixel_type = frame.get_pixel_type()  # uint8 etc.
+            endianess = frame.get_endianess()  # in numpy notation; ">" or "<"
+            dtype = endianess + pixel_type
             encoding = frame.get_encoding()
             frame_id = frame.get_frame_id()
+            decompressed = np.zeros(shape, dtype=dtype)
+            frame.decompress_into(decompressed)
+            # `decompressed` now contains the array data for this frame:
+            decompressed.sum()
         if len(stack) == 0:
             break
 finally:
@@ -50,6 +54,10 @@ finally:
 ```
 
 ## Changelog
+
+### v0.2.2
+
+- Vendor `bitshuffle` and add `Frame.decompress_into` method, PR [#10](https://github.com/LiberTEM/LiberTEM-dectris-rs/pull/10)
 
 ### v0.2.1
 
@@ -80,6 +88,9 @@ This package is using [pyo3](https://pyo3.rs/) with
 
 Then, after each change to the rust code, run `maturin develop -r` to build and
 install a new version of the wheel.
+
+As we vendor `bitshuffle`, make sure to clone with `git clone --recursive ...`, or manually
+[take care of initializing and updating submodules](https://github.blog/2016-02-01-working-with-submodules/).
 
 ## Release
 
