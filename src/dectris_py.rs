@@ -119,8 +119,8 @@ impl Frame {
 
     fn decompress_into(slf: PyRef<Self>, out: &PyAny) -> PyResult<()> {
         let arr_u8: Result<&PyArray2<u8>, _> = out.downcast();
-        let arr_u16: Result<&PyArray2<u8>, _> = out.downcast();
-        let arr_u32: Result<&PyArray2<u8>, _> = out.downcast();
+        let arr_u16: Result<&PyArray2<u16>, _> = out.downcast();
+        let arr_u32: Result<&PyArray2<u32>, _> = out.downcast();
 
         match slf.frame.dimaged.encoding.as_str() {
             "bs32-lz4<" => {
