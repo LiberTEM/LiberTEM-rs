@@ -16,7 +16,7 @@ jobs:
         manylinux: auto
         command: build
         container: ghcr.io/libertem/manylinux2014_x86_64:latest
-        args: --release --sdist -o dist --find-interpreter
+        args: --release --sdist -o target/dist --find-interpreter
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
