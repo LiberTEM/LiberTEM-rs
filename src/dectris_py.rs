@@ -11,7 +11,7 @@ use crate::{
     bs::decompress_lz4_into,
     common::{
         self, setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig,
-        FrameData, FrameSender, PixelType, TriggerMode,
+        FrameData, FrameSender, PixelType, TriggerMode, DSeriesOnly,
     },
 };
 
@@ -408,6 +408,39 @@ fn background_thread_wrap(
     }
 }
 
+fn drain_if_mismatch(
+    msg: &mut Message,
+    socket: &Socket,
+    series: u64,
+    control_channel: &Receiver<ControlMsg>,
+) -> Result<(), AcquisitionError> {
+    loop {
+        let series_res: Result<DSeriesOnly, _> = serde_json::from_str(msg.as_str().unwrap());
+        debug!("drained message header: {}", msg.as_str().unwrap());
+
+        if let Ok(recvd_series) = series_res {
+            // everything is ok, we can go ahead:
+            if recvd_series.series == series {
+                return Ok(());
+            }
+        }
+
+        // throw away message parts that are part of the mismatched message:
+        while msg.get_more() {
+            recv_part(msg, socket, control_channel)?;
+
+            if let Some(msg_str) = msg.as_str() {
+                debug!("drained message part: {}", msg_str);
+            } else {
+                debug!("drained non-utf message part");
+            }
+        }
+
+        // receive the next message:
+        recv_part(msg, socket, control_channel)?;
+    }
+}
+
 fn background_thread(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
@@ -427,8 +460,10 @@ fn background_thread(
         match control {
             Ok(ControlMsg::StartAcquisition { series }) => {
                 let mut msg: Message = Message::new();
-                // FIXME: throw away any messages that don't match our current series
                 recv_part(&mut msg, &socket, to_thread_r)?;
+
+                drain_if_mismatch(&mut msg, &socket, series, to_thread_r)?;
+
                 let dheader_res: Result<DHeader, _> = serde_json::from_str(msg.as_str().unwrap());
                 let dheader: DHeader = match dheader_res {
                     Ok(header) => header,

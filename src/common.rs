@@ -12,6 +12,12 @@ use zmq::{Context, Message, Socket, SocketEvent, SocketType::PUSH};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[pyclass]
+pub struct DSeriesOnly {
+    pub series: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[pyclass]
 pub struct DHeader {
     pub htype: String,
     pub header_detail: String,
