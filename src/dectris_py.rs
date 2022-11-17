@@ -416,7 +416,6 @@ fn drain_if_mismatch(
 ) -> Result<(), AcquisitionError> {
     loop {
         let series_res: Result<DSeriesOnly, _> = serde_json::from_str(msg.as_str().unwrap());
-        debug!("drained message header: {}", msg.as_str().unwrap());
 
         if let Ok(recvd_series) = series_res {
             // everything is ok, we can go ahead:
@@ -424,6 +423,8 @@ fn drain_if_mismatch(
                 return Ok(());
             }
         }
+
+        debug!("drained message header: {} expected series {}", msg.as_str().unwrap(), series);
 
         // throw away message parts that are part of the mismatched message:
         while msg.get_more() {
