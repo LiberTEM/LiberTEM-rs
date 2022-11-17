@@ -44,6 +44,12 @@ fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     m.add("DecompressError", py.get_type::<DecompressError>())?;
 
     register_header_module(py, m)?;
+
+    let env = env_logger::Env::default()
+        .filter_or("LIBERTEM_DECTRIS_LOG_LEVEL", "error")
+        .write_style_or("LIBERTEM_DECTRIS_LOG_STYLE", "always");
+    env_logger::init_from_env(env);
+
     Ok(())
 }
 
@@ -421,6 +427,7 @@ fn background_thread(
         match control {
             Ok(ControlMsg::StartAcquisition { series }) => {
                 let mut msg: Message = Message::new();
+                // FIXME: throw away any messages that don't match our current series
                 recv_part(&mut msg, &socket, to_thread_r)?;
                 let dheader_res: Result<DHeader, _> = serde_json::from_str(msg.as_str().unwrap());
                 let dheader: DHeader = match dheader_res {
