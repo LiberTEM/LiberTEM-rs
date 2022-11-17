@@ -189,6 +189,7 @@ pub enum ControlMsg {
 #[derive(PartialEq, Eq)]
 pub enum ResultMsg {
     Error { msg: String }, // generic error response, might need to specialize later
+    SerdeError { msg: String, recvd_msg: String, },
     Frame { frame: FrameData },
     End,
 }
@@ -233,10 +234,30 @@ fn recv_frame(
     let mut data: Vec<u8> = Vec::with_capacity(512 * 512 * 4);
 
     recv_part(&mut msg, socket, control_channel)?;
-    let dimage: DImage = serde_json::from_str(msg.as_str().unwrap()).unwrap();
+    let dimage_res: Result<DImage, _> = serde_json::from_str(msg.as_str().unwrap());
+
+    let dimage = match dimage_res {
+        Ok(image) => image,
+        Err(err) => {
+            return Err(AcquisitionError::SerdeError {
+                msg: err.to_string(),
+                recvd_msg: msg.as_str().map_or_else(|| "".to_string(), |m| m.to_string())
+            });
+        }
+    };
 
     recv_part(&mut msg, socket, control_channel)?;
-    let dimaged: DImageD = serde_json::from_str(msg.as_str().unwrap()).unwrap();
+    let dimaged_res: Result<DImageD, _> = serde_json::from_str(msg.as_str().unwrap());
+
+    let dimaged = match dimaged_res {
+        Ok(image) => image,
+        Err(err) => {
+            return Err(AcquisitionError::SerdeError {
+                msg: err.to_string(),
+                recvd_msg: msg.as_str().map_or_else(|| "".to_string(), |m| m.to_string())
+            });
+        }
+    };
 
     // compressed image data:
     recv_part(&mut msg, socket, control_channel)?;
@@ -260,6 +281,7 @@ enum AcquisitionError {
     Disconnected,
     SeriesMismatch,
     FrameIdMismatch { expected_id: u64, got_id: u64 },
+    SerdeError { recvd_msg: String, msg: String },
     Cancelled,
     ZmqError { err: zmq::Error },
 }
@@ -272,6 +294,9 @@ impl Display for AcquisitionError {
             }
             AcquisitionError::Cancelled => {
                 write!(f, "acquisition cancelled")
+            }
+            AcquisitionError::SerdeError { recvd_msg, msg } => {
+                write!(f, "deserialization failed: {msg}; got msg {recvd_msg}")
             }
             AcquisitionError::SeriesMismatch => {
                 write!(f, "series mismatch")
@@ -386,7 +411,7 @@ fn background_thread(
     let socket = ctx.socket(zmq::PULL).unwrap();
     socket.set_rcvtimeo(1000).unwrap();
     socket.connect(&uri).unwrap();
-    socket.set_rcvhwm(4 * 256).unwrap();
+    socket.set_rcvhwm(4 * 1024).unwrap();
 
     setup_monitor(ctx, "DectrisReceiver".to_string(), &socket);
 
@@ -397,8 +422,17 @@ fn background_thread(
             Ok(ControlMsg::StartAcquisition { series }) => {
                 let mut msg: Message = Message::new();
                 recv_part(&mut msg, &socket, to_thread_r)?;
-                // panic in case of any other header type:
-                let dheader: DHeader = serde_json::from_str(msg.as_str().unwrap()).unwrap();
+                let dheader_res: Result<DHeader, _> = serde_json::from_str(msg.as_str().unwrap());
+                let dheader: DHeader = match dheader_res {
+                    Ok(header) => header,
+                    Err(err) => {
+                        from_thread_s.send(ResultMsg::SerdeError {
+                            msg: err.to_string(),
+                            recvd_msg: msg.as_str().map_or_else(|| "".to_string(), |m| m.to_string())
+                        }).unwrap();
+                        break;
+                    }
+                };
                 debug!("dheader: {dheader:?}");
 
                 // second message: the header itself
@@ -558,6 +592,11 @@ impl FrameIterator {
                 Some(ResultMsg::Error { msg }) => {
                     return Err(exceptions::PyRuntimeError::new_err(msg));
                 }
+                Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
+                    return Err(exceptions::PyRuntimeError::new_err(
+                        format!("serialization error: {}, message: {}", msg, recvd_msg)
+                    ))
+                }
                 Some(ResultMsg::End) => return Ok(None),
                 Some(ResultMsg::Frame { frame }) => {
                     return Ok(Some(Frame::with_data_cloned(&frame)))
@@ -704,6 +743,11 @@ impl FrameChunkedIterator {
             match recv_result {
                 None => {
                     continue;
+                }
+                Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
+                    return Err(exceptions::PyRuntimeError::new_err(
+                        format!("serialization error: {}, message: {}", msg, recvd_msg)
+                    ))
                 }
                 Some(ResultMsg::Error { msg }) => {
                     return Err(exceptions::PyRuntimeError::new_err(msg))

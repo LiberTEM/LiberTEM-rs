@@ -241,19 +241,16 @@ impl DumpRecordFile {
         while current_offset < self.mmap.len() {
             let (value, size) = self.read_json(current_offset);
 
-            match value {
-                Some(val) => {
-                    let htype = val
-                        .as_object()
-                        .expect("all json messages should be objects")
-                        .get("htype");
-                    if let Some(htype_str) = htype {
-                        if htype_str == expected_htype {
-                            return Some(current_offset);
-                        }
+            if let Some(val) = value {
+                let htype = val
+                    .as_object()
+                    .expect("all json messages should be objects")
+                    .get("htype");
+                if let Some(htype_str) = htype {
+                    if htype_str == expected_htype {
+                        return Some(current_offset);
                     }
                 }
-                None => {}
             }
 
             current_offset += size + 8;
