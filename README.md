@@ -55,6 +55,12 @@ finally:
 
 ## Changelog
 
+### v0.2.3 (unreleased)
+
+- Add `env_logger`: set environment variable `LIBERTEM_DECTRIS_LOG_LEVEL` to e.g. `'INFO'` to enable logging
+- Improved error handling: raise an exception instead of panicing on serialization errors
+- Ignore messages with mismatching series ID
+
 ### v0.2.2
 
 - Vendor `bitshuffle` and add `Frame.decompress_into` method, PR [#10](https://github.com/LiberTEM/LiberTEM-dectris-rs/pull/10)
