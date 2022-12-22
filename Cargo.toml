@@ -30,6 +30,7 @@ serde_json = "1.0.83"
 spin_sleep = "1.1.1"
 uuid = { version = "1.1.2", features = ["v4", "fast-rng"] }
 zmq = { version = "0.9.2", features = ["vendored"] }
+ipc-test = { git = "git+ssh://gitlab@iffgit.fz-juelich.de/clausen/ipc-test.git" }
 
 [profile.release]
 debug = true

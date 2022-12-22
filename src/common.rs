@@ -2,6 +2,7 @@
 
 use std::fs;
 
+use ipc_test::Slot;
 use log::{debug, info};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -56,6 +57,9 @@ pub struct DetectorConfig {
     pub ntrigger: u64,
     pub nimages: u64,
     trigger_mode: TriggerMode,
+    pub x_pixels_in_detector: u32,
+    pub y_pixels_in_detector: u32,
+    pub bit_depth_image: u32,
 }
 
 impl DetectorConfig {
@@ -64,6 +68,14 @@ impl DetectorConfig {
             TriggerMode::EXTE | TriggerMode::INTE => self.ntrigger,
             TriggerMode::EXTS | TriggerMode::INTS => self.nimages * self.ntrigger,
         }
+    }
+
+    pub fn get_shape(&self) -> (u32, u32) {
+        (self.y_pixels_in_detector, self.x_pixels_in_detector)
+    }
+
+    pub fn get_num_pixels(&self) -> u64 {
+        self.y_pixels_in_detector as u64 * self.x_pixels_in_detector as u64
     }
 }
 
@@ -191,6 +203,22 @@ pub struct FrameData {
     pub image_data: Vec<u8>,
 
     pub dconfig: DConfig,
+}
+
+pub struct NewFrameData {
+    pub meta: FrameData,
+
+    /// shm slot for this frame
+    slot: Slot,
+
+    /// how many bytes in the shm slot are actually filled with useful data?
+    valid_bytes: usize,
+}
+
+impl NewFrameData {
+    pub fn valid_data(&self) -> &[u8] {
+        &self.slot.as_slice()[0..self.valid_bytes]
+    }
 }
 
 pub struct DumpRecordFile {

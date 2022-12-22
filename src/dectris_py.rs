@@ -10,13 +10,15 @@ use std::{
 use crate::{
     bs::decompress_lz4_into,
     common::{
-        self, setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig,
-        FrameData, FrameSender, PixelType, TriggerMode, DSeriesOnly,
+        self, setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DSeriesOnly,
+        DetectorConfig, FrameData, FrameSender, PixelType, TriggerMode,
     },
+    shm_recv::{FrameMeta, FrameStackForWriting, FrameStackHandle},
 };
 
 use bincode::serialize;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
+use ipc_test::SharedSlabAllocator;
 use log::{debug, info};
 use numpy::PyArray2;
 use pyo3::{
@@ -195,8 +197,8 @@ pub enum ControlMsg {
 #[derive(PartialEq, Eq)]
 pub enum ResultMsg {
     Error { msg: String }, // generic error response, might need to specialize later
-    SerdeError { msg: String, recvd_msg: String, },
-    Frame { frame: FrameData },
+    SerdeError { msg: String, recvd_msg: String },
+    FrameStack { frame: FrameStackHandle },
     End,
 }
 
@@ -232,6 +234,55 @@ fn recv_part(
     Ok(())
 }
 
+/// Receive a frame into a `FrameStackForWriting`, reusing the `Message` objects
+/// that are passed in.
+fn recv_frame_into(
+    socket: &Socket,
+    control_channel: &Receiver<ControlMsg>,
+    msg: &mut Message,
+    msg_image: &mut Message,
+    stack: &mut FrameStackForWriting,
+) -> Result<FrameMeta, AcquisitionError> {
+    recv_part(msg, socket, control_channel)?;
+    let dimage_res: Result<DImage, _> = serde_json::from_str(msg.as_str().unwrap());
+
+    let dimage = match dimage_res {
+        Ok(image) => image,
+        Err(err) => {
+            return Err(AcquisitionError::SerdeError {
+                msg: err.to_string(),
+                recvd_msg: msg
+                    .as_str()
+                    .map_or_else(|| "".to_string(), |m| m.to_string()),
+            });
+        }
+    };
+
+    recv_part(msg, socket, control_channel)?;
+    let dimaged_res: Result<DImageD, _> = serde_json::from_str(msg.as_str().unwrap());
+
+    let dimaged = match dimaged_res {
+        Ok(image) => image,
+        Err(err) => {
+            return Err(AcquisitionError::SerdeError {
+                msg: err.to_string(),
+                recvd_msg: msg
+                    .as_str()
+                    .map_or_else(|| "".to_string(), |m| m.to_string()),
+            });
+        }
+    };
+
+    // compressed image data:
+    recv_part(msg_image, socket, control_channel)?;
+
+    // DConfig:
+    recv_part(msg, socket, control_channel)?;
+    let dconfig: DConfig = serde_json::from_str(msg.as_str().unwrap()).unwrap();
+
+    Ok(stack.frame_done(dimage, dimaged, dconfig, &msg_image))
+}
+
 fn recv_frame(
     socket: &Socket,
     control_channel: &Receiver<ControlMsg>,
@@ -247,7 +298,9 @@ fn recv_frame(
         Err(err) => {
             return Err(AcquisitionError::SerdeError {
                 msg: err.to_string(),
-                recvd_msg: msg.as_str().map_or_else(|| "".to_string(), |m| m.to_string())
+                recvd_msg: msg
+                    .as_str()
+                    .map_or_else(|| "".to_string(), |m| m.to_string()),
             });
         }
     };
@@ -260,7 +313,9 @@ fn recv_frame(
         Err(err) => {
             return Err(AcquisitionError::SerdeError {
                 msg: err.to_string(),
-                recvd_msg: msg.as_str().map_or_else(|| "".to_string(), |m| m.to_string())
+                recvd_msg: msg
+                    .as_str()
+                    .map_or_else(|| "".to_string(), |m| m.to_string()),
             });
         }
     };
@@ -337,11 +392,24 @@ fn acquisition(
     from_thread_s: &Sender<ResultMsg>,
     socket: &Socket,
     series: u64,
+    frame_stack_size: usize,
+    shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     let t0 = Instant::now();
     let mut last_control_check = Instant::now();
 
     let mut expected_frame_id = 0;
+
+    // approx uppper bound of image size in bytes
+    let approx_size_bytes = detector_config.get_num_pixels()
+        * (detector_config.bit_depth_image as f32 / 8.0f32).ceil() as u64;
+
+    let slot = shm.get_mut().expect("get shm slot for writing");
+    let mut frame_stack =
+        FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
+
+    let msg = Message::new();
+    let msg_image = Message::new();
 
     loop {
         if last_control_check.elapsed() > Duration::from_millis(300) {
@@ -349,7 +417,13 @@ fn acquisition(
             check_for_control(to_thread_r)?;
         }
 
-        let frame = recv_frame(socket, to_thread_r)?;
+        let frame = recv_frame_into(
+            socket,
+            to_thread_r,
+            &mut msg,
+            &mut msg_image,
+            &mut frame_stack,
+        )?;
 
         if frame.dimage.series != series {
             return Err(AcquisitionError::SeriesMismatch);
@@ -367,8 +441,10 @@ fn acquisition(
         // we will be done after this frame:
         let done = frame.dimage.frame == detector_config.get_num_images() - 1;
 
+        // FIXME: only send if the stack is full or we are done with the acquisition!
         // send to our queue:
-        match from_thread_s.send(ResultMsg::Frame { frame }) {
+        let handle = frame_stack.writing_done(&mut shm);
+        match from_thread_s.send(ResultMsg::FrameStack { frame: handle }) {
             Ok(_) => (),
             Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
         }
@@ -398,8 +474,10 @@ fn background_thread_wrap(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
     uri: String,
+    frame_stack_size: usize,
+    shm: SharedSlabAllocator,
 ) {
-    if let Err(err) = background_thread(to_thread_r, from_thread_s, uri) {
+    if let Err(err) = background_thread(to_thread_r, from_thread_s, uri, frame_stack_size, shm) {
         from_thread_s
             .send(ResultMsg::Error {
                 msg: err.to_string(),
@@ -424,7 +502,11 @@ fn drain_if_mismatch(
             }
         }
 
-        debug!("drained message header: {} expected series {}", msg.as_str().unwrap(), series);
+        debug!(
+            "drained message header: {} expected series {}",
+            msg.as_str().unwrap(),
+            series
+        );
 
         // throw away message parts that are part of the mismatched message:
         while msg.get_more() {
@@ -446,6 +528,8 @@ fn background_thread(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
     uri: String,
+    frame_stack_size: usize,
+    shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     let ctx = zmq::Context::new();
     let socket = ctx.socket(zmq::PULL).unwrap();
@@ -469,10 +553,14 @@ fn background_thread(
                 let dheader: DHeader = match dheader_res {
                     Ok(header) => header,
                     Err(err) => {
-                        from_thread_s.send(ResultMsg::SerdeError {
-                            msg: err.to_string(),
-                            recvd_msg: msg.as_str().map_or_else(|| "".to_string(), |m| m.to_string())
-                        }).unwrap();
+                        from_thread_s
+                            .send(ResultMsg::SerdeError {
+                                msg: err.to_string(),
+                                recvd_msg: msg
+                                    .as_str()
+                                    .map_or_else(|| "".to_string(), |m| m.to_string()),
+                            })
+                            .unwrap();
                         break;
                     }
                 };
@@ -483,7 +571,15 @@ fn background_thread(
                 let detector_config: DetectorConfig =
                     serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
-                match acquisition(detector_config, to_thread_r, from_thread_s, &socket, series) {
+                match acquisition(
+                    detector_config,
+                    to_thread_r,
+                    from_thread_s,
+                    &socket,
+                    series,
+                    frame_stack_size,
+                    shm,
+                ) {
                     Ok(_) => {}
                     Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
                         return Ok(());
@@ -517,7 +613,7 @@ impl Display for ReceiverError {
 }
 
 impl DectrisReceiver {
-    pub fn new(uri: &str) -> Self {
+    pub fn new(uri: &str, frame_stack_size: usize, shm: SharedSlabAllocator) -> Self {
         let (to_thread_s, to_thread_r) = unbounded();
         let (from_thread_s, from_thread_r) = unbounded();
 
@@ -529,7 +625,13 @@ impl DectrisReceiver {
                 builder
                     .name("bg_thread".to_string())
                     .spawn(move || {
-                        background_thread_wrap(&to_thread_r, &from_thread_s, uri.to_string())
+                        background_thread_wrap(
+                            &to_thread_r,
+                            &from_thread_s,
+                            uri.to_string(),
+                            frame_stack_size,
+                            shm,
+                        )
                     })
                     .expect("failed to start background thread"),
             ),
@@ -636,12 +738,13 @@ impl FrameIterator {
                     return Err(exceptions::PyRuntimeError::new_err(msg));
                 }
                 Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(
-                        format!("serialization error: {}, message: {}", msg, recvd_msg)
-                    ))
+                    return Err(exceptions::PyRuntimeError::new_err(format!(
+                        "serialization error: {}, message: {}",
+                        msg, recvd_msg
+                    )))
                 }
                 Some(ResultMsg::End) => return Ok(None),
-                Some(ResultMsg::Frame { frame }) => {
+                Some(ResultMsg::FrameStack { frame }) => {
                     return Ok(Some(Frame::with_data_cloned(&frame)))
                 }
                 None => {
@@ -788,9 +891,10 @@ impl FrameChunkedIterator {
                     continue;
                 }
                 Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(
-                        format!("serialization error: {}, message: {}", msg, recvd_msg)
-                    ))
+                    return Err(exceptions::PyRuntimeError::new_err(format!(
+                        "serialization error: {}, message: {}",
+                        msg, recvd_msg
+                    )))
                 }
                 Some(ResultMsg::Error { msg }) => {
                     return Err(exceptions::PyRuntimeError::new_err(msg))
@@ -798,7 +902,7 @@ impl FrameChunkedIterator {
                 Some(ResultMsg::End) => {
                     return Ok(stack);
                 }
-                Some(ResultMsg::Frame { frame }) => {
+                Some(ResultMsg::FrameStack { frame }) => {
                     stack.push(frame);
                     if stack.len() >= max_size {
                         return Ok(stack);
