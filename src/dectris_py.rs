@@ -3,6 +3,7 @@
 use std::{
     convert::Infallible,
     fmt::Display,
+    mem::replace,
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -10,15 +11,16 @@ use std::{
 use crate::{
     bs::decompress_lz4_into,
     common::{
-        self, setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DSeriesOnly,
-        DetectorConfig, FrameData, FrameSender, PixelType, TriggerMode,
+        setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DSeriesOnly, DetectorConfig,
+        FrameData, PixelType, TriggerMode,
     },
-    shm_recv::{FrameMeta, FrameStackForWriting, FrameStackHandle},
+    shm_recv::{serve_shm_handle, CamClient, FrameMeta, FrameStackForWriting, FrameStackHandle},
+    sim::DectrisSim,
 };
 
 use bincode::serialize;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
-use ipc_test::SharedSlabAllocator;
+use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, info};
 use numpy::PyArray2;
 use pyo3::{
@@ -37,11 +39,13 @@ fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Frame>()?;
     m.add_class::<FrameIterator>()?;
     m.add_class::<FrameStack>()?;
+    m.add_class::<FrameStackHandle>()?;
     m.add_class::<FrameChunkedIterator>()?;
     m.add_class::<PixelType>()?;
     m.add_class::<DectrisSim>()?;
     m.add_class::<DetectorConfig>()?;
     m.add_class::<TriggerMode>()?;
+    m.add_class::<CamClient>()?;
     m.add("TimeoutError", py.get_type::<TimeoutError>())?;
     m.add("DecompressError", py.get_type::<DecompressError>())?;
 
@@ -173,9 +177,13 @@ impl Frame {
     }
 
     /// return endianess in numpy notation
-    fn get_endianess(slf: PyRef<Self>) -> String {
-        let last_char = slf.frame.dimaged.encoding.chars().last();
-        last_char.expect("encoding should be non-empty").into()
+    fn get_endianess(slf: PyRef<Self>) -> PyResult<String> {
+        match slf.frame.dimaged.encoding.chars().last() {
+            Some(c) => Ok(c.to_string()),
+            None => Err(exceptions::PyValueError::new_err(
+                "encoding should be non-empty".to_string(),
+            )),
+        }
     }
 
     fn get_shape(slf: PyRef<Self>) -> Vec<u64> {
@@ -198,8 +206,8 @@ pub enum ControlMsg {
 pub enum ResultMsg {
     Error { msg: String }, // generic error response, might need to specialize later
     SerdeError { msg: String, recvd_msg: String },
-    FrameStack { frame: FrameStackHandle },
-    End,
+    FrameStack { frame_stack: FrameStackHandle },
+    End { frame_stack: FrameStackHandle },
 }
 
 #[derive(PartialEq, Eq)]
@@ -207,13 +215,6 @@ pub enum ReceiverStatus {
     Idle,
     Running,
     Closed,
-}
-
-pub struct DectrisReceiver {
-    bg_thread: Option<JoinHandle<()>>,
-    to_thread: Sender<ControlMsg>,
-    from_thread: Receiver<ResultMsg>,
-    pub status: ReceiverStatus,
 }
 
 fn recv_part(
@@ -280,7 +281,7 @@ fn recv_frame_into(
     recv_part(msg, socket, control_channel)?;
     let dconfig: DConfig = serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
-    Ok(stack.frame_done(dimage, dimaged, dconfig, &msg_image))
+    Ok(stack.frame_done(dimage, dimaged, dconfig, msg_image))
 }
 
 fn recv_frame(
@@ -393,7 +394,7 @@ fn acquisition(
     socket: &Socket,
     series: u64,
     frame_stack_size: usize,
-    shm: SharedSlabAllocator,
+    shm: &mut SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     let t0 = Instant::now();
     let mut last_control_check = Instant::now();
@@ -408,8 +409,8 @@ fn acquisition(
     let mut frame_stack =
         FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
 
-    let msg = Message::new();
-    let msg_image = Message::new();
+    let mut msg = Message::new();
+    let mut msg_image = Message::new();
 
     loop {
         if last_control_check.elapsed() > Duration::from_millis(300) {
@@ -441,10 +442,19 @@ fn acquisition(
         // we will be done after this frame:
         let done = frame.dimage.frame == detector_config.get_num_images() - 1;
 
-        // FIXME: only send if the stack is full or we are done with the acquisition!
+        // FIXME: only send once the stack is full or we are done with the acquisition!
+        // FIXME: propagate errors to main thread via queue (don't `expect`/`unwrap`!)
         // send to our queue:
-        let handle = frame_stack.writing_done(&mut shm);
-        match from_thread_s.send(ResultMsg::FrameStack { frame: handle }) {
+        let handle = {
+            let slot = shm.get_mut().expect("get shm slot for writing");
+            let new_frame_stack =
+                FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
+            let old_frame_stack = replace(&mut frame_stack, new_frame_stack);
+            old_frame_stack.writing_done(shm)
+        };
+        match from_thread_s.send(ResultMsg::FrameStack {
+            frame_stack: handle,
+        }) {
             Ok(_) => (),
             Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
         }
@@ -460,7 +470,11 @@ fn acquisition(
             let series = footer.series;
             info!("series {series} done");
 
-            match from_thread_s.send(ResultMsg::End) {
+            let handle = frame_stack.writing_done(shm);
+
+            match from_thread_s.send(ResultMsg::End {
+                frame_stack: handle,
+            }) {
                 Ok(_) => (),
                 Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
             }
@@ -529,7 +543,7 @@ fn background_thread(
     from_thread_s: &Sender<ResultMsg>,
     uri: String,
     frame_stack_size: usize,
-    shm: SharedSlabAllocator,
+    mut shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     let ctx = zmq::Context::new();
     let socket = ctx.socket(zmq::PULL).unwrap();
@@ -578,7 +592,7 @@ fn background_thread(
                     &socket,
                     series,
                     frame_stack_size,
-                    shm,
+                    &mut shm,
                 ) {
                     Ok(_) => {}
                     Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
@@ -612,6 +626,14 @@ impl Display for ReceiverError {
     }
 }
 
+pub struct DectrisReceiver {
+    bg_thread: Option<JoinHandle<()>>,
+    to_thread: Sender<ControlMsg>,
+    from_thread: Receiver<ResultMsg>,
+    pub status: ReceiverStatus,
+    pub shm_handle: SHMHandle,
+}
+
 impl DectrisReceiver {
     pub fn new(uri: &str, frame_stack_size: usize, shm: SharedSlabAllocator) -> Self {
         let (to_thread_s, to_thread_r) = unbounded();
@@ -619,6 +641,8 @@ impl DectrisReceiver {
 
         let builder = std::thread::Builder::new();
         let uri = uri.to_string();
+
+        let shm_handle = shm.get_handle();
 
         DectrisReceiver {
             bg_thread: Some(
@@ -638,6 +662,7 @@ impl DectrisReceiver {
             from_thread: from_thread_r,
             to_thread: to_thread_s,
             status: ReceiverStatus::Idle,
+            shm_handle,
         }
     }
 
@@ -646,7 +671,7 @@ impl DectrisReceiver {
             .from_thread
             .recv()
             .expect("background thread should be running");
-        if result_msg == ResultMsg::End {
+        if matches!(result_msg, ResultMsg::End { .. }) {
             self.status = ReceiverStatus::Idle;
         }
         result_msg
@@ -657,7 +682,7 @@ impl DectrisReceiver {
 
         match result_msg {
             Ok(result) => {
-                if result == ResultMsg::End {
+                if matches!(result, ResultMsg::End { .. }) {
                     self.status = ReceiverStatus::Idle;
                 }
                 Some(result)
@@ -699,32 +724,31 @@ impl DectrisReceiver {
 
 impl Default for DectrisReceiver {
     fn default() -> Self {
-        Self::new("tcp://127.0.0.1:9999")
+        let shm = SharedSlabAllocator::new(1000, 512 * 512 * 2, true).expect("create shm");
+        Self::new("tcp://127.0.0.1:9999", 1, shm)
     }
 }
 
 #[pyclass]
 pub struct FrameIterator {
-    receiver: DectrisReceiver,
+    chunked_iterator: FrameChunkedIterator,
 }
 
 #[pymethods]
 impl FrameIterator {
     #[new]
     fn new(uri: &str) -> Self {
-        FrameIterator {
-            receiver: DectrisReceiver::new(uri),
-        }
+        let chunked_iterator = FrameChunkedIterator::new(uri, 1);
+
+        FrameIterator { chunked_iterator }
     }
 
     fn start(mut slf: PyRefMut<Self>, series: u64) -> PyResult<()> {
-        slf.receiver
-            .start(series)
-            .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
+        slf.chunked_iterator.start_impl(series)
     }
 
     fn close(mut slf: PyRefMut<Self>) {
-        slf.receiver.close();
+        slf.chunked_iterator.close_impl()
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -732,30 +756,14 @@ impl FrameIterator {
     }
 
     fn __next__(mut slf: PyRefMut<Self>, py: Python) -> PyResult<Option<Frame>> {
-        loop {
-            match slf.receiver.next_timeout(Duration::from_millis(100)) {
-                Some(ResultMsg::Error { msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(msg));
-                }
-                Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(format!(
-                        "serialization error: {}, message: {}",
-                        msg, recvd_msg
-                    )))
-                }
-                Some(ResultMsg::End) => return Ok(None),
-                Some(ResultMsg::FrameStack { frame }) => {
-                    return Ok(Some(Frame::with_data_cloned(&frame)))
-                }
-                None => {
-                    py.check_signals()?;
-                    py.allow_threads(|| {
-                        spin_sleep::sleep(Duration::from_millis(1));
-                    });
-                    continue;
-                }
-            }
-        }
+        let next_stack = slf.chunked_iterator.get_next_stack_impl(py, 1)?;
+
+        // NOTE: this interface isn't really efficient, as it always has to
+        // perform a copy. Use `FrameChunkedIterator` instead!
+
+        // something like this is needed: Ok(Some(Frame::with_data_cloned()))
+        // check if the frame stack is empty, then return Ok(None) instead
+        todo!("unpack into a frame here(?)")
     }
 }
 
@@ -835,47 +843,34 @@ impl FrameStack {
 #[pyclass]
 struct FrameChunkedIterator {
     receiver: DectrisReceiver,
+    frame_stack_size: usize,
 }
 
-#[pymethods]
 impl FrameChunkedIterator {
-    #[new]
-    fn new(uri: &str) -> Self {
-        FrameChunkedIterator {
-            receiver: DectrisReceiver::new(uri),
-        }
-    }
-
-    fn start(mut slf: PyRefMut<Self>, series: u64) -> PyResult<()> {
-        slf.receiver
+    fn start_impl(&mut self, series: u64) -> PyResult<()> {
+        self.receiver
             .start(series)
             .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
     }
 
-    fn close(mut slf: PyRefMut<Self>) {
-        slf.receiver.close();
+    fn close_impl(&mut self) {
+        self.receiver.close();
     }
 
-    fn is_running(slf: PyRef<Self>) -> bool {
-        slf.receiver.status == ReceiverStatus::Running
-    }
-
-    fn get_next_stack(
-        mut slf: PyRefMut<Self>,
+    fn get_next_stack_impl(
+        &mut self,
         py: Python,
         max_size: usize,
-    ) -> PyResult<FrameStack> {
-        let mut stack = FrameStack::empty();
-
-        match slf.receiver.status {
+    ) -> PyResult<Option<FrameStackHandle>> {
+        match self.receiver.status {
             ReceiverStatus::Closed => {
                 return Err(exceptions::PyRuntimeError::new_err("receiver is closed"))
             }
-            ReceiverStatus::Idle => return Ok(stack),
+            ReceiverStatus::Idle => return Ok(None),
             ReceiverStatus::Running => {}
         }
 
-        let recv = &mut slf.receiver;
+        let recv = &mut self.receiver;
 
         loop {
             py.check_signals()?;
@@ -899,17 +894,56 @@ impl FrameChunkedIterator {
                 Some(ResultMsg::Error { msg }) => {
                     return Err(exceptions::PyRuntimeError::new_err(msg))
                 }
-                Some(ResultMsg::End) => {
-                    return Ok(stack);
+                Some(ResultMsg::End { frame_stack }) => {
+                    return Ok(Some(frame_stack));
                 }
-                Some(ResultMsg::FrameStack { frame }) => {
-                    stack.push(frame);
-                    if stack.len() >= max_size {
-                        return Ok(stack);
-                    }
+                Some(ResultMsg::FrameStack { frame_stack }) => {
+                    // FIXME: handle `max_size` < `frame_stack.len()`
+                    // which should only happen in boundary conditions
+                    assert!(frame_stack.len() <= max_size);
+                    return Ok(Some(frame_stack));
                 }
             }
         }
+    }
+}
+
+#[pymethods]
+impl FrameChunkedIterator {
+    #[new]
+    fn new(uri: &str, frame_stack_size: usize) -> Self {
+        // FIXME: configurable total SHM size
+        let shm = SharedSlabAllocator::new(1000, 512 * 512 * 2, true).expect("create shm");
+
+        FrameChunkedIterator {
+            receiver: DectrisReceiver::new(uri, frame_stack_size, shm),
+            frame_stack_size,
+        }
+    }
+
+    fn serve_shm(slf: PyRef<Self>, socket_path: &str) -> PyResult<()> {
+        serve_shm_handle(slf.receiver.shm_handle, socket_path);
+        Ok(())
+    }
+
+    fn is_running(slf: PyRef<Self>) -> bool {
+        slf.receiver.status == ReceiverStatus::Running
+    }
+
+    fn start(mut slf: PyRefMut<Self>, series: u64) -> PyResult<()> {
+        slf.start_impl(series)
+    }
+
+    fn close(mut slf: PyRefMut<Self>) {
+        slf.receiver.close();
+    }
+
+    fn get_next_stack(
+        mut slf: PyRefMut<Self>,
+        py: Python,
+        max_size: usize,
+    ) -> PyResult<Option<FrameStackHandle>> {
+        slf.get_next_stack_impl(py, max_size)
     }
 }
 
@@ -927,104 +961,9 @@ create_exception!(
     "Decompression failed"
 );
 
-#[pyclass]
-struct DectrisSim {
-    frame_sender: FrameSender,
-    dwelltime: Option<u64>, // in µseconds
-}
-
-#[pymethods]
-impl DectrisSim {
-    #[new]
-    fn new(uri: &str, filename: &str, dwelltime: Option<u64>, random_port: bool) -> Self {
-        DectrisSim {
-            frame_sender: FrameSender::new(uri, filename, random_port),
-            dwelltime,
-        }
-    }
-
-    fn get_uri(slf: PyRef<Self>) -> String {
-        slf.frame_sender.get_uri().to_string()
-    }
-
-    fn get_detector_config(slf: PyRef<Self>) -> DetectorConfig {
-        slf.frame_sender.get_detector_config().clone()
-    }
-
-    fn send_headers(mut slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
-        let sender = &mut slf.frame_sender;
-        py.allow_threads(|| {
-            if let Err(e) = sender.send_headers(|| {
-                Python::with_gil(|py| {
-                    if let Err(e) = py.check_signals() {
-                        eprintln!("got python error {e:?}, breaking");
-                        None
-                    } else {
-                        Some(())
-                    }
-                })
-            }) {
-                let msg = format!("failed to send headers: {e:?}");
-                return Err(exceptions::PyRuntimeError::new_err(msg));
-            }
-            Ok(())
-        })
-    }
-
-    /// send `nframes`, if given, or all frames in the acquisition, from the
-    /// current position in the file
-    fn send_frames(mut slf: PyRefMut<Self>, py: Python, nframes: Option<u64>) -> PyResult<()> {
-        let mut t0 = Instant::now();
-        let start_time = Instant::now();
-
-        let effective_nframes = match nframes {
-            None => slf.frame_sender.get_num_frames(),
-            Some(n) => n,
-        };
-
-        let dwelltime = &slf.dwelltime.clone();
-        let sender = &mut slf.frame_sender;
-
-        for frame_idx in 0..effective_nframes {
-            py.allow_threads(|| match sender.send_frame() {
-                Err(common::SendError::Timeout) => Err(TimeoutError::new_err(
-                    "timeout while sending frames".to_string(),
-                )),
-                Err(_) => Err(exceptions::PyRuntimeError::new_err(
-                    "error while sending frames".to_string(),
-                )),
-                Ok(_) => Ok(()),
-            })?;
-
-            // dwelltime
-            // FIXME: for continuous mode, u64 might not be enough for elapsed time,
-            // so maybe it's better to carry around a "budget" that can be negative
-            // if a frame hasn't been sent out in time etc.
-            if let Some(dt) = dwelltime {
-                let elapsed_us = start_time.elapsed().as_micros() as u64;
-                let target_time_us = (frame_idx + 1) * dt;
-                if elapsed_us < target_time_us {
-                    let delta = target_time_us - elapsed_us;
-                    spin_sleep::sleep(Duration::from_micros(delta));
-                }
-            }
-
-            // run Python signal handlers every now and then
-            if t0.elapsed() > Duration::from_millis(300) {
-                t0 = Instant::now();
-                py.check_signals()?;
-
-                // also drop GIL once in a while
-                py.allow_threads(|| {
-                    spin_sleep::sleep(Duration::from_micros(5));
-                });
-            }
-        }
-
-        Ok(())
-    }
-
-    fn send_footer(mut slf: PyRefMut<Self>) {
-        slf.frame_sender.send_footer();
-    }
-}
+create_exception!(
+    libertem_dectris,
+    ConnectionError,
+    exceptions::PyException,
+    "SHM Connection failed"
+);

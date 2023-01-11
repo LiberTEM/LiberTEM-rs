@@ -13,3 +13,6 @@ classifiers = [
 
 [project.urls]
 repository = "https://github.com/LiberTEM/LiberTEM-dectris-rs/"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
