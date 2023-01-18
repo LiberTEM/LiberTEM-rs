@@ -1,17 +1,21 @@
 use std::fs::remove_file;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::thread::JoinHandle;
 
 use crate::bs::decompress_lz4_into;
 use crate::common::{DConfig, DImage, DImageD, PixelType};
-use crate::dectris_py::{ConnectionError, DecompressError};
+use crate::exceptions::{ConnectionError, DecompressError};
 use bincode::serialize;
 use ipc_test::{SHMHandle, SHMInfo, SharedSlabAllocator, Slot, SlotForWriting, SlotInfo};
+use log::{debug, trace};
+use nix::poll::{PollFd, PollFlags};
 use numpy::PyArray3;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::{
@@ -31,6 +35,7 @@ pub struct FrameMeta {
 }
 
 impl FrameMeta {
+    /// Get the number of elements in this frame (`prod(shape)`)
     pub fn get_size(&self) -> u64 {
         self.dimaged.shape.iter().product()
     }
@@ -132,6 +137,57 @@ impl FrameStackHandle {
         })
     }
 
+    fn get_slice_for_frame<'a>(&'a self, frame_idx: usize, slot: &'a Slot) -> &[u8] {
+        let slice = slot.as_slice();
+        let in_offset = frame_idx * self.bytes_per_frame;
+        &slice[in_offset..in_offset + self.bytes_per_frame]
+    }
+
+    /// Split self at `mid` and create two new `FrameStackHandle`s.
+    /// The first will contain frames `0..mid`, the second `mid..`
+    pub fn split_at(self, mid: usize, shm: &mut SharedSlabAllocator) -> (Self, Self) {
+        // FIXME: this whole thing is falliable, so modify return type to Result<> (or PyResult<>?)
+        let (left, right) = {
+            let slot: Slot = shm.get(self.slot.slot_idx);
+            let slice = slot.as_slice();
+
+            let mut slot_left = shm.get_mut().expect("shm slot for writing");
+            let slice_left = slot_left.as_slice_mut();
+
+            let mut slot_right = shm.get_mut().expect("shm slot for writing");
+            let slice_right = slot_right.as_slice_mut();
+
+            for i in 0..(mid * self.bytes_per_frame) {
+                slice_left[i] = slice[i];
+            }
+            for i in (mid * self.bytes_per_frame)..slice.len() {
+                slice_right[i - (mid * self.bytes_per_frame)] = slice[i];
+            }
+
+            let left = shm.writing_done(slot_left);
+            let right = shm.writing_done(slot_right);
+
+            shm.free_idx(self.slot.slot_idx);
+
+            (left, right)
+        };
+
+        let (left_meta, right_meta) = self.meta.split_at(mid);
+
+        (
+            FrameStackHandle {
+                slot: left,
+                meta: left_meta.to_vec(),
+                bytes_per_frame: self.bytes_per_frame,
+            },
+            FrameStackHandle {
+                slot: right,
+                meta: right_meta.to_vec(),
+                bytes_per_frame: self.bytes_per_frame,
+            },
+        )
+    }
+
     fn first_meta(&self) -> PyResult<&FrameMeta> {
         self.meta.first().map_or_else(
             || Err(PyValueError::new_err("empty frame stack".to_string())),
@@ -195,23 +251,9 @@ impl FrameStackHandle {
     }
 }
 
-pub struct FrameStackView<'a> {
-    handle: &'a FrameStackHandle,
-}
-
-impl<'a> FrameStackView<'a> {
-    fn from_handle(handle: &FrameStackHandle, shm: &SharedSlabAllocator) -> Self {
-        todo!();
-    }
-
-    fn get_frame_view(&self, frame_idx: usize) {
-        todo!();
-    }
-}
-
 #[pyclass]
 pub struct CamClient {
-    shm: SharedSlabAllocator,
+    shm: Option<SharedSlabAllocator>,
 }
 
 fn handle_connection(mut stream: UnixStream, handle: SHMHandle) {
@@ -227,7 +269,7 @@ fn handle_connection(mut stream: UnixStream, handle: SHMHandle) {
 }
 
 /// start a thread that serves shm handles at the given socket path
-pub fn serve_shm_handle(handle: SHMHandle, socket_path: &str) -> Arc<AtomicBool> {
+pub fn serve_shm_handle(handle: SHMHandle, socket_path: &str) -> (Arc<AtomicBool>, JoinHandle<()>) {
     let path = Path::new(socket_path);
 
     let stop_event = Arc::new(AtomicBool::new(false));
@@ -240,32 +282,42 @@ pub fn serve_shm_handle(handle: SHMHandle, socket_path: &str) -> Arc<AtomicBool>
 
     let outer_stop = Arc::clone(&stop_event);
 
-    // FIXME: when does the thread shut down? who sets the stop event?
-    // FIXME: what is the lifetime of the shared memory? bound to the acquisition?
-    std::thread::spawn(move || {
+    listener
+        .set_nonblocking(true)
+        .expect("set to nonblocking accept");
+
+    let join_handle = std::thread::spawn(move || {
         // Stolen from the example on `UnixListener`:
         // accept connections and process them, spawning a new thread for each one
 
-        // FIXME: can hang here indefinitely, if no connections come in
-        for stream in listener.incoming() {
+        loop {
             if stop_event.load(Ordering::Relaxed) {
+                debug!("stopping `serve_shm_handle` thread");
                 break;
             }
+            let stream = listener.accept();
             match stream {
-                Ok(stream) => {
+                Ok((stream, _addr)) => {
                     /* connection succeeded */
                     std::thread::spawn(move || handle_connection(stream, handle));
                 }
                 Err(err) => {
+                    /* EAGAIN / EWOULDBLOCK */
+                    if err.kind() == io::ErrorKind::WouldBlock {
+                        let fd = listener.as_raw_fd();
+                        let pollfd = PollFd::new(fd, PollFlags::all());
+                        nix::poll::poll(&mut [pollfd], 100).expect("poll for socket to be ready");
+                        continue;
+                    }
                     /* connection failed */
-                    println!("connection failed: {err}");
+                    log::error!("connection failed: {err}");
                     break;
                 }
             }
         }
     });
 
-    outer_stop
+    (outer_stop, join_handle)
 }
 
 fn read_size(mut stream: &UnixStream) -> usize {
@@ -298,11 +350,13 @@ impl CamClient {
         handle: &FrameStackHandle,
         out: &PyArray3<T>,
     ) -> PyResult<()> {
-        let slot_r: Slot = self.shm.get(handle.slot.slot_idx);
-        let slice = slot_r.as_slice();
-
         let mut out_rw = out.readwrite();
         let out_slice = out_rw.as_slice_mut().expect("`out` must be C-contiguous");
+        let slot: Slot = if let Some(shm) = &self.shm {
+            shm.get(handle.slot.slot_idx)
+        } else {
+            return Err(PyRuntimeError::new_err("can't decompress with closed SHM"));
+        };
 
         for (frame_meta, idx) in handle.meta.iter().zip(0..) {
             let out_size = usize::try_from(frame_meta.get_size()).unwrap();
@@ -313,8 +367,8 @@ impl CamClient {
                 .as_mut_ptr()
                 .cast();
 
-            let in_offset = idx * handle.bytes_per_frame;
-            let image_data = &slice[in_offset..in_offset + frame_meta.data_length_bytes];
+            let image_data =
+                &handle.get_slice_for_frame(idx, &slot)[..frame_meta.data_length_bytes];
 
             match decompress_lz4_into(&image_data[12..], out_ptr, out_size, None) {
                 Ok(()) => {}
@@ -335,7 +389,7 @@ impl CamClient {
     fn new(socket_path: &str) -> PyResult<Self> {
         let handle = recv_shm_handle(socket_path);
         match SharedSlabAllocator::connect(handle.fd, &handle.info) {
-            Ok(shm) => Ok(CamClient { shm }),
+            Ok(shm) => Ok(CamClient { shm: Some(shm) }),
             Err(e) => {
                 let msg = format!("failed to connect to SHM: {:?}", e);
                 Err(ConnectionError::new_err(msg))
@@ -376,9 +430,25 @@ impl CamClient {
         Ok(())
     }
 
-    fn done(mut slf: PyRefMut<Self>, handle: &FrameStackHandle) {
+    fn done(mut slf: PyRefMut<Self>, handle: &FrameStackHandle) -> PyResult<()> {
         let slot_idx = handle.slot.slot_idx;
-        slf.shm.free_idx(slot_idx)
+        if let Some(shm) = &mut slf.shm {
+            Ok(shm.free_idx(slot_idx))
+        } else {
+            return Err(PyRuntimeError::new_err(
+                "CamClient.done called with SHM closed",
+            ));
+        }
+    }
+
+    fn close(&mut self) {
+        self.shm.take();
+    }
+}
+
+impl Drop for CamClient {
+    fn drop(&mut self) {
+        trace!("CamClient::drop");
     }
 }
 
@@ -421,7 +491,7 @@ mod tests {
         };
         fs.frame_done(dimage, dimaged, dconfig, &[42]);
 
-        let fs_handle = fs.writing_done(&mut shm);
+        let _fs_handle = fs.writing_done(&mut shm);
     }
 
     #[test]
@@ -511,5 +581,75 @@ mod tests {
                     assert_eq!(item, (idx % 16) as u16);
                 });
         });
+    }
+
+    #[test]
+    fn test_split_frame_stack_handle() {
+        // need at least three slots: one is the source, two for the results.
+        let mut shm = SharedSlabAllocator::new(3, 4096, false).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 2, 16);
+        let dimage = crate::common::DImage {
+            htype: "".to_string(),
+            series: 1,
+            frame: 1,
+            hash: "".to_string(),
+        };
+        let dimaged = crate::common::DImageD {
+            htype: "".to_string(),
+            shape: vec![512, 512],
+            type_: crate::common::PixelType::Uint16,
+            encoding: ">bslz4".to_string(),
+        };
+        let dconfig = crate::common::DConfig {
+            htype: "".to_string(),
+            start_time: 0,
+            stop_time: 0,
+            real_time: 0,
+        };
+        fs.frame_done(
+            dimage.clone(),
+            dimaged.clone(),
+            dconfig.clone(),
+            &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        );
+        fs.frame_done(
+            dimage.clone(),
+            dimaged.clone(),
+            dconfig.clone(),
+            &[2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+        );
+
+        println!("{:?}", fs.slot.as_slice());
+
+        let fs_handle = fs.writing_done(&mut shm);
+
+        let old_meta_len = fs_handle.meta.len();
+
+        let (a, b) = fs_handle.split_at(1, &mut shm);
+
+        let slot_a: Slot = shm.get(a.slot.slot_idx);
+        let slot_b: Slot = shm.get(b.slot.slot_idx);
+        let slice_a = &slot_a.as_slice()[..16];
+        let slice_b = &slot_b.as_slice()[..16];
+        println!("{:?}", slice_a);
+        println!("{:?}", slice_b);
+        for &elem in slice_a {
+            assert_eq!(elem, 1);
+        }
+        for &elem in slice_b {
+            assert_eq!(elem, 2);
+        }
+
+        assert_eq!(a.meta.len() + b.meta.len(), old_meta_len);
+
+        // when the split is done, there should be one free shm slot:
+        assert_eq!(shm.num_slots_free(), 1);
+
+        // and we can free them again:
+        shm.free_idx(a.slot.slot_idx);
+        shm.free_idx(b.slot.slot_idx);
+
+        assert_eq!(shm.num_slots_free(), 3);
     }
 }

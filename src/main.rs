@@ -1,9 +1,11 @@
 mod common;
+mod exceptions;
+mod sim;
 
 use crate::common::DHeader;
 use crate::common::DImage;
 use crate::common::DetectorConfig;
-use crate::common::FrameSender;
+use crate::sim::FrameSender;
 use serde::Serialize;
 use zmq::Message;
 use std::collections::HashMap;

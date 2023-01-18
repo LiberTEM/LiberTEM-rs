@@ -4,6 +4,7 @@ use std::{
     convert::Infallible,
     fmt::Display,
     mem::replace,
+    sync::{self, atomic::AtomicBool},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -14,6 +15,7 @@ use crate::{
         setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DSeriesOnly, DetectorConfig,
         FrameData, PixelType, TriggerMode,
     },
+    exceptions::{ConnectionError, DecompressError, TimeoutError},
     shm_recv::{serve_shm_handle, CamClient, FrameMeta, FrameStackForWriting, FrameStackHandle},
     sim::DectrisSim,
 };
@@ -24,7 +26,7 @@ use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, info};
 use numpy::PyArray2;
 use pyo3::{
-    create_exception, exceptions,
+    exceptions,
     prelude::*,
     types::{PyBytes, PyType},
 };
@@ -346,6 +348,7 @@ enum AcquisitionError {
     SerdeError { recvd_msg: String, msg: String },
     Cancelled,
     ZmqError { err: zmq::Error },
+    BufferFull,
 }
 
 impl Display for AcquisitionError {
@@ -371,6 +374,9 @@ impl Display for AcquisitionError {
             }
             AcquisitionError::Disconnected => {
                 write!(f, "other end has disconnected")
+            }
+            AcquisitionError::BufferFull => {
+                write!(f, "shm buffer is full")
             }
         }
     }
@@ -405,7 +411,10 @@ fn acquisition(
     let approx_size_bytes = detector_config.get_num_pixels()
         * (detector_config.bit_depth_image as f32 / 8.0f32).ceil() as u64;
 
-    let slot = shm.get_mut().expect("get shm slot for writing");
+    let slot = match shm.get_mut() {
+        None => return Err(AcquisitionError::BufferFull),
+        Some(x) => x,
+    };
     let mut frame_stack =
         FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
 
@@ -442,21 +451,25 @@ fn acquisition(
         // we will be done after this frame:
         let done = frame.dimage.frame == detector_config.get_num_images() - 1;
 
-        // FIXME: only send once the stack is full or we are done with the acquisition!
-        // FIXME: propagate errors to main thread via queue (don't `expect`/`unwrap`!)
-        // send to our queue:
-        let handle = {
-            let slot = shm.get_mut().expect("get shm slot for writing");
-            let new_frame_stack =
-                FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
-            let old_frame_stack = replace(&mut frame_stack, new_frame_stack);
-            old_frame_stack.writing_done(shm)
-        };
-        match from_thread_s.send(ResultMsg::FrameStack {
-            frame_stack: handle,
-        }) {
-            Ok(_) => (),
-            Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
+        if frame_stack.is_full() {
+            // FIXME: propagate errors to main thread via queue (don't `expect`/`unwrap`!)
+            // send to our queue:
+            let handle = {
+                let slot = match shm.get_mut() {
+                    None => return Err(AcquisitionError::BufferFull),
+                    Some(x) => x,
+                };
+                let new_frame_stack =
+                    FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
+                let old_frame_stack = replace(&mut frame_stack, new_frame_stack);
+                old_frame_stack.writing_done(shm)
+            };
+            match from_thread_s.send(ResultMsg::FrameStack {
+                frame_stack: handle,
+            }) {
+                Ok(_) => (),
+                Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
+            }
         }
 
         if done {
@@ -492,6 +505,9 @@ fn background_thread_wrap(
     shm: SharedSlabAllocator,
 ) {
     if let Err(err) = background_thread(to_thread_r, from_thread_s, uri, frame_stack_size, shm) {
+        log::error!("background_thread err'd: {}", err.to_string());
+        // NOTE: `shm` is dropped in case of an error, so anyone who tries to connect afterwards
+        // will get an error
         from_thread_s
             .send(ResultMsg::Error {
                 msg: err.to_string(),
@@ -575,6 +591,7 @@ fn background_thread(
                                     .map_or_else(|| "".to_string(), |m| m.to_string()),
                             })
                             .unwrap();
+                        log::error!("background_thread: serialization issue");
                         break;
                     }
                 };
@@ -604,14 +621,17 @@ fn background_thread(
                 }
             }
             Ok(ControlMsg::StopThread) => {
+                debug!("background_thread: got a StopThread message");
                 break;
             }
             Err(RecvTimeoutError::Disconnected) => {
+                debug!("background_thread: control channel has disconnected");
                 break;
             }
             Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do
         }
     }
+    debug!("background_thread: is done");
     Ok(())
 }
 
@@ -724,7 +744,7 @@ impl DectrisReceiver {
 
 impl Default for DectrisReceiver {
     fn default() -> Self {
-        let shm = SharedSlabAllocator::new(1000, 512 * 512 * 2, true).expect("create shm");
+        let shm = SharedSlabAllocator::new(5000, 512 * 512 * 2, true).expect("create shm");
         Self::new("tcp://127.0.0.1:9999", 1, shm)
     }
 }
@@ -737,10 +757,10 @@ pub struct FrameIterator {
 #[pymethods]
 impl FrameIterator {
     #[new]
-    fn new(uri: &str) -> Self {
-        let chunked_iterator = FrameChunkedIterator::new(uri, 1);
+    fn new(uri: &str) -> PyResult<Self> {
+        let chunked_iterator = FrameChunkedIterator::new(uri, 1, None, None, None)?;
 
-        FrameIterator { chunked_iterator }
+        Ok(FrameIterator { chunked_iterator })
     }
 
     fn start(mut slf: PyRefMut<Self>, series: u64) -> PyResult<()> {
@@ -844,6 +864,10 @@ impl FrameStack {
 struct FrameChunkedIterator {
     receiver: DectrisReceiver,
     frame_stack_size: usize,
+    shm: SharedSlabAllocator,
+    remainder: Vec<FrameStackHandle>,
+    shm_stop_event: Option<sync::Arc<AtomicBool>>,
+    shm_join_handle: Option<JoinHandle<()>>,
 }
 
 impl FrameChunkedIterator {
@@ -855,6 +879,12 @@ impl FrameChunkedIterator {
 
     fn close_impl(&mut self) {
         self.receiver.close();
+        if let Some(stop_event) = &self.shm_stop_event {
+            stop_event.store(true, sync::atomic::Ordering::Relaxed);
+            if let Some(join_handle) = self.shm_join_handle.take() {
+                join_handle.join().expect("join background thread");
+            }
+        }
     }
 
     fn get_next_stack_impl(
@@ -862,6 +892,11 @@ impl FrameChunkedIterator {
         py: Python,
         max_size: usize,
     ) -> PyResult<Option<FrameStackHandle>> {
+        // first, check if there is anything on the remainder list:
+        if let Some(frame_stack) = self.remainder.pop() {
+            return Ok(Some(frame_stack));
+        }
+
         match self.receiver.status {
             ReceiverStatus::Closed => {
                 return Err(exceptions::PyRuntimeError::new_err("receiver is closed"))
@@ -898,8 +933,15 @@ impl FrameChunkedIterator {
                     return Ok(Some(frame_stack));
                 }
                 Some(ResultMsg::FrameStack { frame_stack }) => {
-                    // FIXME: handle `max_size` < `frame_stack.len()`
+                    // handle `frame_stack.len()` > `max_size`
                     // which should only happen in boundary conditions
+                    if frame_stack.len() > max_size {
+                        // split `FrameStackHandle` into two:
+                        let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
+                        self.remainder.push(right);
+                        return Ok(Some(left));
+                    }
+
                     assert!(frame_stack.len() <= max_size);
                     return Ok(Some(frame_stack));
                 }
@@ -911,18 +953,45 @@ impl FrameChunkedIterator {
 #[pymethods]
 impl FrameChunkedIterator {
     #[new]
-    fn new(uri: &str, frame_stack_size: usize) -> Self {
-        // FIXME: configurable total SHM size
-        let shm = SharedSlabAllocator::new(1000, 512 * 512 * 2, true).expect("create shm");
+    fn new(
+        uri: &str,
+        frame_stack_size: usize,
+        num_slots: Option<usize>,
+        bytes_per_frame: Option<usize>,
+        huge: Option<bool>,
+    ) -> PyResult<Self> {
+        let num_slots = num_slots.map_or_else(|| 2000, |x| x);
+        let bytes_per_frame = bytes_per_frame.map_or_else(|| 512 * 512 * 2, |x| x);
+        let slot_size = frame_stack_size * bytes_per_frame;
+        let shm = match SharedSlabAllocator::new(
+            num_slots,
+            slot_size,
+            huge.map_or_else(|| false, |x| x),
+        ) {
+            Ok(shm) => shm,
+            Err(e) => {
+                let total_size = num_slots * slot_size;
+                let msg = format!("could not create SHM area (num_slots={num_slots}, slot_size={slot_size} total_size={total_size} huge={huge:?}): {e:?}");
+                return Err(ConnectionError::new_err(msg));
+            }
+        };
 
-        FrameChunkedIterator {
+        let local_shm = shm.clone_and_connect().expect("clone SHM");
+
+        Ok(FrameChunkedIterator {
             receiver: DectrisReceiver::new(uri, frame_stack_size, shm),
             frame_stack_size,
-        }
+            shm: local_shm,
+            remainder: Vec::new(),
+            shm_stop_event: None,
+            shm_join_handle: None,
+        })
     }
 
-    fn serve_shm(slf: PyRef<Self>, socket_path: &str) -> PyResult<()> {
-        serve_shm_handle(slf.receiver.shm_handle, socket_path);
+    fn serve_shm(mut slf: PyRefMut<Self>, socket_path: &str) -> PyResult<()> {
+        let (stop_event, join_handle) = serve_shm_handle(slf.receiver.shm_handle, socket_path);
+        slf.shm_stop_event = Some(stop_event);
+        slf.shm_join_handle = Some(join_handle);
         Ok(())
     }
 
@@ -935,7 +1004,7 @@ impl FrameChunkedIterator {
     }
 
     fn close(mut slf: PyRefMut<Self>) {
-        slf.receiver.close();
+        slf.close_impl();
     }
 
     fn get_next_stack(
@@ -946,24 +1015,3 @@ impl FrameChunkedIterator {
         slf.get_next_stack_impl(py, max_size)
     }
 }
-
-create_exception!(
-    libertem_dectris,
-    TimeoutError,
-    exceptions::PyException,
-    "Timeout while communicating"
-);
-
-create_exception!(
-    libertem_dectris,
-    DecompressError,
-    exceptions::PyException,
-    "Decompression failed"
-);
-
-create_exception!(
-    libertem_dectris,
-    ConnectionError,
-    exceptions::PyException,
-    "SHM Connection failed"
-);
