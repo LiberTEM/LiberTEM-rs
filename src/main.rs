@@ -5,9 +5,11 @@ use crate::common::DImage;
 use crate::common::DetectorConfig;
 use crate::common::FrameSender;
 use serde::Serialize;
+use zmq::Message;
 use std::collections::HashMap;
 use std::io;
 use std::io::Write;
+use std::time::Instant;
 
 use crate::common::DumpRecordFile;
 use clap::{Parser, Subcommand};
@@ -42,6 +44,9 @@ enum Action {
         repetitions: usize,
     },
     Sim {
+        uri: String,
+    },
+    Record {
         uri: String,
     },
 }
@@ -161,9 +166,14 @@ fn action_inspect(cli: &Cli, head: Option<usize>, summary: bool) {
 }
 
 fn write_raw_msg(msg: &[u8]) {
+    write_raw_msg_fh(msg, &mut io::stdout());
+}
+
+fn write_raw_msg_fh<W>(msg: &[u8], out: &mut W)
+where W: Write {
     let length = (msg.len() as i64).to_le_bytes();
-    io::stdout().write_all(&length).unwrap();
-    io::stdout().write_all(msg).unwrap();
+    out.write_all(&length).unwrap();
+    out.write_all(msg).unwrap();
 }
 
 fn write_serializable<T>(value: &T)
@@ -244,6 +254,50 @@ fn action_sim(filename: &str, uri: &str) {
     sender.send_footer();
 }
 
+fn action_record(filename: &String, uri: &String) {
+    let mut raw_file = std::fs::File::create(filename).unwrap();
+    let mut file = std::io::BufWriter::new(raw_file);
+    let ctx = zmq::Context::new();
+    let socket = ctx.socket(zmq::PULL).unwrap();
+
+    let mut size: usize = 0;
+
+    socket.connect(&uri).unwrap();
+    socket.set_rcvhwm(4 * 256).unwrap();
+
+    let mut first_header: Message = Message::new();
+    // First acquisition header: Protocol etc
+    socket.recv(&mut first_header, 0).unwrap();
+    let start = Instant::now();
+
+    socket.set_rcvtimeo(1000).unwrap();
+
+    let mut detector_config_msg: Message = Message::new();
+    // First acquisition header: Protocol etc
+    socket.recv(&mut detector_config_msg, 0).unwrap();
+
+    let detector_config: DetectorConfig = serde_json::from_slice(&detector_config_msg).unwrap();
+
+    let num_msg = detector_config.get_num_images() * 4 + 1;
+
+    write_raw_msg_fh(&first_header, &mut file);
+    write_raw_msg_fh(&detector_config_msg, &mut file);
+
+    size += first_header.len();
+    size += detector_config_msg.len();
+
+    let mut buf: Message = Message::new();
+
+    for i in 0..num_msg {
+        socket.recv(&mut buf, 0).unwrap();
+        write_raw_msg_fh(&buf, &mut file);
+        size += buf.len();
+    }
+
+    println!("Received {} bytes in {:?} s.", size, start.elapsed());
+
+}
+
 pub fn main() {
     let cli = Cli::parse();
 
@@ -252,5 +306,6 @@ pub fn main() {
         Action::Inspect { head, summary } => action_inspect(&cli, head, summary),
         Action::Repeat { repetitions } => action_repeat(&cli, repetitions),
         Action::Sim { uri } => action_sim(&cli.filename, &uri),
+        Action::Record { uri } => action_record(&cli.filename, &uri),
     }
 }

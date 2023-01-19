@@ -12,7 +12,7 @@ name = "libertem_dectris"
 crate-type = ["cdylib"]
 
 [[bin]]
-name = "libertem-dectris"
+name = "libertem-dectris-tool"
 path = "src/main.rs"
 
 [dependencies]
