@@ -273,7 +273,7 @@ fn action_record(filename: &String, uri: &String) {
     socket.set_rcvtimeo(1000).unwrap();
 
     let mut detector_config_msg: Message = Message::new();
-    // First acquisition header: Protocol etc
+    // Second acquisition header: Detector config
     socket.recv(&mut detector_config_msg, 0).unwrap();
 
     let detector_config: DetectorConfig = serde_json::from_slice(&detector_config_msg).unwrap();
