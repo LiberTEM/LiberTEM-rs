@@ -7,6 +7,7 @@ mod bs_bindings {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[repr(i64)]
 pub enum BitshuffleError {
     AllocationError = -1,
     MissingSSE = -11,
@@ -15,7 +16,7 @@ pub enum BitshuffleError {
     BlockSizeMult8 = -81,
     DecompressionError = -91,
     SizeMismatch,
-    InternalError,
+    InternalError(i64),
     Other,
 }
 
@@ -28,7 +29,7 @@ impl From<i64> for BitshuffleError {
             -80 => Self::InputSizeMult8,
             -81 => Self::BlockSizeMult8,
             -91 => Self::DecompressionError,
-            _code => Self::InternalError,
+            code => Self::InternalError(code),
         }
     }
 }
@@ -206,7 +207,7 @@ mod tests {
         assert_eq!(err, Err(BitshuffleError::DecompressionError));
 
         let err: Result<_, _> = decompress_lz4::<Vec<i32>>(&compressed, input.len() + 1000, None);
-        assert_eq!(err, Err(BitshuffleError::InternalError));
+        assert_eq!(err, Err(BitshuffleError::InternalError(-1001)));
     }
 
     #[test]

@@ -202,7 +202,7 @@ fn action_repeat(cli: &Cli, repetitions: usize) {
     let mut detector_config_value: serde_json::Value =
         serde_json::from_slice::<serde_json::Value>(detector_config_msg).unwrap();
 
-    // XXX the heaer may lie about the number of images:
+    // XXX the header may lie about the number of images:
     let summary = get_summary(&cli.filename);
     let nimages = summary.get("<binary>").unwrap();
     let dest_num_images = nimages * repetitions;

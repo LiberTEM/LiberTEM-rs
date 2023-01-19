@@ -23,7 +23,7 @@ use crate::{
 use bincode::serialize;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
-use log::{debug, info};
+use log::{debug, info, trace};
 use numpy::PyArray2;
 use pyo3::{
     exceptions,
@@ -244,8 +244,7 @@ fn recv_frame_into(
     control_channel: &Receiver<ControlMsg>,
     msg: &mut Message,
     msg_image: &mut Message,
-    stack: &mut FrameStackForWriting,
-) -> Result<FrameMeta, AcquisitionError> {
+) -> Result<(DImage, DImageD, DConfig), AcquisitionError> {
     recv_part(msg, socket, control_channel)?;
     let dimage_res: Result<DImage, _> = serde_json::from_str(msg.as_str().unwrap());
 
@@ -283,7 +282,7 @@ fn recv_frame_into(
     recv_part(msg, socket, control_channel)?;
     let dconfig: DConfig = serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
-    Ok(stack.frame_done(dimage, dimaged, dconfig, msg_image))
+    Ok((dimage, dimaged, dconfig))
 }
 
 fn recv_frame(
@@ -427,32 +426,21 @@ fn acquisition(
             check_for_control(to_thread_r)?;
         }
 
-        let frame = recv_frame_into(
-            socket,
-            to_thread_r,
-            &mut msg,
-            &mut msg_image,
-            &mut frame_stack,
-        )?;
+        let (dimage, dimaged, dconfig) =
+            recv_frame_into(socket, to_thread_r, &mut msg, &mut msg_image)?;
 
-        if frame.dimage.series != series {
+        if dimage.series != series {
             return Err(AcquisitionError::SeriesMismatch);
         }
 
-        if frame.dimage.frame != expected_frame_id {
+        if dimage.frame != expected_frame_id {
             return Err(AcquisitionError::FrameIdMismatch {
                 expected_id: expected_frame_id,
-                got_id: frame.dimage.frame,
+                got_id: dimage.frame,
             });
         }
 
-        expected_frame_id += 1;
-
-        // we will be done after this frame:
-        let done = frame.dimage.frame == detector_config.get_num_images() - 1;
-
-        if frame_stack.is_full() {
-            // FIXME: propagate errors to main thread via queue (don't `expect`/`unwrap`!)
+        if !frame_stack.can_fit(msg_image.len()) {
             // send to our queue:
             let handle = {
                 let slot = match shm.get_mut() {
@@ -471,6 +459,13 @@ fn acquisition(
                 Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
             }
         }
+
+        let frame = frame_stack.frame_done(dimage, dimaged, dconfig, &msg_image);
+
+        expected_frame_id += 1;
+
+        // we will be done after this frame:
+        let done = frame.dimage.frame == detector_config.get_num_images() - 1;
 
         if done {
             let elapsed = t0.elapsed();
@@ -860,6 +855,62 @@ impl FrameStack {
     }
 }
 
+pub struct Stats {
+    /// total number of bytes (compressed) that have flown through the system
+    payload_size_sum: usize,
+
+    /// maximum size of compressed frames seen
+    frame_size_max: usize,
+
+    /// minimum size of compressed frames seen
+    frame_size_min: usize,
+
+    /// sum of the size of the slots used
+    slots_size_sum: usize,
+
+    /// number of frames seen
+    num_frames: usize,
+}
+
+impl Stats {
+    pub fn new() -> Self {
+        Self {
+            payload_size_sum: 0,
+            slots_size_sum: 0,
+            frame_size_max: 0,
+            frame_size_min: usize::MAX,
+            num_frames: 0,
+        }
+    }
+
+    pub fn count_frame_stack(&mut self, frame_stack: &FrameStackHandle) {
+        self.payload_size_sum += frame_stack.payload_size();
+        self.slots_size_sum += frame_stack.slot_size();
+        self.frame_size_max = self.frame_size_max.max(
+            frame_stack
+                .get_meta()
+                .iter()
+                .max_by_key(|fm| fm.data_length_bytes)
+                .map_or(self.frame_size_max, |fm| fm.data_length_bytes),
+        );
+        self.frame_size_min = self.frame_size_min.min(
+            frame_stack
+                .get_meta()
+                .iter()
+                .min_by_key(|fm| fm.data_length_bytes)
+                .map_or(self.frame_size_min, |fm| fm.data_length_bytes),
+        );
+        self.num_frames += frame_stack.len();
+    }
+
+    pub fn log_stats(&self) {
+        debug!(
+            "Stats: frames seen: {}, total payload size: {}, total slot size used: {}, min frame size: {}, max frame size: {}",
+            self.num_frames, self.payload_size_sum, self.slots_size_sum, self.frame_size_min, self.frame_size_max,
+        );
+    }
+}
+
 #[pyclass]
 struct FrameChunkedIterator {
     receiver: DectrisReceiver,
@@ -868,6 +919,7 @@ struct FrameChunkedIterator {
     remainder: Vec<FrameStackHandle>,
     shm_stop_event: Option<sync::Arc<AtomicBool>>,
     shm_join_handle: Option<JoinHandle<()>>,
+    stats: Stats,
 }
 
 impl FrameChunkedIterator {
@@ -894,6 +946,17 @@ impl FrameChunkedIterator {
     ) -> PyResult<Option<FrameStackHandle>> {
         // first, check if there is anything on the remainder list:
         if let Some(frame_stack) = self.remainder.pop() {
+            // it can happen that the remainder is still too large:
+            if frame_stack.len() > max_size {
+                // split `FrameStackHandle` into two:
+                trace!(
+                    "re-split: FrameStackHandle::split_at({max_size}); len={}",
+                    frame_stack.len()
+                );
+                let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
+                self.remainder.push(right);
+                return Ok(Some(left));
+            }
             return Ok(Some(frame_stack));
         }
 
@@ -937,6 +1000,10 @@ impl FrameChunkedIterator {
                     // which should only happen in boundary conditions
                     if frame_stack.len() > max_size {
                         // split `FrameStackHandle` into two:
+                        trace!(
+                            "FrameStackHandle::split_at({max_size}); len={}",
+                            frame_stack.len()
+                        );
                         let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
                         self.remainder.push(right);
                         return Ok(Some(left));
@@ -985,6 +1052,7 @@ impl FrameChunkedIterator {
             remainder: Vec::new(),
             shm_stop_event: None,
             shm_join_handle: None,
+            stats: Stats::new(),
         })
     }
 
@@ -1004,6 +1072,7 @@ impl FrameChunkedIterator {
     }
 
     fn close(mut slf: PyRefMut<Self>) {
+        slf.stats.log_stats();
         slf.close_impl();
     }
 
@@ -1012,6 +1081,11 @@ impl FrameChunkedIterator {
         py: Python,
         max_size: usize,
     ) -> PyResult<Option<FrameStackHandle>> {
-        slf.get_next_stack_impl(py, max_size)
+        slf.get_next_stack_impl(py, max_size).map(|maybe_stack| {
+            if let Some(frame_stack) = &maybe_stack {
+                slf.stats.count_frame_stack(&frame_stack);
+            }
+            maybe_stack
+        })
     }
 }
