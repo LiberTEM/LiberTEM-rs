@@ -955,8 +955,10 @@ impl FrameChunkedIterator {
                 );
                 let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
                 self.remainder.push(right);
+                assert!(left.len() <= max_size);
                 return Ok(Some(left));
             }
+            assert!(frame_stack.len() <= max_size);
             return Ok(Some(frame_stack));
         }
 
@@ -993,6 +995,19 @@ impl FrameChunkedIterator {
                     return Err(exceptions::PyRuntimeError::new_err(msg))
                 }
                 Some(ResultMsg::End { frame_stack }) => {
+                    // FIXME: refactor: pull splitting logic out of this function
+                    if frame_stack.len() > max_size {
+                        // split `FrameStackHandle` into two:
+                        trace!(
+                            "FrameStackHandle::split_at({max_size}); len={}",
+                            frame_stack.len()
+                        );
+                        let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
+                        self.remainder.push(right);
+                        assert!(left.len() <= max_size);
+                        return Ok(Some(left));
+                    }
+                    assert!(frame_stack.len() <= max_size);
                     return Ok(Some(frame_stack));
                 }
                 Some(ResultMsg::FrameStack { frame_stack }) => {
@@ -1006,6 +1021,7 @@ impl FrameChunkedIterator {
                         );
                         let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
                         self.remainder.push(right);
+                        assert!(left.len() <= max_size);
                         return Ok(Some(left));
                     }
 
