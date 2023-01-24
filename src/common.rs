@@ -50,7 +50,7 @@ pub enum TriggerMode {
     INTS,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[pyclass]
 pub struct DetectorConfig {
     pub ntrigger: u64,

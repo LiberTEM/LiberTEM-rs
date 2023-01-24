@@ -52,7 +52,7 @@ pub fn compress_lz4_bound<T>(size_in_elems: u64, block_size: Option<u64>) -> u64
 }
 
 ///
-/// Bitshuffled and compress the data using LZ4.
+/// Bitshuffle and compress the data using LZ4.
 ///
 /// # Arguments
 ///

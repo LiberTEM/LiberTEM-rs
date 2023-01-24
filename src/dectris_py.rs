@@ -26,7 +26,7 @@ use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, info, trace};
 use numpy::PyArray2;
 use pyo3::{
-    exceptions,
+    exceptions::{self, PyRuntimeError},
     prelude::*,
     types::{PyBytes, PyType},
 };
@@ -39,10 +39,9 @@ fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     // pyo3_log::init();
 
     m.add_class::<Frame>()?;
-    m.add_class::<FrameIterator>()?;
     m.add_class::<FrameStack>()?;
     m.add_class::<FrameStackHandle>()?;
-    m.add_class::<FrameChunkedIterator>()?;
+    m.add_class::<DectrisConnection>()?;
     m.add_class::<PixelType>()?;
     m.add_class::<DectrisSim>()?;
     m.add_class::<DetectorConfig>()?;
@@ -201,15 +200,37 @@ impl From<Frame> for FrameData {
 
 pub enum ControlMsg {
     StopThread,
-    StartAcquisition { series: u64 },
+
+    /// Wait for DHeader messages and latch onto acquisitions,
+    /// until the background thread is stopped.
+    StartAcquisitionPassive,
+
+    /// Wait for a specific series to start
+    StartAcquisition {
+        series: u64,
+    },
 }
 
-#[derive(PartialEq, Eq)]
+///
+#[derive(PartialEq, Eq, Debug)]
 pub enum ResultMsg {
-    Error { msg: String }, // generic error response, might need to specialize later
-    SerdeError { msg: String, recvd_msg: String },
-    FrameStack { frame_stack: FrameStackHandle },
-    End { frame_stack: FrameStackHandle },
+    Error {
+        msg: String,
+    }, // generic error response, might need to specialize later
+    SerdeError {
+        msg: String,
+        recvd_msg: String,
+    },
+    AcquisitionStart {
+        series: u64,
+        detector_config: DetectorConfig,
+    },
+    FrameStack {
+        frame_stack: FrameStackHandle,
+    },
+    End {
+        frame_stack: FrameStackHandle,
+    },
 }
 
 #[derive(PartialEq, Eq)]
@@ -327,14 +348,68 @@ impl Display for AcquisitionError {
     }
 }
 
+/// With a running acquisition, check for control messages;
+/// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
 fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), AcquisitionError> {
     match control_channel.try_recv() {
         Ok(ControlMsg::StartAcquisition { series: _ }) => {
             panic!("received StartAcquisition while an acquisition was already running");
         }
+        Ok(ControlMsg::StartAcquisitionPassive) => {
+            panic!("received StartAcquisitionPassive while an acquisition was already running");
+        }
         Ok(ControlMsg::StopThread) => Err(AcquisitionError::Cancelled),
         Err(TryRecvError::Disconnected) => Err(AcquisitionError::Cancelled),
         Err(TryRecvError::Empty) => Ok(()),
+    }
+}
+
+/// Passively listen for global acquisition headers
+/// and automatically latch on to them.
+fn passive_acquisition(
+    control_channel: &Receiver<ControlMsg>,
+    from_thread_s: &Sender<ResultMsg>,
+    socket: &Socket,
+    frame_stack_size: usize,
+    shm: &mut SharedSlabAllocator,
+) -> Result<(), AcquisitionError> {
+    loop {
+        let mut msg: Message = Message::new();
+
+        // block until we get a message:
+        recv_part(&mut msg, socket, control_channel)?;
+
+        if msg[0] == b'{' {
+            let dheader_res: Result<DHeader, _> = serde_json::from_str(msg.as_str().unwrap());
+            let dheader: DHeader = match dheader_res {
+                Ok(header) => header,
+                Err(_err) => {
+                    // not a DHeader, ignore
+                    continue;
+                }
+            };
+            debug!("dheader: {dheader:?}");
+
+            // second message: the header itself
+            recv_part(&mut msg, socket, control_channel)?;
+            let detector_config: DetectorConfig =
+                serde_json::from_str(msg.as_str().unwrap()).unwrap();
+
+            acquisition(
+                detector_config,
+                control_channel,
+                from_thread_s,
+                socket,
+                dheader.series,
+                frame_stack_size,
+                shm,
+            )?;
+        } else {
+            // probably a binary message: skip this
+            continue;
+        }
+
+        check_for_control(control_channel)?;
     }
 }
 
@@ -351,6 +426,14 @@ fn acquisition(
     let mut last_control_check = Instant::now();
 
     let mut expected_frame_id = 0;
+
+    match from_thread_s.send(ResultMsg::AcquisitionStart {
+        series,
+        detector_config: detector_config.clone(),
+    }) {
+        Ok(_) => (),
+        Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
+    }
 
     // approx uppper bound of image size in bytes
     let approx_size_bytes = detector_config.get_num_pixels()
@@ -514,6 +597,23 @@ fn background_thread(
         // control: main threads tells us to quit
         let control = to_thread_r.recv_timeout(Duration::from_millis(100));
         match control {
+            Ok(ControlMsg::StartAcquisitionPassive) => {
+                match passive_acquisition(
+                    to_thread_r,
+                    from_thread_s,
+                    &socket,
+                    frame_stack_size,
+                    &mut shm,
+                ) {
+                    Ok(_) => {}
+                    Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
+                        return Ok(());
+                    }
+                    e => {
+                        return e;
+                    }
+                }
+            }
             Ok(ControlMsg::StartAcquisition { series }) => {
                 let mut msg: Message = Message::new();
                 recv_part(&mut msg, &socket, to_thread_r)?;
@@ -532,7 +632,10 @@ fn background_thread(
                                     .map_or_else(|| "".to_string(), |m| m.to_string()),
                             })
                             .unwrap();
-                        log::error!("background_thread: serialization issue");
+                        log::error!(
+                            "background_thread: serialization error: {}",
+                            err.to_string()
+                        );
                         break;
                     }
                 };
@@ -587,6 +690,8 @@ impl Display for ReceiverError {
     }
 }
 
+/// Start a background thread that received data from the zeromq socket and
+/// puts it into shared memory.
 pub struct DectrisReceiver {
     bg_thread: Option<JoinHandle<()>>,
     to_thread: Sender<ControlMsg>,
@@ -657,7 +762,7 @@ impl DectrisReceiver {
         }
     }
 
-    pub fn start(&mut self, series: u64) -> Result<(), ReceiverError> {
+    pub fn start_series(&mut self, series: u64) -> Result<(), ReceiverError> {
         if self.status == ReceiverStatus::Closed {
             return Err(ReceiverError {
                 msg: "receiver is closed".to_string(),
@@ -665,6 +770,19 @@ impl DectrisReceiver {
         }
         self.to_thread
             .send(ControlMsg::StartAcquisition { series })
+            .expect("background thread should be running");
+        self.status = ReceiverStatus::Running;
+        Ok(())
+    }
+
+    pub fn start_passive(&mut self) -> Result<(), ReceiverError> {
+        if self.status == ReceiverStatus::Closed {
+            return Err(ReceiverError {
+                msg: "receiver is closed".to_string(),
+            });
+        }
+        self.to_thread
+            .send(ControlMsg::StartAcquisitionPassive)
             .expect("background thread should be running");
         self.status = ReceiverStatus::Running;
         Ok(())
@@ -687,44 +805,6 @@ impl Default for DectrisReceiver {
     fn default() -> Self {
         let shm = SharedSlabAllocator::new(5000, 512 * 512 * 2, true).expect("create shm");
         Self::new("tcp://127.0.0.1:9999", 1, shm)
-    }
-}
-
-#[pyclass]
-pub struct FrameIterator {
-    chunked_iterator: FrameChunkedIterator,
-}
-
-#[pymethods]
-impl FrameIterator {
-    #[new]
-    fn new(uri: &str) -> PyResult<Self> {
-        let chunked_iterator = FrameChunkedIterator::new(uri, 1, None, None, None)?;
-
-        Ok(FrameIterator { chunked_iterator })
-    }
-
-    fn start(mut slf: PyRefMut<Self>, series: u64) -> PyResult<()> {
-        slf.chunked_iterator.start_impl(series)
-    }
-
-    fn close(mut slf: PyRefMut<Self>) {
-        slf.chunked_iterator.close_impl()
-    }
-
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(mut slf: PyRefMut<Self>, py: Python) -> PyResult<Option<Frame>> {
-        let next_stack = slf.chunked_iterator.get_next_stack_impl(py, 1)?;
-
-        // NOTE: this interface isn't really efficient, as it always has to
-        // perform a copy. Use `FrameChunkedIterator` instead!
-
-        // something like this is needed: Ok(Some(Frame::with_data_cloned()))
-        // check if the frame stack is empty, then return Ok(None) instead
-        todo!("unpack into a frame here(?)")
     }
 }
 
@@ -863,37 +943,16 @@ impl Default for Stats {
     }
 }
 
-#[pyclass]
-struct FrameChunkedIterator {
-    receiver: DectrisReceiver,
-    frame_stack_size: usize,
-    shm: SharedSlabAllocator,
-    remainder: Vec<FrameStackHandle>,
-    shm_stop_event: Option<sync::Arc<AtomicBool>>,
-    shm_join_handle: Option<JoinHandle<()>>,
-    stats: Stats,
+struct FrameChunkedIterator<'a, 'b, 'c> {
+    receiver: &'a mut DectrisReceiver,
+    shm: &'b mut SharedSlabAllocator,
+    remainder: &'c mut Vec<FrameStackHandle>,
 }
 
-impl FrameChunkedIterator {
-    fn start_impl(&mut self, series: u64) -> PyResult<()> {
-        self.receiver
-            .start(series)
-            .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
-    }
-
-    fn close_impl(&mut self) {
-        self.receiver.close();
-        if let Some(stop_event) = &self.shm_stop_event {
-            stop_event.store(true, sync::atomic::Ordering::Relaxed);
-            if let Some(join_handle) = self.shm_join_handle.take() {
-                join_handle.join().expect("join background thread");
-            }
-        }
-    }
-
+impl<'a, 'b, 'c> FrameChunkedIterator<'a, 'b, 'c> {
     /// Get the next frame stack. Mainly handles splitting logic for boundary
     /// conditions and delegates communication with the background thread to `recv_next_stack_impl`
-    fn get_next_stack_impl(
+    pub fn get_next_stack_impl(
         &mut self,
         py: Python,
         max_size: usize,
@@ -907,7 +966,7 @@ impl FrameChunkedIterator {
                         "re-split: FrameStackHandle::split_at({max_size}); len={}",
                         frame_stack.len()
                     );
-                    let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
+                    let (left, right) = frame_stack.split_at(max_size, self.shm);
                     self.remainder.push(right);
                     assert!(left.len() <= max_size);
                     return Ok(Some(left));
@@ -920,7 +979,8 @@ impl FrameChunkedIterator {
         }
     }
 
-    /// Receive the next frame stack from the background thread
+    /// Receive the next frame stack from the background thread and handle any
+    /// other control messages.
     fn recv_next_stack_impl(&mut self, py: Python) -> PyResult<Option<FrameStackHandle>> {
         // first, check if there is anything on the remainder list:
         if let Some(frame_stack) = self.remainder.pop() {
@@ -950,6 +1010,14 @@ impl FrameChunkedIterator {
                 None => {
                     continue;
                 }
+                Some(ResultMsg::AcquisitionStart {
+                    series: _,
+                    detector_config: _,
+                }) => {
+                    // FIXME: in case of "passive" mode, we should actually not hit this,
+                    // as the "outer" structure (`DectrisConnection`) handles it?
+                    continue;
+                }
                 Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
                     return Err(exceptions::PyRuntimeError::new_err(format!(
                         "serialization error: {}, message: {}",
@@ -968,10 +1036,56 @@ impl FrameChunkedIterator {
             }
         }
     }
+
+    fn new(
+        receiver: &'a mut DectrisReceiver,
+        shm: &'b mut SharedSlabAllocator,
+        remainder: &'c mut Vec<FrameStackHandle>,
+    ) -> PyResult<Self> {
+        Ok(FrameChunkedIterator {
+            receiver,
+            shm,
+            remainder,
+        })
+    }
+}
+
+#[pyclass]
+struct DectrisConnection {
+    receiver: DectrisReceiver,
+    remainder: Vec<FrameStackHandle>,
+    local_shm: SharedSlabAllocator,
+    shm_stop_event: Option<sync::Arc<AtomicBool>>,
+    shm_join_handle: Option<JoinHandle<()>>,
+    stats: Stats,
+}
+
+impl DectrisConnection {
+    fn start_series_impl(&mut self, series: u64) -> PyResult<()> {
+        self.receiver
+            .start_series(series)
+            .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
+    }
+
+    fn start_passive_impl(&mut self) -> PyResult<()> {
+        self.receiver
+            .start_passive()
+            .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
+    }
+
+    fn close_impl(&mut self) {
+        self.receiver.close();
+        if let Some(stop_event) = &self.shm_stop_event {
+            stop_event.store(true, sync::atomic::Ordering::Relaxed);
+            if let Some(join_handle) = self.shm_join_handle.take() {
+                join_handle.join().expect("join background thread");
+            }
+        }
+    }
 }
 
 #[pymethods]
-impl FrameChunkedIterator {
+impl DectrisConnection {
     #[new]
     fn new(
         uri: &str,
@@ -998,15 +1112,32 @@ impl FrameChunkedIterator {
 
         let local_shm = shm.clone_and_connect().expect("clone SHM");
 
-        Ok(FrameChunkedIterator {
+        Ok(Self {
             receiver: DectrisReceiver::new(uri, frame_stack_size, shm),
-            frame_stack_size,
-            shm: local_shm,
             remainder: Vec::new(),
             shm_stop_event: None,
             shm_join_handle: None,
+            local_shm,
             stats: Stats::new(),
         })
+    }
+
+    /// Wait until the detector is armed, or until the timeout expires (in seconds)
+    /// Returns `None` in case of timeout, the detector config otherwise.
+    fn wait_for_arm(&mut self, timeout: f32) -> PyResult<Option<DetectorConfig>> {
+        match self.receiver.next_timeout(Duration::from_secs_f32(timeout)) {
+            Some(ResultMsg::AcquisitionStart {
+                series: _,
+                detector_config,
+            }) => Ok(Some(detector_config)),
+            msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {
+                let err = format!("unexpected message: {:?}", msg);
+                Err(PyRuntimeError::new_err(err))
+            }
+            Some(ResultMsg::Error { msg }) => Err(PyRuntimeError::new_err(msg)),
+            Some(ResultMsg::SerdeError { msg, recvd_msg: _ }) => Err(PyRuntimeError::new_err(msg)),
+            None => Ok(None), // timeout
+        }
     }
 
     fn serve_shm(mut slf: PyRefMut<Self>, socket_path: &str) -> PyResult<()> {
@@ -1021,7 +1152,13 @@ impl FrameChunkedIterator {
     }
 
     fn start(mut slf: PyRefMut<Self>, series: u64) -> PyResult<()> {
-        slf.start_impl(series)
+        slf.start_series_impl(series)
+    }
+
+    /// Start listening for global acquisition headers on the zeromq socket.
+    /// Call `wait_for_arm` to wait
+    fn start_passive(mut slf: PyRefMut<Self>) -> PyResult<()> {
+        slf.start_passive_impl()
     }
 
     fn close(mut slf: PyRefMut<Self>) {
@@ -1030,13 +1167,18 @@ impl FrameChunkedIterator {
     }
 
     fn get_next_stack(
-        mut slf: PyRefMut<Self>,
+        &mut self,
         py: Python,
         max_size: usize,
     ) -> PyResult<Option<FrameStackHandle>> {
-        slf.get_next_stack_impl(py, max_size).map(|maybe_stack| {
+        let mut iter = FrameChunkedIterator::new(
+            &mut self.receiver,
+            &mut self.local_shm,
+            &mut self.remainder,
+        )?;
+        iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
             if let Some(frame_stack) = &maybe_stack {
-                slf.stats.count_frame_stack(frame_stack);
+                self.stats.count_frame_stack(frame_stack);
             }
             maybe_stack
         })

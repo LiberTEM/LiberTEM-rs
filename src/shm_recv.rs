@@ -9,7 +9,7 @@ use std::sync::{
 };
 use std::thread::JoinHandle;
 
-use crate::bs::decompress_lz4_into;
+use crate::bs;
 use crate::common::{DConfig, DImage, DImageD, PixelType};
 use crate::exceptions::{ConnectionError, DecompressError};
 use bincode::serialize;
@@ -187,12 +187,8 @@ impl FrameStackHandle {
             let mut slot_right = shm.get_mut().expect("shm slot for writing");
             let slice_right = slot_right.as_slice_mut();
 
-            for i in 0..bytes_mid {
-                slice_left[i] = slice[i];
-            }
-            for i in bytes_mid..slice.len() {
-                slice_right[i - bytes_mid] = slice[i];
-            }
+            slice_left[..bytes_mid].copy_from_slice(&slice[..bytes_mid]);
+            slice_right[..(slice.len() - bytes_mid)].copy_from_slice(&slice[bytes_mid..]);
 
             let left = shm.writing_done(slot_left);
             let right = shm.writing_done(slot_right);
@@ -394,8 +390,8 @@ impl CamClient {
         for (frame_meta, idx) in handle.meta.iter().zip(0..) {
             let out_size = usize::try_from(frame_meta.get_size()).unwrap();
 
-            // FIXME: broken if frames in a stack have different shapes, which
-            // should not happen, right?
+            // NOTE: frames should all have the same shape
+            // FIXME: frames in a stack can _theoretically_ have different bit depth?
             let out_offset = idx * out_size;
             let out_ptr: *mut T = out_slice[out_offset..out_offset + out_size]
                 .as_mut_ptr()
@@ -403,7 +399,7 @@ impl CamClient {
 
             let image_data = handle.get_slice_for_frame(idx, &slot);
 
-            match decompress_lz4_into(&image_data[12..], out_ptr, out_size, None) {
+            match bs::decompress_lz4_into(&image_data[12..], out_ptr, out_size, None) {
                 Ok(()) => {}
                 Err(e) => {
                     let msg = format!("decompression failed: {e:?}");
@@ -466,11 +462,12 @@ impl CamClient {
     fn done(mut slf: PyRefMut<Self>, handle: &FrameStackHandle) -> PyResult<()> {
         let slot_idx = handle.slot.slot_idx;
         if let Some(shm) = &mut slf.shm {
-            Ok(shm.free_idx(slot_idx))
+            shm.free_idx(slot_idx);
+            Ok(())
         } else {
-            return Err(PyRuntimeError::new_err(
+            Err(PyRuntimeError::new_err(
                 "CamClient.done called with SHM closed",
-            ));
+            ))
         }
     }
 
@@ -653,9 +650,9 @@ mod tests {
         );
         assert_eq!(fs.cursor, 16);
         fs.frame_done(
-            dimage.clone(),
-            dimaged.clone(),
-            dconfig.clone(),
+            dimage,
+            dimaged,
+            dconfig,
             &[2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
         );
         assert_eq!(fs.cursor, 32);
