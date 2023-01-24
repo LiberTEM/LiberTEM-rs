@@ -87,6 +87,10 @@ impl DetectorConfig {
     pub fn get_num_frames(slf: PyRef<Self>) -> u64 {
         slf.get_num_images()
     }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

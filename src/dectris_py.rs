@@ -23,7 +23,7 @@ use crate::{
 use bincode::serialize;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use numpy::PyArray2;
 use pyo3::{
     exceptions::{self, PyRuntimeError},
@@ -404,6 +404,10 @@ fn passive_acquisition(
                 frame_stack_size,
                 shm,
             )?;
+
+            let free = shm.num_slots_free();
+            let total = shm.num_slots_total();
+            info!("passive acquisition done; free slots: {}/{}", free, total);
         } else {
             // probably a binary message: skip this
             continue;
@@ -732,14 +736,24 @@ impl DectrisReceiver {
         }
     }
 
+    fn adjust_status(&mut self, msg: &ResultMsg) {
+        match msg {
+            ResultMsg::AcquisitionStart { .. } => {
+                self.status = ReceiverStatus::Running;
+            }
+            ResultMsg::End { .. } => {
+                self.status = ReceiverStatus::Idle;
+            }
+            _ => {}
+        }
+    }
+
     pub fn recv(&mut self) -> ResultMsg {
         let result_msg = self
             .from_thread
             .recv()
             .expect("background thread should be running");
-        if matches!(result_msg, ResultMsg::End { .. }) {
-            self.status = ReceiverStatus::Idle;
-        }
+        self.adjust_status(&result_msg);
         result_msg
     }
 
@@ -748,9 +762,7 @@ impl DectrisReceiver {
 
         match result_msg {
             Ok(result) => {
-                if matches!(result, ResultMsg::End { .. }) {
-                    self.status = ReceiverStatus::Idle;
-                }
+                self.adjust_status(&result);
                 Some(result)
             }
             Err(e) => match e {
@@ -789,13 +801,15 @@ impl DectrisReceiver {
     }
 
     pub fn close(&mut self) {
-        self.to_thread.send(ControlMsg::StopThread).unwrap();
+        if self.to_thread.send(ControlMsg::StopThread).is_err() {
+            warn!("could not stop background thread, probably already dead");
+        }
         if let Some(join_handle) = self.bg_thread.take() {
             join_handle
                 .join()
                 .expect("could not join background thread!");
         } else {
-            panic!("expected to have a join handle, had None instead");
+            warn!("did not have a bg thread join handle, cannot join!");
         }
         self.status = ReceiverStatus::Closed;
     }
@@ -963,7 +977,7 @@ impl<'a, 'b, 'c> FrameChunkedIterator<'a, 'b, 'c> {
                 if frame_stack.len() > max_size {
                     // split `FrameStackHandle` into two:
                     trace!(
-                        "re-split: FrameStackHandle::split_at({max_size}); len={}",
+                        "FrameStackHandle::split_at({max_size}); len={}",
                         frame_stack.len()
                     );
                     let (left, right) = frame_stack.split_at(max_size, self.shm);
@@ -1057,6 +1071,7 @@ struct DectrisConnection {
     local_shm: SharedSlabAllocator,
     shm_stop_event: Option<sync::Arc<AtomicBool>>,
     shm_join_handle: Option<JoinHandle<()>>,
+    shm_socket_path: Option<String>,
     stats: Stats,
 }
 
@@ -1081,6 +1096,7 @@ impl DectrisConnection {
                 join_handle.join().expect("join background thread");
             }
         }
+        self.shm_socket_path = None;
     }
 }
 
@@ -1117,6 +1133,7 @@ impl DectrisConnection {
             remainder: Vec::new(),
             shm_stop_event: None,
             shm_join_handle: None,
+            shm_socket_path: None,
             local_shm,
             stats: Stats::new(),
         })
@@ -1124,27 +1141,45 @@ impl DectrisConnection {
 
     /// Wait until the detector is armed, or until the timeout expires (in seconds)
     /// Returns `None` in case of timeout, the detector config otherwise.
-    fn wait_for_arm(&mut self, timeout: f32) -> PyResult<Option<DetectorConfig>> {
-        match self.receiver.next_timeout(Duration::from_secs_f32(timeout)) {
-            Some(ResultMsg::AcquisitionStart {
-                series: _,
-                detector_config,
-            }) => Ok(Some(detector_config)),
-            msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {
-                let err = format!("unexpected message: {:?}", msg);
-                Err(PyRuntimeError::new_err(err))
+    /// This method drops the GIL to allow concurrent Python threads.
+    fn wait_for_arm(
+        &mut self,
+        timeout: f32,
+        py: Python,
+    ) -> PyResult<Option<(DetectorConfig, u64)>> {
+        py.allow_threads(|| {
+            match self.receiver.next_timeout(Duration::from_secs_f32(timeout)) {
+                Some(ResultMsg::AcquisitionStart {
+                    series,
+                    detector_config,
+                }) => Ok(Some((detector_config, series))),
+                msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {
+                    let err = format!("unexpected message: {:?}", msg);
+                    Err(PyRuntimeError::new_err(err))
+                }
+                Some(ResultMsg::Error { msg }) => Err(PyRuntimeError::new_err(msg)),
+                Some(ResultMsg::SerdeError { msg, recvd_msg: _ }) => {
+                    Err(PyRuntimeError::new_err(msg))
+                }
+                None => Ok(None), // timeout
             }
-            Some(ResultMsg::Error { msg }) => Err(PyRuntimeError::new_err(msg)),
-            Some(ResultMsg::SerdeError { msg, recvd_msg: _ }) => Err(PyRuntimeError::new_err(msg)),
-            None => Ok(None), // timeout
-        }
+        })
     }
 
     fn serve_shm(mut slf: PyRefMut<Self>, socket_path: &str) -> PyResult<()> {
         let (stop_event, join_handle) = serve_shm_handle(slf.receiver.shm_handle, socket_path);
         slf.shm_stop_event = Some(stop_event);
         slf.shm_join_handle = Some(join_handle);
+        slf.shm_socket_path = Some(socket_path.to_string());
         Ok(())
+    }
+
+    fn get_socket_path(&self) -> PyResult<String> {
+        if let Some(path) = &self.shm_socket_path {
+            Ok(path.clone())
+        } else {
+            Err(PyRuntimeError::new_err("not serving shm at the moment"))
+        }
     }
 
     fn is_running(slf: PyRef<Self>) -> bool {
@@ -1182,5 +1217,11 @@ impl DectrisConnection {
             }
             maybe_stack
         })
+    }
+
+    fn log_shm_stats(&self) {
+        let free = self.local_shm.num_slots_free();
+        let total = self.local_shm.num_slots_total();
+        info!("shm stats free/total: {}/{}", free, total);
     }
 }
