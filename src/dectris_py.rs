@@ -16,7 +16,7 @@ use crate::{
         FrameData, PixelType, TriggerMode,
     },
     exceptions::{ConnectionError, DecompressError, TimeoutError},
-    shm_recv::{serve_shm_handle, CamClient, FrameMeta, FrameStackForWriting, FrameStackHandle},
+    shm_recv::{serve_shm_handle, CamClient, FrameStackForWriting, FrameStackHandle},
     sim::DectrisSim,
 };
 
@@ -283,60 +283,6 @@ fn recv_frame_into(
     let dconfig: DConfig = serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
     Ok((dimage, dimaged, dconfig))
-}
-
-fn recv_frame(
-    socket: &Socket,
-    control_channel: &Receiver<ControlMsg>,
-) -> Result<FrameData, AcquisitionError> {
-    let mut msg: Message = Message::new();
-    let mut data: Vec<u8> = Vec::with_capacity(512 * 512 * 4);
-
-    recv_part(&mut msg, socket, control_channel)?;
-    let dimage_res: Result<DImage, _> = serde_json::from_str(msg.as_str().unwrap());
-
-    let dimage = match dimage_res {
-        Ok(image) => image,
-        Err(err) => {
-            return Err(AcquisitionError::SerdeError {
-                msg: err.to_string(),
-                recvd_msg: msg
-                    .as_str()
-                    .map_or_else(|| "".to_string(), |m| m.to_string()),
-            });
-        }
-    };
-
-    recv_part(&mut msg, socket, control_channel)?;
-    let dimaged_res: Result<DImageD, _> = serde_json::from_str(msg.as_str().unwrap());
-
-    let dimaged = match dimaged_res {
-        Ok(image) => image,
-        Err(err) => {
-            return Err(AcquisitionError::SerdeError {
-                msg: err.to_string(),
-                recvd_msg: msg
-                    .as_str()
-                    .map_or_else(|| "".to_string(), |m| m.to_string()),
-            });
-        }
-    };
-
-    // compressed image data:
-    recv_part(&mut msg, socket, control_channel)?;
-    data.truncate(0);
-    data.extend_from_slice(&msg);
-
-    // DConfig:
-    recv_part(&mut msg, socket, control_channel)?;
-    let dconfig: DConfig = serde_json::from_str(msg.as_str().unwrap()).unwrap();
-
-    Ok(FrameData {
-        dimage,
-        dimaged,
-        image_data: data,
-        dconfig,
-    })
 }
 
 #[derive(Debug, Clone)]
@@ -911,6 +857,12 @@ impl Stats {
     }
 }
 
+impl Default for Stats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[pyclass]
 struct FrameChunkedIterator {
     receiver: DectrisReceiver,
@@ -939,26 +891,39 @@ impl FrameChunkedIterator {
         }
     }
 
+    /// Get the next frame stack. Mainly handles splitting logic for boundary
+    /// conditions and delegates communication with the background thread to `recv_next_stack_impl`
     fn get_next_stack_impl(
         &mut self,
         py: Python,
         max_size: usize,
     ) -> PyResult<Option<FrameStackHandle>> {
+        let res = self.recv_next_stack_impl(py);
+        match res {
+            Ok(Some(frame_stack)) => {
+                if frame_stack.len() > max_size {
+                    // split `FrameStackHandle` into two:
+                    trace!(
+                        "re-split: FrameStackHandle::split_at({max_size}); len={}",
+                        frame_stack.len()
+                    );
+                    let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
+                    self.remainder.push(right);
+                    assert!(left.len() <= max_size);
+                    return Ok(Some(left));
+                }
+                assert!(frame_stack.len() <= max_size);
+                Ok(Some(frame_stack))
+            }
+            Ok(None) => Ok(None),
+            e @ Err(_) => e,
+        }
+    }
+
+    /// Receive the next frame stack from the background thread
+    fn recv_next_stack_impl(&mut self, py: Python) -> PyResult<Option<FrameStackHandle>> {
         // first, check if there is anything on the remainder list:
         if let Some(frame_stack) = self.remainder.pop() {
-            // it can happen that the remainder is still too large:
-            if frame_stack.len() > max_size {
-                // split `FrameStackHandle` into two:
-                trace!(
-                    "re-split: FrameStackHandle::split_at({max_size}); len={}",
-                    frame_stack.len()
-                );
-                let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
-                self.remainder.push(right);
-                assert!(left.len() <= max_size);
-                return Ok(Some(left));
-            }
-            assert!(frame_stack.len() <= max_size);
             return Ok(Some(frame_stack));
         }
 
@@ -995,37 +960,9 @@ impl FrameChunkedIterator {
                     return Err(exceptions::PyRuntimeError::new_err(msg))
                 }
                 Some(ResultMsg::End { frame_stack }) => {
-                    // FIXME: refactor: pull splitting logic out of this function
-                    if frame_stack.len() > max_size {
-                        // split `FrameStackHandle` into two:
-                        trace!(
-                            "FrameStackHandle::split_at({max_size}); len={}",
-                            frame_stack.len()
-                        );
-                        let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
-                        self.remainder.push(right);
-                        assert!(left.len() <= max_size);
-                        return Ok(Some(left));
-                    }
-                    assert!(frame_stack.len() <= max_size);
                     return Ok(Some(frame_stack));
                 }
                 Some(ResultMsg::FrameStack { frame_stack }) => {
-                    // handle `frame_stack.len()` > `max_size`
-                    // which should only happen in boundary conditions
-                    if frame_stack.len() > max_size {
-                        // split `FrameStackHandle` into two:
-                        trace!(
-                            "FrameStackHandle::split_at({max_size}); len={}",
-                            frame_stack.len()
-                        );
-                        let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
-                        self.remainder.push(right);
-                        assert!(left.len() <= max_size);
-                        return Ok(Some(left));
-                    }
-
-                    assert!(frame_stack.len() <= max_size);
                     return Ok(Some(frame_stack));
                 }
             }
@@ -1099,7 +1036,7 @@ impl FrameChunkedIterator {
     ) -> PyResult<Option<FrameStackHandle>> {
         slf.get_next_stack_impl(py, max_size).map(|maybe_stack| {
             if let Some(frame_stack) = &maybe_stack {
-                slf.stats.count_frame_stack(&frame_stack);
+                slf.stats.count_frame_stack(frame_stack);
             }
             maybe_stack
         })
