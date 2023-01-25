@@ -910,6 +910,9 @@ pub struct Stats {
 
     /// number of frames seen
     num_frames: usize,
+
+    /// number of times a frame stack was split
+    split_count: usize,
 }
 
 impl Stats {
@@ -920,6 +923,7 @@ impl Stats {
             frame_size_max: 0,
             frame_size_min: usize::MAX,
             num_frames: 0,
+            split_count: 0,
         }
     }
 
@@ -943,10 +947,14 @@ impl Stats {
         self.num_frames += frame_stack.len();
     }
 
+    pub fn count_split(&mut self) {
+        self.split_count += 1;
+    }
+
     pub fn log_stats(&self) {
         debug!(
-            "Stats: frames seen: {}, total payload size: {}, total slot size used: {}, min frame size: {}, max frame size: {}",
-            self.num_frames, self.payload_size_sum, self.slots_size_sum, self.frame_size_min, self.frame_size_max,
+            "Stats: frames seen: {}, total payload size: {}, total slot size used: {}, min frame size: {}, max frame size: {}, splits: {}",
+            self.num_frames, self.payload_size_sum, self.slots_size_sum, self.frame_size_min, self.frame_size_max, self.split_count,
         );
     }
 }
@@ -957,13 +965,14 @@ impl Default for Stats {
     }
 }
 
-struct FrameChunkedIterator<'a, 'b, 'c> {
+struct FrameChunkedIterator<'a, 'b, 'c, 'd> {
     receiver: &'a mut DectrisReceiver,
     shm: &'b mut SharedSlabAllocator,
     remainder: &'c mut Vec<FrameStackHandle>,
+    stats: &'d mut Stats,
 }
 
-impl<'a, 'b, 'c> FrameChunkedIterator<'a, 'b, 'c> {
+impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
     /// Get the next frame stack. Mainly handles splitting logic for boundary
     /// conditions and delegates communication with the background thread to `recv_next_stack_impl`
     pub fn get_next_stack_impl(
@@ -980,6 +989,7 @@ impl<'a, 'b, 'c> FrameChunkedIterator<'a, 'b, 'c> {
                         "FrameStackHandle::split_at({max_size}); len={}",
                         frame_stack.len()
                     );
+                    self.stats.count_split();
                     let (left, right) = frame_stack.split_at(max_size, self.shm);
                     self.remainder.push(right);
                     assert!(left.len() <= max_size);
@@ -1042,6 +1052,7 @@ impl<'a, 'b, 'c> FrameChunkedIterator<'a, 'b, 'c> {
                     return Err(exceptions::PyRuntimeError::new_err(msg))
                 }
                 Some(ResultMsg::End { frame_stack }) => {
+                    self.stats.log_stats();
                     return Ok(Some(frame_stack));
                 }
                 Some(ResultMsg::FrameStack { frame_stack }) => {
@@ -1055,11 +1066,13 @@ impl<'a, 'b, 'c> FrameChunkedIterator<'a, 'b, 'c> {
         receiver: &'a mut DectrisReceiver,
         shm: &'b mut SharedSlabAllocator,
         remainder: &'c mut Vec<FrameStackHandle>,
+        stats: &'d mut Stats,
     ) -> PyResult<Self> {
         Ok(FrameChunkedIterator {
             receiver,
             shm,
             remainder,
+            stats,
         })
     }
 }
@@ -1229,6 +1242,7 @@ impl DectrisConnection {
             &mut self.receiver,
             &mut self.local_shm,
             &mut self.remainder,
+            &mut self.stats,
         )?;
         iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
             if let Some(frame_stack) = &maybe_stack {
