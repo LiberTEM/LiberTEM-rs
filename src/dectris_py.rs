@@ -1147,23 +1147,42 @@ impl DectrisConnection {
         timeout: f32,
         py: Python,
     ) -> PyResult<Option<(DetectorConfig, u64)>> {
-        py.allow_threads(|| {
-            match self.receiver.next_timeout(Duration::from_secs_f32(timeout)) {
+        let timeout = Duration::from_secs_f32(timeout);
+        let deadline = Instant::now() + timeout;
+        let step = Duration::from_millis(100);
+
+        loop {
+            py.check_signals()?;
+
+            let res = py.allow_threads(|| {
+                let timeout_rem = deadline - Instant::now();
+                let this_timeout = timeout_rem.min(step);
+                self.receiver.next_timeout(this_timeout)
+            });
+
+            match res {
                 Some(ResultMsg::AcquisitionStart {
                     series,
                     detector_config,
-                }) => Ok(Some((detector_config, series))),
+                }) => return Ok(Some((detector_config, series))),
                 msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {
                     let err = format!("unexpected message: {:?}", msg);
-                    Err(PyRuntimeError::new_err(err))
+                    return Err(PyRuntimeError::new_err(err));
                 }
-                Some(ResultMsg::Error { msg }) => Err(PyRuntimeError::new_err(msg)),
+                Some(ResultMsg::Error { msg }) => return Err(PyRuntimeError::new_err(msg)),
                 Some(ResultMsg::SerdeError { msg, recvd_msg: _ }) => {
-                    Err(PyRuntimeError::new_err(msg))
+                    return Err(PyRuntimeError::new_err(msg))
                 }
-                None => Ok(None), // timeout
+                None => {
+                    // timeout
+                    if Instant::now() > deadline {
+                        return Ok(None);
+                    } else {
+                        continue;
+                    }
+                }
             }
-        })
+        }
     }
 
     fn serve_shm(mut slf: PyRefMut<Self>, socket_path: &str) -> PyResult<()> {
