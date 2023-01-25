@@ -418,7 +418,13 @@ impl CamClient {
         out: &PyArray3<T>,
     ) -> PyResult<()> {
         let mut out_rw = out.readwrite();
-        let out_slice = out_rw.as_slice_mut().expect("`out` must be C-contiguous");
+        let out_slice = match out_rw.as_slice_mut() {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!("`out` must be C-contiguous: {e:?}");
+                return Err(DecompressError::new_err(msg));
+            }
+        };
         let slot: Slot = if let Some(shm) = &self.shm {
             shm.get(handle.slot.slot_idx)
         } else {
@@ -435,9 +441,25 @@ impl CamClient {
                 .as_mut_ptr()
                 .cast();
 
+            // FIXME: can we get rid of this unsafe block?
+            // maybe use the `zerocopy` crate for this...
+
+            // Note: In this case, `out_size_u8` is both the number of bytes
+            // _and_ the number of elements.
+            let out_size_u8 = std::mem::size_of::<T>() * out_size;
+
             let out_slice_cast = unsafe {
-                let len = std::mem::size_of::<T>() * out_size;
-                slice::from_raw_parts_mut(out_ptr, len)
+                // # Safety:
+                // - `out_ptr` points to `out_slice`, which has length
+                //   `out_size` elements of type `T` so when we cast to u8, we
+                //   take `size_of::<T> * out_size` as length
+                // - The entire slice will be contained inside a single
+                //   allocation (the array allocated by numpy)
+                // - We rely on numpy initializing the array that is passed
+                // - We don't access the output array via any other
+                //   references/pointers while `out_slice_cast` lives
+                // FIXME: is `out_size_u8` guaranteed to be smaller than `isize::MAX`?
+                slice::from_raw_parts_mut(out_ptr, out_size_u8)
             };
 
             let image_data = handle.get_slice_for_frame(idx, &slot);
