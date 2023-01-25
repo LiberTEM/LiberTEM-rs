@@ -1,3 +1,4 @@
+use core::slice;
 use std::fs::remove_file;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -374,7 +375,7 @@ fn recv_shm_handle(socket_path: &str) -> SHMHandle {
 }
 
 impl CamClient {
-    fn decompress_frame_stack_impl<T: numpy::Element>(
+    fn decompress_bslz4_impl<T: numpy::Element>(
         &self,
         handle: &FrameStackHandle,
         out: &PyArray3<T>,
@@ -410,6 +411,55 @@ impl CamClient {
 
         Ok(())
     }
+
+    fn decompress_plain_lz4_impl<T: numpy::Element>(
+        &self,
+        handle: &FrameStackHandle,
+        out: &PyArray3<T>,
+    ) -> PyResult<()> {
+        let mut out_rw = out.readwrite();
+        let out_slice = out_rw.as_slice_mut().expect("`out` must be C-contiguous");
+        let slot: Slot = if let Some(shm) = &self.shm {
+            shm.get(handle.slot.slot_idx)
+        } else {
+            return Err(PyRuntimeError::new_err("can't decompress with closed SHM"));
+        };
+
+        for (frame_meta, idx) in handle.meta.iter().zip(0..) {
+            let out_size = usize::try_from(frame_meta.get_size()).unwrap();
+
+            // NOTE: frames should all have the same shape
+            // FIXME: frames in a stack can _theoretically_ have different bit depth?
+            let out_offset = idx * out_size;
+            let out_ptr: *mut u8 = out_slice[out_offset..out_offset + out_size]
+                .as_mut_ptr()
+                .cast();
+
+            let out_slice_cast = unsafe {
+                let len = std::mem::size_of::<T>() * out_size;
+                slice::from_raw_parts_mut(out_ptr, len)
+            };
+
+            let image_data = handle.get_slice_for_frame(idx, &slot);
+
+            let mut decoder = match lz4::Decoder::new(&image_data[12..]) {
+                Ok(d) => d,
+                Err(e) => {
+                    let msg = format!("decompression failed: {e:?}");
+                    return Err(DecompressError::new_err(msg));
+                }
+            };
+            match decoder.read_exact(out_slice_cast) {
+                Ok(()) => {}
+                Err(e) => {
+                    let msg = format!("decompression failed: {e:?}");
+                    return Err(DecompressError::new_err(msg));
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -435,22 +485,28 @@ impl CamClient {
         let arr_u16: Result<&PyArray3<u16>, _> = out.downcast();
         let arr_u32: Result<&PyArray3<u32>, _> = out.downcast();
 
-        let encoding = if handle.is_empty() {
+        let (encoding, type_) = if handle.is_empty() {
             return Ok(());
         } else {
-            &handle.meta.first().unwrap().dimaged.encoding
+            let dimaged = &handle.meta.first().unwrap().dimaged;
+            (&dimaged.encoding, &dimaged.type_)
         };
 
         match encoding.as_str() {
-            "bs32-lz4<" => {
-                slf.decompress_frame_stack_impl(handle, arr_u32.unwrap())?;
-            }
-            "bs16-lz4<" => {
-                slf.decompress_frame_stack_impl(handle, arr_u16.unwrap())?;
-            }
-            "bs8-lz4<" => {
-                slf.decompress_frame_stack_impl(handle, arr_u8.unwrap())?;
-            }
+            // "<encoding>: String of the form ”[bs<BIT>][[-]lz4][<|>]”. bs<BIT> stands for bit shuffling with <BIT> bits, lz4 for
+            // lz4 compression and < (>) for little (big) endian. E.g. ”bs8-lz4<” stands for 8bit bitshuffling, lz4 compression
+            // and little endian. lz4 data is written as defined at https://code.google.com/p/lz4/ without any additional data like
+            // block size etc."
+            "bs32-lz4<" | "bs16-lz4<" | "bs8-lz4<" => match type_ {
+                PixelType::Uint8 => slf.decompress_bslz4_impl(handle, arr_u8.unwrap())?,
+                PixelType::Uint16 => slf.decompress_bslz4_impl(handle, arr_u16.unwrap())?,
+                PixelType::Uint32 => slf.decompress_bslz4_impl(handle, arr_u32.unwrap())?,
+            },
+            "lz4<" => match type_ {
+                PixelType::Uint8 => slf.decompress_plain_lz4_impl(handle, arr_u8.unwrap())?,
+                PixelType::Uint16 => slf.decompress_plain_lz4_impl(handle, arr_u16.unwrap())?,
+                PixelType::Uint32 => slf.decompress_plain_lz4_impl(handle, arr_u32.unwrap())?,
+            },
             e => {
                 let msg = format!("can't deal with encoding {e}");
                 return Err(exceptions::PyValueError::new_err(msg));
@@ -603,7 +659,7 @@ mod tests {
         Python::with_gil(|py| {
             let flat: Vec<u16> = (0..256).collect();
             let out = PyArray::from_vec(py, flat).reshape((1, 16, 16)).unwrap();
-            client.decompress_frame_stack_impl(&fs_handle, out).unwrap();
+            client.decompress_bslz4_impl(&fs_handle, out).unwrap();
 
             out.readonly()
                 .as_slice()

@@ -34,6 +34,7 @@ ipc-test = { git = "git+ssh://gitlab@iffgit.fz-juelich.de/clausen/ipc-test.git" 
 sendfd = "0.4.3"
 tempfile = "3.3.0"
 nix = "0.26.1"
+lz4 = "1.24.0"
 
 [features]
 extension-module = ["pyo3/extension-module"]
