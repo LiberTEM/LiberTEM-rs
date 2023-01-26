@@ -315,6 +315,7 @@ enum AcquisitionError {
     Cancelled,
     ZmqError { err: zmq::Error },
     BufferFull,
+    StateError { msg: String },
 }
 
 impl Display for AcquisitionError {
@@ -344,6 +345,9 @@ impl Display for AcquisitionError {
             AcquisitionError::BufferFull => {
                 write!(f, "shm buffer is full")
             }
+            AcquisitionError::StateError { msg } => {
+                write!(f, "state error: {msg}")
+            }
         }
     }
 }
@@ -352,12 +356,13 @@ impl Display for AcquisitionError {
 /// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
 fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), AcquisitionError> {
     match control_channel.try_recv() {
-        Ok(ControlMsg::StartAcquisition { series: _ }) => {
-            panic!("received StartAcquisition while an acquisition was already running");
-        }
-        Ok(ControlMsg::StartAcquisitionPassive) => {
-            panic!("received StartAcquisitionPassive while an acquisition was already running");
-        }
+        Ok(ControlMsg::StartAcquisition { series: _ }) => Err(AcquisitionError::StateError {
+            msg: "received StartAcquisition while an acquisition was already running".to_string(),
+        }),
+        Ok(ControlMsg::StartAcquisitionPassive) => Err(AcquisitionError::StateError {
+            msg: "received StartAcquisitionPassive while an acquisition was already running"
+                .to_string(),
+        }),
         Ok(ControlMsg::StopThread) => Err(AcquisitionError::Cancelled),
         Err(TryRecvError::Disconnected) => Err(AcquisitionError::Cancelled),
         Err(TryRecvError::Empty) => Ok(()),
@@ -952,9 +957,10 @@ impl Stats {
     }
 
     pub fn log_stats(&self) {
+        let efficiency = self.payload_size_sum as f32 / self.slots_size_sum as f32;
         debug!(
-            "Stats: frames seen: {}, total payload size: {}, total slot size used: {}, min frame size: {}, max frame size: {}, splits: {}",
-            self.num_frames, self.payload_size_sum, self.slots_size_sum, self.frame_size_min, self.frame_size_max, self.split_count,
+            "Stats: frames seen: {}, total payload size: {}, total slot size used: {}, min frame size: {}, max frame size: {}, splits: {}, shm efficiency: {}",
+            self.num_frames, self.payload_size_sum, self.slots_size_sum, self.frame_size_min, self.frame_size_max, self.split_count, efficiency,
         );
     }
 }
