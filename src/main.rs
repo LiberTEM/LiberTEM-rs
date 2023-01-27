@@ -7,11 +7,11 @@ use crate::common::DImage;
 use crate::common::DetectorConfig;
 use crate::sim::FrameSender;
 use serde::Serialize;
-use zmq::Message;
 use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 use std::time::Instant;
+use zmq::Message;
 
 use crate::common::DumpRecordFile;
 use clap::{Parser, Subcommand};
@@ -172,7 +172,9 @@ fn write_raw_msg(msg: &[u8]) {
 }
 
 fn write_raw_msg_fh<W>(msg: &[u8], out: &mut W)
-where W: Write {
+where
+    W: Write,
+{
     let length = (msg.len() as i64).to_le_bytes();
     out.write_all(&length).unwrap();
     out.write_all(msg).unwrap();
@@ -257,19 +259,34 @@ fn action_sim(filename: &str, uri: &str) {
 }
 
 fn action_record(filename: &String, uri: &String) {
-    let mut raw_file = std::fs::File::create(filename).unwrap();
+    let raw_file = std::fs::File::create(filename).unwrap();
     let mut file = std::io::BufWriter::new(raw_file);
     let ctx = zmq::Context::new();
     let socket = ctx.socket(zmq::PULL).unwrap();
 
     let mut size: usize = 0;
 
-    socket.connect(&uri).unwrap();
-    socket.set_rcvhwm(4 * 256).unwrap();
+    socket.connect(uri).unwrap();
+    socket.set_rcvhwm(4 * 2048).unwrap();
 
     let mut first_header: Message = Message::new();
-    // First acquisition header: Protocol etc
-    socket.recv(&mut first_header, 0).unwrap();
+
+    println!("synchronizing to first header");
+    // synchronize to first header:
+    let dheader = loop {
+        // First acquisition header: Protocol etc
+        socket.recv(&mut first_header, 0).unwrap();
+        let first_header = first_header.as_str();
+        if let Some(first_header) = first_header {
+            let dheader_res: Result<DHeader, _> = serde_json::from_str(first_header);
+            if dheader_res.is_ok() {
+                break dheader_res.unwrap();
+            }
+        }
+    };
+
+    println!("got first header: {dheader:?}");
+
     let start = Instant::now();
 
     socket.set_rcvtimeo(1000).unwrap();
@@ -279,6 +296,8 @@ fn action_record(filename: &String, uri: &String) {
     socket.recv(&mut detector_config_msg, 0).unwrap();
 
     let detector_config: DetectorConfig = serde_json::from_slice(&detector_config_msg).unwrap();
+
+    println!("detector config: {:?}", detector_config);
 
     let num_msg = detector_config.get_num_images() * 4 + 1;
 
@@ -291,13 +310,23 @@ fn action_record(filename: &String, uri: &String) {
     let mut buf: Message = Message::new();
 
     for i in 0..num_msg {
-        socket.recv(&mut buf, 0).unwrap();
+        loop {
+            match socket.recv(&mut buf, 0) {
+                Ok(_) => break,
+                Err(zmq::Error::EAGAIN) => {
+                    println!("EAGAIN at {num_msg}, offset: {}", num_msg - i);
+                    continue;
+                }
+                Err(err) => {
+                    panic!("{}", err.to_string());
+                }
+            }
+        }
         write_raw_msg_fh(&buf, &mut file);
         size += buf.len();
     }
 
     println!("Received {} bytes in {:?} s.", size, start.elapsed());
-
 }
 
 pub fn main() {
