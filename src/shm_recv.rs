@@ -335,7 +335,8 @@ pub fn serve_shm_handle(handle: SHMHandle, socket_path: &str) -> (Arc<AtomicBool
                     /* EAGAIN / EWOULDBLOCK */
                     if err.kind() == io::ErrorKind::WouldBlock {
                         let fd = listener.as_raw_fd();
-                        let pollfd = PollFd::new(fd, PollFlags::all());
+                        let flags = PollFlags::POLLIN;
+                        let pollfd = PollFd::new(fd, flags);
                         nix::poll::poll(&mut [pollfd], 100).expect("poll for socket to be ready");
                         continue;
                     }
