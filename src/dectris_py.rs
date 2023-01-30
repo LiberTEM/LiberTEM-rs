@@ -511,6 +511,7 @@ fn acquisition(
 
             let mut msg: Message = Message::new();
 
+            // FIXME: panic on timeout
             socket.recv(&mut msg, 0).unwrap();
             let footer: DSeriesEnd = serde_json::from_str(msg.as_str().unwrap()).unwrap();
             let series = footer.series;

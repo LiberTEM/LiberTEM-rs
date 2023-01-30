@@ -465,15 +465,12 @@ impl CamClient {
 
             let image_data = handle.get_slice_for_frame(idx, &slot);
 
-            let mut decoder = match lz4::Decoder::new(&image_data[12..]) {
-                Ok(d) => d,
-                Err(e) => {
-                    let msg = format!("decompression failed: {e:?}");
-                    return Err(DecompressError::new_err(msg));
-                }
-            };
-            match decoder.read_exact(out_slice_cast) {
-                Ok(()) => {}
+            match lz4::block::decompress_to_buffer(
+                image_data,
+                Some(out_size_u8.try_into().unwrap()),
+                out_slice_cast,
+            ) {
+                Ok(_) => {}
                 Err(e) => {
                     let msg = format!("decompression failed: {e:?}");
                     return Err(DecompressError::new_err(msg));
