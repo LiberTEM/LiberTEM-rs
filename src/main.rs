@@ -332,6 +332,11 @@ fn action_record(filename: &String, uri: &String) {
 pub fn main() {
     let cli = Cli::parse();
 
+    let env = env_logger::Env::default()
+        .filter_or("LIBERTEM_DECTRIS_LOG_LEVEL", "error")
+        .write_style_or("LIBERTEM_DECTRIS_LOG_STYLE", "always");
+    env_logger::init_from_env(env);
+
     match cli.action {
         Action::Cat { start_idx, end_idx } => action_cat(&cli, start_idx, end_idx),
         Action::Inspect { head, summary } => action_inspect(&cli, head, summary),
