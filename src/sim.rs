@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use log::debug;
+use log::{debug, info};
 use pyo3::{exceptions, prelude::*};
 use serde_json::json;
 use zmq::{Context, Socket, SocketType::PUSH};
@@ -269,6 +269,7 @@ impl DectrisSim {
             None => slf.frame_sender.get_num_frames(),
             Some(n) => n,
         };
+        info!("sending {effective_nframes} frames");
 
         let dwelltime = &slf.dwelltime.clone();
         let sender = &mut slf.frame_sender;
