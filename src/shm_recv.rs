@@ -26,6 +26,7 @@ use pyo3::{
 };
 use sendfd::{RecvWithFd, SendWithFd};
 use serde::{Deserialize, Serialize};
+use zerocopy::{AsBytes, FromBytes};
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Debug)]
 pub struct FrameMeta {
@@ -413,7 +414,7 @@ impl CamClient {
         Ok(())
     }
 
-    fn decompress_plain_lz4_impl<T: numpy::Element>(
+    fn decompress_plain_lz4_impl<T: numpy::Element + AsBytes + FromBytes>(
         &self,
         handle: &FrameStackHandle,
         out: &PyArray3<T>,
@@ -433,41 +434,16 @@ impl CamClient {
         };
 
         for (frame_meta, idx) in handle.meta.iter().zip(0..) {
-            let out_size = usize::try_from(frame_meta.get_size()).unwrap();
-
             // NOTE: frames should all have the same shape
             // FIXME: frames in a stack can _theoretically_ have different bit depth?
-            let out_offset = idx * out_size;
-            let out_ptr: *mut u8 = out_slice[out_offset..out_offset + out_size]
-                .as_mut_ptr()
-                .cast();
-
-            // FIXME: can we get rid of this unsafe block?
-            // maybe use the `zerocopy` crate for this...
-
-            // Note: In this case, `out_size_u8` is both the number of bytes
-            // _and_ the number of elements.
-            let out_size_u8 = std::mem::size_of::<T>() * out_size;
-
-            let out_slice_cast = unsafe {
-                // # Safety:
-                // - `out_ptr` points to `out_slice`, which has length
-                //   `out_size` elements of type `T` so when we cast to u8, we
-                //   take `size_of::<T> * out_size` as length
-                // - The entire slice will be contained inside a single
-                //   allocation (the array allocated by numpy)
-                // - We rely on numpy initializing the array that is passed
-                // - We don't access the output array via any other
-                //   references/pointers while `out_slice_cast` lives
-                // FIXME: is `out_size_u8` guaranteed to be smaller than `isize::MAX`?
-                slice::from_raw_parts_mut(out_ptr, out_size_u8)
-            };
-
+            let out_size = usize::try_from(frame_meta.get_size()).unwrap();
+            let out_slice_cast = out_slice[0..out_size].as_bytes_mut();
             let image_data = handle.get_slice_for_frame(idx, &slot);
 
+            println!("{} {}", image_data.len(), out_slice_cast.len());
             match lz4::block::decompress_to_buffer(
                 image_data,
-                Some(out_size_u8.try_into().unwrap()),
+                Some(out_slice_cast.len().try_into().unwrap()),
                 out_slice_cast,
             ) {
                 Ok(_) => {}
@@ -561,9 +537,11 @@ impl Drop for CamClient {
 #[cfg(test)]
 mod tests {
     use ipc_test::{SharedSlabAllocator, Slot};
+    use lz4::block::CompressionMode;
     use numpy::PyArray;
     use pyo3::{prepare_freethreaded_python, Python};
     use tempfile::tempdir;
+    use zerocopy::AsBytes;
 
     use crate::{
         bs::compress_lz4,
@@ -680,6 +658,102 @@ mod tests {
             let flat: Vec<u16> = (0..256).collect();
             let out = PyArray::from_vec(py, flat).reshape((1, 16, 16)).unwrap();
             client.decompress_bslz4_impl(&fs_handle, out).unwrap();
+
+            out.readonly()
+                .as_slice()
+                .unwrap()
+                .iter()
+                .zip(0..)
+                .for_each(|(&item, idx)| {
+                    assert_eq!(item, in_[idx]);
+                    assert_eq!(item, (idx % 16) as u16);
+                });
+        });
+    }
+
+    #[test]
+    fn test_cam_client_lz4() {
+        let mut shm = SharedSlabAllocator::new(1, 4096, false).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 1, 512);
+        let dimage = crate::common::DImage {
+            htype: "".to_string(),
+            series: 1,
+            frame: 1,
+            hash: "".to_string(),
+        };
+        let dimaged = crate::common::DImageD {
+            htype: "".to_string(),
+            shape: vec![16, 16],
+            type_: crate::common::PixelType::Uint16,
+            encoding: "lz4<".to_string(),
+        };
+        let dconfig = crate::common::DConfig {
+            htype: "".to_string(),
+            start_time: 0,
+            stop_time: 0,
+            real_time: 0,
+        };
+
+        // some predictable test data:
+        let in_: Vec<u16> = (0..256).map(|i| i % 16).collect();
+        let in_bytes = in_.as_bytes();
+        let compressed_data =
+            lz4::block::compress(in_bytes, Some(CompressionMode::DEFAULT), false).unwrap();
+
+        println!("{:x?}", &compressed_data);
+        assert_eq!(fs.cursor, 0);
+        fs.frame_done(dimage, dimaged, dconfig, &compressed_data);
+        assert_eq!(fs.cursor, compressed_data.len());
+
+        // we have one frame in there:
+        assert_eq!(fs.len(), 1);
+
+        let fs_handle = fs.writing_done(&mut shm);
+
+        // we still have one frame in there:
+        assert_eq!(fs_handle.len(), 1);
+
+        // initialize a Python interpreter so we are able to construct a PyBytes instance:
+        prepare_freethreaded_python();
+
+        // roundtrip serialize/deserialize:
+        Python::with_gil(|py| {
+            let bytes = fs_handle.serialize(py).unwrap();
+            let new_handle = FrameStackHandle::deserialize_impl(bytes.as_ref(py)).unwrap();
+            assert_eq!(fs_handle, new_handle);
+        });
+
+        // start to serve the shm connection via a unix domain socket:
+        let handle = shm.get_handle();
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.into_path().join("stuff.socket");
+        let socket_path = socket_as_path.to_string_lossy();
+        serve_shm_handle(handle, &socket_path);
+
+        let client = CamClient::new(&socket_path).unwrap();
+
+        let slot_r: Slot = shm.get(fs_handle.slot.slot_idx);
+        let slice = slot_r.as_slice();
+        let slice_for_frame = fs_handle.get_slice_for_frame(0, &slot_r);
+
+        // try decompression directly:
+        let out_size = 256 * TryInto::<i32>::try_into(std::mem::size_of::<u16>()).unwrap();
+        println!(
+            "slice_for_frame.len(): {}, uncompressed_size: {}",
+            slice_for_frame.len(),
+            out_size
+        );
+        lz4::block::decompress(slice_for_frame, Some(out_size)).unwrap();
+
+        println!("{:x?}", slice_for_frame);
+        println!("{:x?}", slice);
+
+        Python::with_gil(|py| {
+            let flat: Vec<u16> = (0..256).collect();
+            let out = PyArray::from_vec(py, flat).reshape((1, 16, 16)).unwrap();
+
+            client.decompress_plain_lz4_impl(&fs_handle, out).unwrap();
 
             out.readonly()
                 .as_slice()

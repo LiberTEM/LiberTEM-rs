@@ -35,6 +35,7 @@ sendfd = "0.4.3"
 tempfile = "3.3.0"
 nix = "0.26.1"
 lz4 = "1.24.0"
+zerocopy = "0.6.1"
 
 [features]
 extension-module = ["pyo3/extension-module"]
