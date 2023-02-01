@@ -1,6 +1,9 @@
 pub mod bs;
+pub mod cam_client;
 pub mod common;
 pub mod dectris_py;
 pub mod exceptions;
-pub mod shm_recv; // REMOVE ME?
+pub mod frame_stack;
+pub mod receiver;
+pub mod shm;
 pub mod sim;

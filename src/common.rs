@@ -178,6 +178,21 @@ impl DConfig {
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Debug)]
+pub struct FrameMeta {
+    pub dimage: DImage,
+    pub dimaged: DImageD,
+    pub dconfig: DConfig,
+    pub data_length_bytes: usize,
+}
+
+impl FrameMeta {
+    /// Get the number of elements in this frame (`prod(shape)`)
+    pub fn get_size(&self) -> u64 {
+        self.dimaged.shape.iter().product()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[pyclass]
 pub struct DSeriesEnd {
