@@ -8,28 +8,23 @@ use std::{
 };
 
 use crate::{
-    bs::decompress_lz4_into,
     cam_client::CamClient,
     common::{
-        DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig, FrameData, PixelType,
-        TriggerMode,
+        DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig, PixelType, TriggerMode,
     },
     exceptions::{ConnectionError, DecompressError, TimeoutError},
     frame_stack::FrameStackHandle,
     receiver::{DectrisReceiver, ReceiverStatus, ResultMsg},
     shm::serve_shm_handle,
     sim::DectrisSim,
+    stats::Stats,
 };
 
-use bincode::serialize;
-
 use ipc_test::SharedSlabAllocator;
-use log::{debug, info, trace};
-use numpy::PyArray2;
+use log::{info, trace};
 use pyo3::{
     exceptions::{self, PyRuntimeError},
     prelude::*,
-    types::{PyBytes, PyType},
 };
 
 #[pymodule]
@@ -38,8 +33,6 @@ fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     // the GIL
     // pyo3_log::init();
 
-    m.add_class::<Frame>()?;
-    m.add_class::<FrameStack>()?;
     m.add_class::<FrameStackHandle>()?;
     m.add_class::<DectrisConnection>()?;
     m.add_class::<PixelType>()?;
@@ -69,277 +62,6 @@ fn register_header_module(py: Python<'_>, parent_module: &PyModule) -> PyResult<
     headers_module.add_class::<DSeriesEnd>()?;
     parent_module.add_submodule(headers_module)?;
     Ok(())
-}
-
-#[pyclass(module = "libertem_dectris")]
-#[derive(Clone)]
-pub struct Frame {
-    frame: FrameData,
-}
-
-impl Frame {
-    fn with_data_cloned(frame: &FrameData) -> Self {
-        Frame {
-            frame: frame.clone(),
-        }
-    }
-
-    fn get_size(&self) -> u64 {
-        return self.frame.dimaged.shape.iter().product();
-    }
-
-    fn decompress_into_impl<T: numpy::Element>(&self, out: &PyArray2<T>) -> PyResult<()> {
-        let mut out_rw = out.readwrite();
-        let out_slice = out_rw.as_slice_mut().expect("`out` must be C-contiguous");
-        let out_size = usize::try_from(self.get_size()).unwrap(); // number of elements
-        let out_ptr: *mut T = out_slice.as_mut_ptr().cast();
-        match decompress_lz4_into(&self.frame.image_data[12..], out_ptr, out_size, None) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let msg = format!("decompression failed: {e:?}");
-                Err(DecompressError::new_err(msg))
-            }
-        }
-    }
-}
-
-#[pymethods]
-impl Frame {
-    #[new]
-    fn new(data: &PyBytes, dimage: &DImage, dimaged: &DImageD, dconfig: &DConfig) -> Self {
-        let frame_data: FrameData = FrameData {
-            dimage: dimage.clone(),
-            dimaged: dimaged.clone(),
-            image_data: data.as_bytes().into(),
-            dconfig: dconfig.clone(),
-        };
-
-        Frame { frame: frame_data }
-    }
-
-    fn __repr__(&self) -> String {
-        let frame = &self.frame;
-        let series = frame.dimage.series;
-        let shape = &frame.dimaged.shape;
-        let idx = frame.dimage.frame;
-        format!("<Frame idx={idx} series={series} shape={shape:?}>")
-    }
-
-    fn get_image_data(slf: PyRef<Self>, py: Python) -> Py<PyBytes> {
-        let bytes: &PyBytes = PyBytes::new(py, slf.frame.image_data.as_slice());
-        bytes.into()
-    }
-
-    fn decompress_into(slf: PyRef<Self>, out: &PyAny) -> PyResult<()> {
-        let arr_u8: Result<&PyArray2<u8>, _> = out.downcast();
-        let arr_u16: Result<&PyArray2<u16>, _> = out.downcast();
-        let arr_u32: Result<&PyArray2<u32>, _> = out.downcast();
-
-        match slf.frame.dimaged.encoding.as_str() {
-            "bs32-lz4<" => {
-                slf.decompress_into_impl(arr_u32.unwrap())?;
-            }
-            "bs16-lz4<" => {
-                slf.decompress_into_impl(arr_u16.unwrap())?;
-            }
-            "bs8-lz4<" => {
-                slf.decompress_into_impl(arr_u8.unwrap())?;
-            }
-            e => {
-                let msg = format!("can't deal with encoding {e}");
-                return Err(exceptions::PyValueError::new_err(msg));
-            }
-        }
-        Ok(())
-    }
-
-    fn get_series_id(slf: PyRef<Self>) -> u64 {
-        slf.frame.dimage.series
-    }
-
-    fn get_frame_id(slf: PyRef<Self>) -> u64 {
-        slf.frame.dimage.frame
-    }
-
-    fn get_hash(slf: PyRef<Self>) -> String {
-        slf.frame.dimage.hash.clone()
-    }
-
-    fn get_pixel_type(slf: PyRef<Self>) -> String {
-        match &slf.frame.dimaged.type_ {
-            PixelType::Uint8 => "uint8".to_string(),
-            PixelType::Uint16 => "uint16".to_string(),
-            PixelType::Uint32 => "uint32".to_string(),
-        }
-    }
-
-    fn get_encoding(slf: PyRef<Self>) -> String {
-        slf.frame.dimaged.encoding.clone()
-    }
-
-    /// return endianess in numpy notation
-    fn get_endianess(slf: PyRef<Self>) -> PyResult<String> {
-        match slf.frame.dimaged.encoding.chars().last() {
-            Some(c) => Ok(c.to_string()),
-            None => Err(exceptions::PyValueError::new_err(
-                "encoding should be non-empty".to_string(),
-            )),
-        }
-    }
-
-    fn get_shape(slf: PyRef<Self>) -> Vec<u64> {
-        slf.frame.dimaged.shape.clone()
-    }
-}
-
-impl From<Frame> for FrameData {
-    fn from(frame: Frame) -> Self {
-        frame.frame
-    }
-}
-
-#[pyclass]
-struct FrameStack {
-    frames: Vec<FrameData>,
-}
-
-impl FrameStack {
-    fn empty() -> Self {
-        FrameStack {
-            frames: Vec::with_capacity(128),
-        }
-    }
-
-    fn with_data(frames: Vec<FrameData>) -> Self {
-        FrameStack { frames }
-    }
-
-    fn len(&self) -> usize {
-        self.frames.len()
-    }
-
-    fn push(&mut self, frame: FrameData) {
-        self.frames.push(frame);
-    }
-
-    fn get(&self, key: usize) -> Option<&FrameData> {
-        if let Some(item) = self.frames.get(key) {
-            Some(item)
-        } else {
-            None
-        }
-    }
-}
-
-#[pymethods]
-impl FrameStack {
-    #[new]
-    fn new() -> Self {
-        FrameStack::empty()
-    }
-
-    /// create a frame stack from a list of frames
-    /// NOTE: this probably doesn't perform well, and is only meant for testing
-    #[classmethod]
-    fn from_frame_list(_cls: &PyType, frames: Vec<Frame>) -> Self {
-        FrameStack {
-            frames: frames.into_iter().map(|f| f.into()).collect(),
-        }
-    }
-
-    #[classmethod]
-    fn deserialize(_cls: &PyType, serialized: &PyBytes) -> Self {
-        let data = serialized.as_bytes();
-        FrameStack::with_data(bincode::deserialize(data).unwrap())
-    }
-
-    fn serialize(slf: PyRef<Self>, py: Python) -> PyResult<Py<PyBytes>> {
-        let bytes: &PyBytes = PyBytes::new(py, serialize(&slf.frames).unwrap().as_slice());
-        Ok(bytes.into())
-    }
-
-    fn __len__(slf: PyRef<Self>) -> usize {
-        slf.frames.len()
-    }
-
-    fn __getitem__(slf: PyRef<Self>, key: usize) -> PyResult<Frame> {
-        if let Some(item) = slf.get(key) {
-            Ok(Frame::with_data_cloned(item))
-        } else {
-            Err(exceptions::PyIndexError::new_err("frame not found"))
-        }
-    }
-}
-
-pub struct Stats {
-    /// total number of bytes (compressed) that have flown through the system
-    payload_size_sum: usize,
-
-    /// maximum size of compressed frames seen
-    frame_size_max: usize,
-
-    /// minimum size of compressed frames seen
-    frame_size_min: usize,
-
-    /// sum of the size of the slots used
-    slots_size_sum: usize,
-
-    /// number of frames seen
-    num_frames: usize,
-
-    /// number of times a frame stack was split
-    split_count: usize,
-}
-
-impl Stats {
-    pub fn new() -> Self {
-        Self {
-            payload_size_sum: 0,
-            slots_size_sum: 0,
-            frame_size_max: 0,
-            frame_size_min: usize::MAX,
-            num_frames: 0,
-            split_count: 0,
-        }
-    }
-
-    pub fn count_frame_stack(&mut self, frame_stack: &FrameStackHandle) {
-        self.payload_size_sum += frame_stack.payload_size();
-        self.slots_size_sum += frame_stack.slot_size();
-        self.frame_size_max = self.frame_size_max.max(
-            frame_stack
-                .get_meta()
-                .iter()
-                .max_by_key(|fm| fm.data_length_bytes)
-                .map_or(self.frame_size_max, |fm| fm.data_length_bytes),
-        );
-        self.frame_size_min = self.frame_size_min.min(
-            frame_stack
-                .get_meta()
-                .iter()
-                .min_by_key(|fm| fm.data_length_bytes)
-                .map_or(self.frame_size_min, |fm| fm.data_length_bytes),
-        );
-        self.num_frames += frame_stack.len();
-    }
-
-    pub fn count_split(&mut self) {
-        self.split_count += 1;
-    }
-
-    pub fn log_stats(&self) {
-        let efficiency = self.payload_size_sum as f32 / self.slots_size_sum as f32;
-        debug!(
-            "Stats: frames seen: {}, total payload size: {}, total slot size used: {}, min frame size: {}, max frame size: {}, splits: {}, shm efficiency: {}",
-            self.num_frames, self.payload_size_sum, self.slots_size_sum, self.frame_size_min, self.frame_size_max, self.split_count, efficiency,
-        );
-    }
-}
-
-impl Default for Stats {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 struct FrameChunkedIterator<'a, 'b, 'c, 'd> {

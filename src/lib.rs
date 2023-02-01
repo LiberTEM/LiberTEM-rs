@@ -7,3 +7,4 @@ pub mod frame_stack;
 pub mod receiver;
 pub mod shm;
 pub mod sim;
+pub mod stats;

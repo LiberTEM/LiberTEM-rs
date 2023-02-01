@@ -2,7 +2,6 @@
 
 use std::fs;
 
-use ipc_test::Slot;
 use log::info;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -208,34 +207,6 @@ impl DSeriesEnd {
             htype: "dseries_end-1.0".to_string(),
             series,
         }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[pyclass]
-pub struct FrameData {
-    pub dimage: DImage,
-    pub dimaged: DImageD,
-
-    /// the raw, undecoded data for this frame, probably compressed
-    pub image_data: Vec<u8>,
-
-    pub dconfig: DConfig,
-}
-
-pub struct NewFrameData {
-    pub meta: FrameData,
-
-    /// shm slot for this frame
-    slot: Slot,
-
-    /// how many bytes in the shm slot are actually filled with useful data?
-    valid_bytes: usize,
-}
-
-impl NewFrameData {
-    pub fn valid_data(&self) -> &[u8] {
-        &self.slot.as_slice()[0..self.valid_bytes]
     }
 }
 
