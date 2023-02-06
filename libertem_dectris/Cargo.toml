@@ -40,9 +40,6 @@ zerocopy = "0.6.1"
 [features]
 extension-module = ["pyo3/extension-module"]
 
-[profile.release]
-debug = true
-
 [build-dependencies]
 bindgen = "0.60.1"
 cc = "1.0.73"
