@@ -428,7 +428,6 @@ dependencies = [
 [[package]]
 name = "ipc-test"
 version = "0.1.0"
-source = "git+git+ssh://gitlab@iffgit.fz-juelich.de/clausen/ipc-test.git#57e4a9d3a401f11007a05abaadd1d906cf6a9109"
 dependencies = [
  "anyhow",
  "bincode",

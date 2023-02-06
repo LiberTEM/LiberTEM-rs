@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "libertem_dectris",
+    "ipc_test",
 ]
 
 [profile.release]
