@@ -7,12 +7,16 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [libertem_dectris]
     steps:
     - uses: actions/checkout@v3
       with:
         submodules: recursive
     - uses: messense/maturin-action@v1
       with:
+        working-directory: ${{ matrix.crate }}
         manylinux: auto
         command: build
         container: ghcr.io/libertem/manylinux2014_x86_64:latest
@@ -25,6 +29,9 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        crate: [libertem_dectris]
     steps:
     - name: Install LLVM and Clang # required for bindgen to work, see https://github.com/rust-lang/rust-bindgen/issues/1797
       uses: KyleMayes/install-llvm-action@v1.5.4
@@ -41,6 +48,7 @@ jobs:
         submodules: recursive
     - uses: messense/maturin-action@v1
       with:
+        working-directory: ${{ matrix.crate }}
         command: build
         args: --release -o dist --find-interpreter
     - name: Upload wheels
@@ -51,6 +59,9 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    strategy:
+      matrix:
+        crate: [libertem_dectris]
     steps:
     - name: Set LIBCLANG_PATH
       run: echo "LIBCLANG_PATH=$(brew --prefix llvm@14)/lib" >> $env:GITHUB_ENV
@@ -60,6 +71,7 @@ jobs:
     - uses: messense/maturin-action@v1
       with:
         command: build
+        working-directory: ${{ matrix.crate }}
         args: --release -o dist --universal2 --find-interpreter
     - name: Upload wheels
       uses: actions/upload-artifact@v2
@@ -70,6 +82,9 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [libertem_dectris]
     if: "startsWith(github.ref, 'refs/tags/')"
     needs: [ macos, windows, linux ]
     steps:
@@ -81,5 +96,6 @@ jobs:
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         with:
+          working-directory: ${{ matrix.crate }}
           command: upload
           args: --skip-existing *
