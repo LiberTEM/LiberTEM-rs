@@ -12,3 +12,5 @@ pub mod serialize;
 pub mod deserialize;
 pub mod headers_py;
 pub mod sparse_csr;
+pub mod csr_view;
+pub mod csr_view_raw;
