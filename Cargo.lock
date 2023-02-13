@@ -479,6 +479,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "201de327520df007757c1f0adce6e827fe8562fbc28bfd9c15571c66ca1f5f79"
 
 [[package]]
+name = "libertem-asi-tpx3"
+version = "0.2.2"
+dependencies = [
+ "bincode",
+ "clap 3.2.23",
+ "crossbeam",
+ "crossbeam-channel",
+ "env_logger",
+ "ipc-test",
+ "log",
+ "memmap2",
+ "nix",
+ "num-traits",
+ "numpy",
+ "pyo3",
+ "sendfd",
+ "serde",
+ "serde_json",
+ "spin_sleep",
+ "tempfile",
+ "uuid",
+ "zerocopy",
+ "zmq",
+]
+
+[[package]]
 name = "libertem-dectris"
 version = "0.2.2"
 dependencies = [
