@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "libertem_dectris",
+    "libertem_asi_tpx3",
     "ipc_test",
 ]
 

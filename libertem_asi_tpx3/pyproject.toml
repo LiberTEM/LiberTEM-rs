@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=0.13,<0.14"]
+build-backend = "maturin"
+
+[project]
+name = "libertem-asi-tpx3"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+
+[project.urls]
+repository = "https://github.com/LiberTEM/LiberTEM-rs/"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
