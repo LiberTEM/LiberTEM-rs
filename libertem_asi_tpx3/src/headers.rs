@@ -92,7 +92,7 @@ impl DType {
     }
 
     /// element size in bytes for the uncompressed formats
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         match self {
             DType::U8 => 1,
             DType::U16 => 2,
@@ -190,7 +190,10 @@ impl ScanStart {
 }
 
 /// Line or "stack of frames" as sparse data
-/// on the wire, this is followed by the the arrays of sparse data
+/// on the wire, this is followed by the the arrays of sparse data.
+/// the data is encoded as little endian integers, according to the
+/// dtypes specified in the acquisition header and the value dtype
+/// for each chunk.
 /// 
 /// sizes in bytes:
 /// size of the indptr part: size_of::<indptr_dtype> * (nframes + 1)
