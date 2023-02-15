@@ -1,11 +1,12 @@
 use std::ffi::c_int;
 
-use ipc_test::{SharedSlabAllocator, Slot};
+use ipc_test::SharedSlabAllocator;
 use log::trace;
 use pyo3::{exceptions::PyRuntimeError, ffi::PyMemoryView_FromMemory, prelude::*, FromPyPointer};
-use zerocopy::{FromBytes, AsBytes};
 
-use crate::{exceptions::ConnectionError, chunk_stack::ChunkStackHandle, shm::recv_shm_handle, csr_view::CSRView};
+#[cfg(test)]
+use zerocopy::{FromBytes, AsBytes};
+use crate::{exceptions::ConnectionError, chunk_stack::ChunkStackHandle, shm::recv_shm_handle};
 
 #[pyclass]
 pub struct CamClient {
@@ -13,11 +14,11 @@ pub struct CamClient {
 }
 
 impl CamClient {
-    fn get_memoryview(&self, py: Python, slot_r: &Slot, offset: usize, length: usize) -> PyObject {
-        let offset = isize::try_from(offset).unwrap();
-        let mut ptr = slot_r.ptr;
+    fn get_memoryview(&self, py: Python, raw_data: &[u8]) -> PyObject {
+        let ptr = raw_data.as_ptr();
+        let length = raw_data.len();
+
         let mv = unsafe {
-            ptr = ptr.offset(offset);
             PyMemoryView_FromMemory(
                 ptr as *mut i8,
                 length.try_into().unwrap(),
@@ -28,22 +29,19 @@ impl CamClient {
         from_ptr.into_py(py)
     }
 
-    fn get_slices<'a, I, IP, V>(&'a self, slot_r: &'a Slot, handle: &ChunkStackHandle) -> Vec<(&[IP], &[I], &[V])>
+    #[cfg(test)]
+    fn get_slices<'a, I, IP, V>(&'a self, slot_r: &'a ipc_test::Slot, handle: &'a ChunkStackHandle) -> Vec<(&[IP], &[I], &[V])>
     where
         I: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
         IP: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
         V: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
     {
-        let raw_data = slot_r.as_slice();
-
-        let mut cursor: usize = 0;
 
         handle.get_chunk_views::<I, IP, V>(slot_r)
             .iter()
-            .map(|v| (v.indptr, v.indices, v.values))
+            .map(|view| (view.indptr, view.indices, view.values))
             .collect()
     }
-
 }
 
 #[allow(non_upper_case_globals)]
@@ -71,22 +69,10 @@ impl CamClient {
         if let Some(shm) = &self.shm {
             let slot_r = shm.get(handle.slot.slot_idx);
 
-            let mut cursor: usize = 0;
-
-            Ok(handle.get_meta().iter().map(|meta| {
-                let arr_data = &raw_data[cursor..meta.data_length_bytes];
-
-                let indptr = self.get_memoryview(
-                    py, &slot_r, meta.indptr_offset + cursor, meta.indptr_size
-                );
-                let indices = self.get_memoryview(
-                    py, &slot_r, meta.indices_offset + cursor, meta.indices_size
-                );
-                let values = self.get_memoryview(
-                    py, &slot_r, meta.value_offset + cursor, meta.value_size
-                );
-
-                cursor += meta.data_length_bytes;
+            Ok(handle.get_chunk_views_raw(&slot_r).iter().map(|view| {
+                let indptr = self.get_memoryview(py, view.get_indptr_raw());
+                let indices = self.get_memoryview(py, view.get_indices_raw());
+                let values = self.get_memoryview(py, view.get_values_raw());
                 (indptr, indices, values)
             }).collect())
         } else {
@@ -119,12 +105,10 @@ impl Drop for CamClient {
 
 #[cfg(test)]
 mod tests {
-    use numpy::PyArray;
     use tempfile::tempdir;
 
     use ipc_test::SharedSlabAllocator;
     use pyo3::{prepare_freethreaded_python, Python};
-    use zerocopy::AsBytes;
 
     use crate::{
         cam_client::CamClient,

@@ -1,6 +1,6 @@
 use std::{net::TcpStream, io::Read};
 
-use log::trace;
+use log::{trace, info};
 
 use crate::headers::{HeaderTypes, WireFormatError};
 
@@ -33,7 +33,27 @@ pub fn stream_recv_header(
     // TODO: timeout? can't block indefinitely - can we make this atomic?
     // TODO: we may have to periodically check for control messages etc.
     // maybe just use a simple timeout and return `None` here?
-    stream.read_exact(header_bytes)?;
+
+    //stream.read_exact(header_bytes)?;
+
+    loop {
+        match stream.read_exact(header_bytes) {
+            Ok(_) => {
+                break
+            },
+            Err(e) => {
+                match e.kind() {
+                    std::io::ErrorKind::WouldBlock | 
+                    std::io::ErrorKind::TimedOut => {
+                        info!("error: {e}");
+                        continue
+                    },
+                    _ => return Err(e.into())
+                }
+            }
+        }
+    }
+
     trace!("stream_recv_header: read {} bytes", header_bytes.len());
     Ok(HeaderTypes::from_bytes(header_bytes)?)
 }

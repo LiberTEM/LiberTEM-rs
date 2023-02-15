@@ -233,7 +233,7 @@ fn handle_scan(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
     stream: &mut TcpStream,
-    frame_stack_size: usize,
+    chunks_per_stack: usize,
     shm: &mut SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     let t0 = Instant::now();
@@ -253,7 +253,7 @@ fn handle_scan(
         Some(x) => x,
     };
     let mut chunk_stack =
-        ChunkStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
+        ChunkStackForWriting::new(slot, chunks_per_stack, approx_size_bytes as usize);
 
     loop {
         if last_control_check.elapsed() > Duration::from_millis(300) {
@@ -287,7 +287,7 @@ fn handle_scan(
                         };
                         let new_frame_stack = ChunkStackForWriting::new(
                             slot,
-                            frame_stack_size,
+                            chunks_per_stack,
                             approx_size_bytes as usize,
                         );
                         let old_chunk_stack = replace(&mut chunk_stack, new_frame_stack);
@@ -374,7 +374,7 @@ fn background_thread(
             }
         };
         info!("connected to {remote}");
-        stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        // stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
 
         // handle control messages and start acquisition
         'inner: loop {

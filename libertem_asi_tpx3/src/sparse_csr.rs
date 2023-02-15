@@ -147,6 +147,8 @@ impl<'a> SparseCSR<'a> {
     ///
     /// This is generic over the index pointer type `IP`, as that is the only one we actually
     /// need to interprete in our code - the indices and values we can copy over unseen.
+    /// 
+    /// Returns the layouts of the matrices written into `left` and `right`
     fn split_generic<IP>(
         &self,
         mid: usize,
