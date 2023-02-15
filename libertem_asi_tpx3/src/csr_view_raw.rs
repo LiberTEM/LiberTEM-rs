@@ -1,9 +1,26 @@
 use zerocopy::{AsBytes, FromBytes, LayoutVerified};
 
-use crate::{headers::DType, sparse_csr::CSRSizes};
+use crate::{headers::DType, sparse_csr::CSRSizes, chunk_stack::ChunkCSRLayout};
 
 /// A view into a CSR array stored in `raw_data`, only interpreting the `indptr` array
 /// as concrete values, leaving `indices` and `values` as bytes.
+///
+fn validate_csr_data(
+    raw_data: &[u8],
+    nnz: u32,
+    nrows: u32,
+    indptr_dtype: DType,
+    indices_dtype: DType,
+    values_dtype: DType,
+) {
+    let sizes = CSRSizes::new_dyn(nnz, nrows, indptr_dtype, indices_dtype, values_dtype);
+
+    let len = raw_data.len();
+    assert!(sizes.indptr <= len, "indptr={}, len={}", sizes.indptr, len);
+    assert!(sizes.indptr + sizes.indices <= len);
+    assert!(sizes.indptr + sizes.indices + sizes.values <= len);
+}
+
 pub struct CSRViewRaw<'a> {
     raw_data: &'a [u8],
     pub nnz: u32,
@@ -22,6 +39,14 @@ impl<'a> CSRViewRaw<'a> {
         indices_dtype: DType,
         values_dtype: DType,
     ) -> Self {
+        validate_csr_data(
+            raw_data,
+            nnz,
+            nrows,
+            indptr_dtype,
+            indices_dtype,
+            values_dtype,
+        );
         Self {
             raw_data,
             nnz,
@@ -31,6 +56,21 @@ impl<'a> CSRViewRaw<'a> {
             indptr_dtype,
         }
     }
+
+    pub fn from_bytes_with_layout(
+        raw_data: &'a [u8],
+        layout: &ChunkCSRLayout,
+    ) -> Self {
+        Self::from_bytes(
+            raw_data,
+            layout.nnz,
+            layout.nframes,
+            layout.indptr_dtype,
+            layout.indices_dtype,
+            layout.value_dtype,
+        )
+    }
+
 
     fn get_sizes(&self) -> CSRSizes {
         CSRSizes::new_dyn(
@@ -49,6 +89,11 @@ impl<'a> CSRViewRaw<'a> {
         let sizes = self.get_sizes();
         let indptr_raw = &self.raw_data[0..sizes.indptr];
         LayoutVerified::new_slice(indptr_raw).unwrap().into_slice()
+    }
+
+    pub fn get_indptr_raw(&self) -> &'a [u8] {
+        let sizes = self.get_sizes();
+        &self.raw_data[0..sizes.indptr]
     }
 
     pub fn get_indices_raw(&self) -> &'a [u8] {
@@ -80,6 +125,14 @@ impl<'a> CSRViewRawMut<'a> {
         indices_dtype: DType,
         values_dtype: DType,
     ) -> Self {
+        validate_csr_data(
+            raw_data,
+            nnz,
+            nrows,
+            indptr_dtype,
+            indices_dtype,
+            values_dtype,
+        );
         Self {
             raw_data,
             nnz,
@@ -88,6 +141,20 @@ impl<'a> CSRViewRawMut<'a> {
             values_dtype,
             indptr_dtype,
         }
+    }
+
+    fn from_bytes_with_layout(
+        raw_data: &'a mut [u8],
+        layout: &ChunkCSRLayout,
+    ) -> Self {
+        Self::from_bytes(
+            raw_data,
+            layout.nnz,
+            layout.nframes,
+            layout.indptr_dtype,
+            layout.indices_dtype,
+            layout.value_dtype,
+        )
     }
 
     fn get_sizes(&self) -> CSRSizes {
@@ -109,6 +176,11 @@ impl<'a> CSRViewRawMut<'a> {
         LayoutVerified::new_slice(indptr_raw)
             .unwrap()
             .into_mut_slice()
+    }
+
+    pub fn get_indptr_raw(&mut self) -> &'a mut [u8] {
+        let sizes = self.get_sizes();
+        &mut self.raw_data[0..sizes.indptr]
     }
 
     pub fn copy_into_indptr<IP>(&mut self, src: &[IP])

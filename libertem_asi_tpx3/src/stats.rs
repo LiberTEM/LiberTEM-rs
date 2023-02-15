@@ -1,6 +1,6 @@
 use log::debug;
 
-use crate::frame_stack::ChunkStackHandle;
+use crate::chunk_stack::ChunkStackHandle;
 
 pub struct Stats {
     /// total number of bytes (compressed) that have flown through the system
