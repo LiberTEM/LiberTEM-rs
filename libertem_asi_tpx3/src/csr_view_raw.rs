@@ -178,7 +178,7 @@ impl<'a> CSRViewRawMut<'a> {
             .into_mut_slice()
     }
 
-    pub fn get_indptr_raw(&mut self) -> &'a mut [u8] {
+    pub fn get_indptr_raw(&mut self) -> &mut [u8] {
         let sizes = self.get_sizes();
         &mut self.raw_data[0..sizes.indptr]
     }

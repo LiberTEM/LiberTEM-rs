@@ -12,7 +12,7 @@ use crate::{
     chunk_stack::ChunkStackHandle,
     exceptions::{ConnectionError, TimeoutError},
     headers::{
-        AcquisitionEnd, AcquisitionStart, ArrayChunk, DType, FormatType, ScanEnd, ScanStart,
+        AcquisitionStart,
     },
     receiver::{ReceiverStatus, ResultMsg, TPXReceiver},
     shm::serve_shm_handle,
@@ -73,7 +73,7 @@ impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
     pub fn get_next_stack_impl(
         &mut self,
         py: Python,
-        max_size: usize,
+        max_size: u32,
     ) -> PyResult<Option<ChunkStackHandle>> {
         let res = self.recv_next_stack_impl(py);
         match res {
@@ -86,7 +86,7 @@ impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
                     );
                     self.stats.count_split();
                     let (left, right) =
-                        frame_stack.split_at(u32::try_from(max_size).unwrap(), self.shm);
+                        frame_stack.split_at(max_size, self.shm);
                     self.remainder.push(right);
                     assert!(left.len() <= max_size);
                     return Ok(Some(left));
@@ -207,14 +207,14 @@ impl ASITpx3Connection {
     #[new]
     fn new(
         uri: &str,
-        frame_stack_size: usize,
+        chunks_per_stack: usize,
         num_slots: Option<usize>,
-        bytes_per_frame: Option<usize>,
+        bytes_per_chunk: Option<usize>,
         huge: Option<bool>,
     ) -> PyResult<Self> {
         let num_slots = num_slots.map_or_else(|| 2000, |x| x);
-        let bytes_per_frame = bytes_per_frame.map_or_else(|| 512 * 512 * 2, |x| x);
-        let slot_size = frame_stack_size * bytes_per_frame;
+        let bytes_per_chunk = bytes_per_chunk.map_or_else(|| 512 * 512 * 2, |x| x);
+        let slot_size = chunks_per_stack * bytes_per_chunk;
         let shm = match SharedSlabAllocator::new(
             num_slots,
             slot_size,
@@ -231,7 +231,7 @@ impl ASITpx3Connection {
         let local_shm = shm.clone_and_connect().expect("clone SHM");
 
         Ok(Self {
-            receiver: TPXReceiver::new(uri, frame_stack_size, shm),
+            receiver: TPXReceiver::new(uri, chunks_per_stack, shm),
             remainder: Vec::new(),
             shm_stop_event: None,
             shm_join_handle: None,
@@ -323,7 +323,7 @@ impl ASITpx3Connection {
     fn get_next_stack(
         &mut self,
         py: Python,
-        max_size: usize,
+        max_size: u32,
     ) -> PyResult<Option<ChunkStackHandle>> {
         let mut iter = ChunkIterator::new(
             &mut self.receiver,
@@ -333,7 +333,7 @@ impl ASITpx3Connection {
         )?;
         iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
             if let Some(frame_stack) = &maybe_stack {
-                self.stats.count_frame_stack(frame_stack);
+                self.stats.count_chunk_stack(frame_stack);
             }
             maybe_stack
         })

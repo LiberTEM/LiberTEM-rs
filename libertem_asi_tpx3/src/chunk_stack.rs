@@ -93,6 +93,7 @@ impl ChunkStackForWriting {
         }
     }
 
+    /// number of _frames_ in this chunk stack
     pub fn len(&self) -> usize {
         self.meta.len()
     }
@@ -127,7 +128,7 @@ impl ChunkStackForWriting {
             slot: slot_info,
             meta: self.meta,
             offsets: self.offsets,
-            bytes_per_frame: self.bytes_per_chunk,
+            bytes_per_chunk: self.bytes_per_chunk,
         }
     }
 }
@@ -139,12 +140,12 @@ pub struct ChunkStackHandle {
     pub(crate) slot: SlotInfo,
     meta: Vec<ChunkCSRLayout>,
     pub(crate) offsets: Vec<usize>,
-    pub(crate) bytes_per_frame: usize,
+    pub(crate) bytes_per_chunk: usize,
 }
 
 impl ChunkStackHandle {
-    pub fn len(&self) -> usize {
-        self.meta.len()
+    pub fn len(&self) -> u32 {
+        self.meta.iter().map(|layout| layout.nframes).sum()
     }
 
     #[must_use]
@@ -321,13 +322,13 @@ impl ChunkStackHandle {
                 slot: left,
                 meta: left_meta,
                 offsets: left_offsets,
-                bytes_per_frame: self.bytes_per_frame,
+                bytes_per_chunk: self.bytes_per_chunk,
             },
             ChunkStackHandle {
                 slot: right,
                 meta: right_meta,
                 offsets: right_offsets,
-                bytes_per_frame: self.bytes_per_frame,
+                bytes_per_chunk: self.bytes_per_chunk,
             },
         )
     }
@@ -404,7 +405,7 @@ impl ChunkStackHandle {
     }
 
     fn __len__(slf: PyRef<Self>) -> usize {
-        slf.len()
+        slf.len() as usize
     }
 
     fn __repr__(&self) -> String {
