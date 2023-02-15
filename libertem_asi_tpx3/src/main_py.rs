@@ -9,11 +9,14 @@ use std::{
 
 use crate::{
     cam_client::CamClient,
+    chunk_stack::ChunkStackHandle,
     exceptions::{ConnectionError, TimeoutError},
-    frame_stack::ChunkStackHandle,
-    receiver::{TPXReceiver, ReceiverStatus, ResultMsg},
+    headers::{
+        AcquisitionEnd, AcquisitionStart, ArrayChunk, DType, FormatType, ScanEnd, ScanStart,
+    },
+    receiver::{ReceiverStatus, ResultMsg, TPXReceiver},
     shm::serve_shm_handle,
-    stats::Stats, headers::{DType, AcquisitionStart, AcquisitionEnd, ScanStart, ScanEnd, ArrayChunk, FormatType},
+    stats::Stats,
 };
 
 use ipc_test::SharedSlabAllocator;
@@ -57,14 +60,14 @@ fn libertem_asi_tpx3(py: Python, m: &PyModule) -> PyResult<()> {
 //     Ok(())
 // }
 
-struct FrameChunkedIterator<'a, 'b, 'c, 'd> {
+struct ChunkIterator<'a, 'b, 'c, 'd> {
     receiver: &'a mut TPXReceiver,
     shm: &'b mut SharedSlabAllocator,
     remainder: &'c mut Vec<ChunkStackHandle>,
     stats: &'d mut Stats,
 }
 
-impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
+impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
     /// Get the next frame stack. Mainly handles splitting logic for boundary
     /// conditions and delegates communication with the background thread to `recv_next_stack_impl`
     pub fn get_next_stack_impl(
@@ -82,7 +85,8 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
                         frame_stack.len()
                     );
                     self.stats.count_split();
-                    let (left, right) = frame_stack.split_at(max_size, self.shm);
+                    let (left, right) =
+                        frame_stack.split_at(u32::try_from(max_size).unwrap(), self.shm);
                     self.remainder.push(right);
                     assert!(left.len() <= max_size);
                     return Ok(Some(left));
@@ -126,9 +130,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
                 None => {
                     continue;
                 }
-                Some(ResultMsg::AcquisitionStart {
-                    header: _
-                }) => {
+                Some(ResultMsg::AcquisitionStart { header: _ }) => {
                     // FIXME: in case of "passive" mode, we should actually not hit this,
                     // as the "outer" structure (`*Connection`) handles it?
                     continue;
@@ -161,7 +163,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
         remainder: &'c mut Vec<ChunkStackHandle>,
         stats: &'d mut Stats,
     ) -> PyResult<Self> {
-        Ok(FrameChunkedIterator {
+        Ok(ChunkIterator {
             receiver,
             shm,
             remainder,
@@ -242,11 +244,7 @@ impl ASITpx3Connection {
     /// Wait until the detector is armed, or until the timeout expires (in seconds)
     /// Returns `None` in case of timeout, the detector config otherwise.
     /// This method drops the GIL to allow concurrent Python threads.
-    fn wait_for_arm(
-        &mut self,
-        timeout: f32,
-        py: Python,
-    ) -> PyResult<Option<AcquisitionStart>> {
+    fn wait_for_arm(&mut self, timeout: f32, py: Python) -> PyResult<Option<AcquisitionStart>> {
         let timeout = Duration::from_secs_f32(timeout);
         let deadline = Instant::now() + timeout;
         let step = Duration::from_millis(100);
@@ -263,11 +261,11 @@ impl ASITpx3Connection {
             match res {
                 Some(ResultMsg::AcquisitionStart {
                     header,
-                // }) => return Ok(Some(header)),
+                    // }) => return Ok(Some(header)),
                 }) => {
                     trace!("got ResultMsg::AcquisitionStart");
                     return Ok(Some(header));
-                },
+                }
                 msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {
                     let err = format!("unexpected message: {msg:?}");
                     return Err(PyRuntimeError::new_err(err));
@@ -327,7 +325,7 @@ impl ASITpx3Connection {
         py: Python,
         max_size: usize,
     ) -> PyResult<Option<ChunkStackHandle>> {
-        let mut iter = FrameChunkedIterator::new(
+        let mut iter = ChunkIterator::new(
             &mut self.receiver,
             &mut self.local_shm,
             &mut self.remainder,

@@ -11,7 +11,7 @@ use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, error, info, warn, trace};
 
 use crate::{
-    frame_stack::{ChunkStackForWriting, ChunkStackHandle, ChunkMeta},
+    chunk_stack::{ChunkStackForWriting, ChunkStackHandle, ChunkCSRLayout},
     headers::{AcquisitionStart, ScanStart, HeaderTypes},
     stream::{stream_recv_chunk, stream_recv_header, StreamError},
 };
@@ -297,12 +297,21 @@ fn handle_scan(
                         frame_stack: handle,
                     })?;
                 }
-                let meta = ChunkMeta {
-                    value_dtype: header.value_dtype,
+                let sizes = header.get_sizes(&acquisition_header);
+                // FIXME: alignment will change!
+                // offsets will be aligned in the future, and will come from the chunk header
+                let meta = ChunkCSRLayout {
                     indptr_dtype: acquisition_header.indptr_dtype,
+                    indptr_offset: 0,
+                    indptr_size: sizes.indptr,
                     indices_dtype: acquisition_header.indices_dtype,
+                    indices_offset: sizes.indptr,
+                    indices_size: sizes.indices,
+                    value_dtype: header.value_dtype,
+                    value_offset: sizes.indptr + sizes.indices,
+                    value_size: sizes.values,
                     nframes: header.nframes,
-                    length: header.length,
+                    nnz: header.length,
                     data_length_bytes: nbytes,
                 };
                 let buf = chunk_stack.slice_for_writing(nbytes, meta);

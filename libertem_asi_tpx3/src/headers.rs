@@ -3,6 +3,8 @@ use log::trace;
 use pyo3::pyclass;
 use serde::{Serialize, Deserialize};
 
+use crate::sparse_csr::CSRSizes;
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum HeaderTypes {
     AcquisitionStart { header: AcquisitionStart },
@@ -69,6 +71,7 @@ impl HeaderTypes {
 
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
 #[repr(u8)]
+#[pyclass]
 pub enum DType {
     U1,
     U4,
@@ -98,6 +101,17 @@ impl DType {
             DType::U16 => 2,
             DType::U32 => 4,
             DType::U64 => 8,
+            DType::U1 => todo!(),
+            DType::U4 => todo!(),
+        }
+    }
+
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            DType::U8 => "uint8",
+            DType::U16 => "uint16",
+            DType::U32 => "uint32",
+            DType::U64 => "uint64",
             DType::U1 => todo!(),
             DType::U4 => todo!(),
         }
@@ -169,6 +183,7 @@ impl AcquisitionStart {
 /// followed by `metadata_length` bytes of JSON encoded metadata
 /// (`metadata_length` can be 0)
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[pyclass]
 pub struct ScanStart {
     tag: u8, // const. 0x01
 
@@ -200,6 +215,7 @@ impl ScanStart {
 /// size of the indices part: size_of::<indices_dtype> * length
 /// size of the values part: size_of::<value_dtype> * length 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[pyclass]
 pub struct ArrayChunk {
     tag: u8,  // const. 0x02
 
@@ -211,7 +227,13 @@ pub struct ArrayChunk {
     
     /// number of non-zero elements in the array
     pub length: u32,
-    reserved: [u8;22],
+
+    // indptr always starts at zero
+    // pub indices_offset: u32,
+    // pub values_offset: u32,
+
+    //reserved: [u8; 14],
+    reserved: [u8; 22],
 }
 
 impl ArrayChunk {
@@ -221,17 +243,17 @@ impl ArrayChunk {
             value_dtype,
             nframes,
             length,
+            // reserved: [0;14]
             reserved: [0;22]
         }
     }
 
     pub fn get_chunk_size_bytes(&self, acquisition_header: &AcquisitionStart) -> usize {
-        let indptr_size = (self.nframes as usize + 1) * acquisition_header.indptr_dtype.size();
-        let indices_size = self.length as usize * acquisition_header.indices_dtype.size();
-        let values_size = self.length as usize * self.value_dtype.size();
+        self.get_sizes(acquisition_header).total()
+    }
 
-        // TODO: alignment/padding?
-        values_size + indices_size + indptr_size
+    pub fn get_sizes(&self, acquisition_header: &AcquisitionStart) -> CSRSizes {
+        CSRSizes::from_headers(acquisition_header, self)
     }
 }
 

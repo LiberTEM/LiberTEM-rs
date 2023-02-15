@@ -2,7 +2,7 @@ pub mod cam_client;
 pub mod common;
 pub mod main_py;
 pub mod exceptions;
-pub mod frame_stack;
+pub mod chunk_stack;
 pub mod receiver;
 pub mod shm;
 pub mod stats;

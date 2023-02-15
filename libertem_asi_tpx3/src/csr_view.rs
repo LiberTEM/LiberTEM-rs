@@ -69,9 +69,9 @@ pub struct CSRViewMut<'a, I, IP, V> {
 
 impl<'a, I, V, IP> CSRViewMut<'a, I, IP, V>
 where
-    I: numpy::Element + FromBytes + AsBytes,
-    IP: numpy::Element + FromBytes + AsBytes,
-    V: numpy::Element + FromBytes + AsBytes,
+    I: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
+    IP: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
+    V: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
 {
     pub fn from_bytes(raw_data: &'a mut [u8], nnz: u32, nrows: u32) -> Self {
         let sizes = CSRSizes::new::<I, IP, V>(nnz, nrows);
@@ -98,5 +98,11 @@ where
             nnz,
             nrows,
         }
+    }
+
+    pub fn copy_from_slices(&mut self, indptr: &[IP], indices: &[I], values: &[V]) {
+        self.indptr.copy_from_slice(indptr);
+        self.indices.copy_from_slice(indices);
+        self.values.copy_from_slice(values);
     }
 }

@@ -3,8 +3,9 @@ use std::mem::size_of;
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::{
+    chunk_stack::ChunkCSRLayout,
     csr_view_raw::{CSRViewRaw, CSRViewRawMut},
-    headers::DType,
+    headers::{AcquisitionStart, ArrayChunk, DType},
 };
 
 ///
@@ -47,8 +48,90 @@ impl<'a> SparseCSR<'a> {
         }
     }
 
+    pub fn get_split_info(
+        &self,
+        mid: usize,
+    ) -> (ChunkCSRLayout, ChunkCSRLayout) {
+        match self.indptr_dtype {
+            DType::U8 => self.get_split_info_generic::<u8>(mid),
+            DType::U16 => self.get_split_info_generic::<u16>(mid),
+            DType::U32 => self.get_split_info_generic::<u32>(mid),
+            DType::U64 | DType::U1 | DType::U4 => {
+                panic!("indptr type {:?} not supported (yet?)", self.indptr_dtype)
+            }
+        }
+    }
+
+    fn get_split_info_generic<IP>(
+        &self,
+        mid: usize,
+    ) -> (ChunkCSRLayout, ChunkCSRLayout)
+    where
+        IP: numpy::Element + FromBytes + AsBytes + Copy + std::ops::Sub<Output = IP>,
+        u32: From<IP>,
+    {
+        let view: CSRViewRaw = CSRViewRaw::from_bytes(
+            self.raw_data,
+            self.nnz,
+            self.nrows,
+            self.indptr_dtype,
+            self.indices_dtype,
+            self.values_dtype,
+        );
+
+        let left_nnz = view.get_indptr::<IP>()[mid].try_into().unwrap();
+        let left_nframes = mid;
+        let left_indptr_size = size_of::<IP>() * (left_nframes + 1);
+        let left_indices_size = left_nnz as usize * self.indices_dtype.size();
+        let left_values_size = left_nnz as usize * self.values_dtype.size();
+        let left_size = left_indices_size + left_indptr_size + left_values_size;
+
+        let right_nnz = self.nnz - left_nnz;
+        let right_nframes = self.nrows as usize - left_nframes;
+        let right_indptr_size = size_of::<IP>() * (right_nframes + 1);
+        let right_indices_size = right_nnz as usize * self.indices_dtype.size();
+        let right_values_size = right_nnz as usize * self.values_dtype.size();
+        let right_size = right_indices_size + right_indptr_size + right_values_size;
+
+        (
+            ChunkCSRLayout {
+                indptr_dtype: self.indptr_dtype,
+                indices_dtype: self.indices_dtype,
+                value_dtype: self.values_dtype,
+                nframes: left_nframes.try_into().unwrap(),
+                nnz: left_nnz,
+                data_length_bytes: left_size,
+                indptr_offset: 0,
+                indptr_size: left_indptr_size,
+                indices_offset: left_indptr_size,
+                indices_size: left_indices_size,
+                value_offset: left_indptr_size + left_indices_size,
+                value_size: left_values_size,
+            },
+            ChunkCSRLayout {
+                indptr_dtype: self.indptr_dtype,
+                indices_dtype: self.indices_dtype,
+                value_dtype: self.values_dtype,
+                nframes: right_nframes.try_into().unwrap(),
+                nnz: right_nnz,
+                data_length_bytes: right_size,
+                indptr_offset: 0,
+                indptr_size: right_indptr_size,
+                indices_offset: right_indptr_size,
+                indices_size: right_indices_size,
+                value_offset: right_indptr_size + right_indices_size,
+                value_size: right_values_size,
+            },
+        )
+    }
+
     // FIXME: Result error type
-    pub fn split_into(&self, mid: usize, left: &mut [u8], right: &mut [u8]) {
+    pub fn split_into(
+        &self,
+        mid: usize,
+        left: &mut [u8],
+        right: &mut [u8],
+    ) -> (ChunkCSRLayout, ChunkCSRLayout) {
         match self.indptr_dtype {
             DType::U8 => self.split_generic::<u8>(mid, left, right),
             DType::U16 => self.split_generic::<u16>(mid, left, right),
@@ -64,7 +147,12 @@ impl<'a> SparseCSR<'a> {
     ///
     /// This is generic over the index pointer type `IP`, as that is the only one we actually
     /// need to interprete in our code - the indices and values we can copy over unseen.
-    fn split_generic<IP>(&self, mid: usize, left: &mut [u8], right: &mut [u8])
+    fn split_generic<IP>(
+        &self,
+        mid: usize,
+        left: &mut [u8],
+        right: &mut [u8],
+    ) -> (ChunkCSRLayout, ChunkCSRLayout)
     where
         IP: numpy::Element + FromBytes + AsBytes + Copy + std::ops::Sub<Output = IP>,
         u32: From<IP>,
@@ -78,10 +166,12 @@ impl<'a> SparseCSR<'a> {
             self.values_dtype,
         );
 
+        let (meta_a, meta_b) = self.get_split_info_generic::<IP>(mid);
+
         // to find nnz values, we need to look up in the `indptr` array
         // where the values/coords for the left part stop:
-        let left_nnz = view.get_indptr::<IP>()[mid].try_into().unwrap();
-        let left_rows: u32 = mid.try_into().unwrap();
+        let left_nnz = meta_a.nnz;
+        let left_rows: u32 = meta_a.nframes;
         let mut left: CSRViewRawMut = CSRViewRawMut::from_bytes(
             left,
             left_nnz,
@@ -91,18 +181,16 @@ impl<'a> SparseCSR<'a> {
             self.values_dtype,
         );
         left.copy_into_indices_raw(
-            &view.get_indices_raw()[..left_nnz as usize * self.indices_dtype.size()]
+            &view.get_indices_raw()[..left_nnz as usize * self.indices_dtype.size()],
         );
         left.copy_into_values_raw(
             &view.get_values_raw()[..left_nnz as usize * self.values_dtype.size()],
         );
-        left.copy_into_indptr(
-            &view.get_indptr::<IP>()[..left_rows as usize + 1]
-        );
+        left.copy_into_indptr(&view.get_indptr::<IP>()[..left_rows as usize + 1]);
 
         // This takes the symmetric parts of the slices above
-        let right_nnz = self.nnz - left_nnz;
-        let right_rows: u32 = self.nrows - left_rows;
+        let right_nnz = meta_b.nnz;
+        let right_rows: u32 = meta_b.nframes;
         let mut right: CSRViewRawMut = CSRViewRawMut::from_bytes(
             right,
             right_nnz,
@@ -111,11 +199,13 @@ impl<'a> SparseCSR<'a> {
             self.indices_dtype,
             self.values_dtype,
         );
+        assert_eq!(right.get_indices_raw().len(), view.get_indices_raw().len() - (left_nnz as usize * self.indices_dtype.size()));
+        assert_eq!(right.get_values_raw().len(), view.get_values_raw().len() - (left_nnz as usize * self.values_dtype.size()));
         right.copy_into_indices_raw(
-            &view.get_indices_raw()[right_nnz as usize * self.indices_dtype.size()..],
+            &view.get_indices_raw()[left_nnz as usize * self.indices_dtype.size()..],
         );
         right.copy_into_values_raw(
-            &view.get_values_raw()[right_nnz as usize * self.values_dtype.size()..],
+            &view.get_values_raw()[left_nnz as usize * self.values_dtype.size()..],
         );
         right
             .get_indptr::<IP>()
@@ -128,6 +218,7 @@ impl<'a> SparseCSR<'a> {
             .get_indptr::<IP>()
             .iter_mut()
             .for_each(|ptr| *ptr = *ptr - first);
+        (meta_a, meta_b)
     }
 }
 
@@ -175,6 +266,20 @@ impl CSRSizes {
         }
     }
 
+    pub fn from_headers(acquisition_header: &AcquisitionStart, chunk_header: &ArrayChunk) -> Self {
+        let nnz = chunk_header.length;
+        let indptr_size =
+            (chunk_header.nframes as usize + 1) * acquisition_header.indptr_dtype.size();
+        let indices_size = nnz as usize * acquisition_header.indices_dtype.size();
+        let values_size = nnz as usize * chunk_header.value_dtype.size();
+
+        Self {
+            indptr: indptr_size,
+            indices: indices_size,
+            values: values_size,
+        }
+    }
+
     pub const fn total(&self) -> usize {
         self.indptr + self.indices + self.values
     }
@@ -182,6 +287,10 @@ impl CSRSizes {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    use zerocopy::{AsBytes, LayoutVerified};
+
     use crate::{
         csr_view::{CSRView, CSRViewMut},
         headers::DType,
@@ -250,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_csr_some_empty_rows_at_the_end() {
+    fn test_some_empty_rows_at_the_end_split_csr() {
         // first, let's build a sparse CSR array that is backed by an [u8]
         // (in real usage, this lives in the SHM or is read from the socket
         // into some buffer)
@@ -316,5 +425,18 @@ mod tests {
         assert_eq!(right_view.indices, &[8, 9, 10, 11]);
         assert_eq!(right_view.indptr, &[0, 4, 4, 4, 4, 4]);
         assert_eq!(right_view.values, &[256, 512, 1024, 2048]);
+    }
+
+    #[test]
+    fn test_align_stuff() {
+        // just to reproduce that we need data aligned to have zerocopy work:
+        let mut bytes: [u8; 1024] = [0; 1024];
+        (&mut bytes[..]).write_all(b"ab").unwrap();
+        let data: Vec<u64> = vec![1, 2, 3];
+        (&mut bytes[2..]).write_all(data.as_bytes()).unwrap();
+
+        let data_read: &[u64] = LayoutVerified::new_slice(&bytes[2..]).unwrap().into_slice();
+        println!("{data_read:?}");
+        assert_eq!(data_read, vec![1, 2, 3]);
     }
 }
