@@ -17,7 +17,7 @@ if __name__ == "__main__":
     conn.serve_shm(sock)
     conn.start_passive()
 
-    for i in range(10):
+    for i in range(100):
         while (header := conn.wait_for_arm(timeout=1)) is None:
             print("waiting for header...")
 
@@ -36,9 +36,17 @@ if __name__ == "__main__":
                 values_arr = np.frombuffer(values, dtype="uint32")
                 seen += 1
 
-                # print(indptr_arr[0:16])
-                # print(indices_arr[0:16])
-                # print(values_arr[0:16])
+            # print(indptr_arr[0:16])
+            # print(indices_arr[0:16])
+            # print(values_arr[0:16])
+
+            del indptr_arr
+            del indices_arr
+            del values_arr
+            del indptr
+            del indices
+            del values
+            cam_client.done(chunk_stack)
 
             # print(f"{len(chunks)} chunks in this stack")
 
