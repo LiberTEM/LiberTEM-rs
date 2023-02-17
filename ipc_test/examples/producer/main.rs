@@ -69,7 +69,7 @@ struct Args {
     #[arg(short, long)]
     socket_path: String,
 
-    #[arg(short, long, default_value_t=100)]
+    #[arg(long, default_value_t=100)]
     slots: usize,
 
     #[arg(short, long, default_value_t=10000)]

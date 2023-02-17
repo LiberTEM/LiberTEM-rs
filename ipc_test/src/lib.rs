@@ -1,13 +1,12 @@
 use std::{
     fs::File,
-    os::fd::{AsRawFd, FromRawFd},
     slice::{from_raw_parts, from_raw_parts_mut},
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicU8, Ordering}, str::FromStr,
 };
 use std::backtrace::Backtrace;
 
-use memfd::{FileSeal, HugetlbSize, MemfdOptions};
 use memmap2::{MmapOptions, MmapRaw};
+use shared_memory::{ShmemConf, Shmem};
 
 use anyhow::{Context, Result};
 use raw_sync::locks::{LockImpl, LockInit, Mutex};
@@ -62,9 +61,9 @@ impl SlotForWriting {
 ///
 /// A handle for the whole shared memory region
 ///
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SHMHandle {
-    pub fd: i32,
+    pub id: String,
     pub info: SHMInfo,
 }
 
@@ -74,6 +73,7 @@ impl SHMHandle {}
 pub struct SHMInfo {
     pub num_slots: usize,
     pub slot_size: usize,
+    pub total_len: usize,
 }
 
 pub struct SharedSlabAllocator {
@@ -84,8 +84,8 @@ pub struct SharedSlabAllocator {
     slot_size: usize,
 
     page_size: usize,
-    mmap: MmapRaw,
-    file: File,
+    total_len: usize,
+    shmem: Shmem
 }
 
 /// Makes `size` a multiple of `alignment`, rounding up.
@@ -217,18 +217,7 @@ impl SharedSlabAllocator {
     const SYNC_SLOT_SIZE: usize = 64;
     const ALIGNMENT: usize = 4096; // FIXME: does this need to be a runtime thing?
 
-    pub fn new(num_slots: usize, slot_size: usize, huge: bool) -> Result<Self> {
-        let o = MemfdOptions::default().allow_sealing(true);
-        let o = if huge {
-            o.hugetlb(Some(HugetlbSize::Huge2MB))
-        } else {
-            o
-        };
-        let memfd = o
-            .create("SharedSlabAllocator")
-            .context("Could not create memfd object")?;
-        let file = memfd.as_file();
-
+    pub fn new(num_slots: usize, slot_size: usize) -> Result<Self> {
         let free_list_size = std::mem::size_of::<usize>() * (1 + num_slots);
         let slot_sync_size = Self::SYNC_SLOT_SIZE * num_slots;
         let overhead: usize = align_to(
@@ -241,84 +230,78 @@ impl SharedSlabAllocator {
         // total length needs to be aligned to huge page size:
         let total_len = align_to(
             slot_size * num_slots + overhead,
-            2 * 1024 * 1024, // FIXME: support other huge page sizes
+            4 * 1024, // FIXME: support other page sizes
         );
 
-        file.set_len(total_len as u64)
-            .context("could not set memfd size")?;
+        let shmem = ShmemConf::new().size(total_len).create().unwrap();
 
-        memfd
-            .add_seals(&[FileSeal::SealShrink, FileSeal::SealGrow])
-            .context("could not add shrink/grow seals")?;
-        memfd
-            .add_seal(FileSeal::SealSeal)
-            .context("could not add seal seal")?;
+        let handle = SHMHandle{
+            id: String::from(shmem.get_os_id()),
+            info: SHMInfo {
+                num_slots,
+                slot_size,
+                total_len,
+            },
+        };
 
-        // consume the memfd object, so the file doesn't get closed here:
-        let file = memfd.into_file();
-        Self::from_file(file, num_slots, slot_size, true)
-    }
-
-    pub fn connect(fd: i32, info: &SHMInfo) -> Result<Self> {
-        let file = unsafe { File::from_raw_fd(fd) };
-        Self::from_file(file, info.num_slots, info.slot_size, false)
+        let mut slab = SharedSlabAllocator {
+            page_size: page_size::get(),
+            num_slots,
+            slot_size: handle.info.slot_size,
+            shmem,
+            total_len,
+        };
+        slab.init_structures();
+        Ok(slab)
     }
 
     pub fn clone_and_connect(&self) -> Result<Self> {
         let handle = self.get_handle();
-        Self::connect(handle.fd, &handle.info)
+        Self::connect(handle)
     }
 
-    ///
-    /// Create a shared memory area from a `File` object. This file can be backed
-    /// by a memfd (for example created via `Self::new`).
-    fn from_file(file: File, num_slots: usize, slot_size: usize, init_mutex: bool) -> Result<Self> {
-        // FIXME: this can give us ENOMEM in case not enough huge pages are reserved.
-        // Administrators need to adjust `/proc/sys/vm/nr_hugepages` (preferrably at boot)
-        // to make sure enough free memory is available
-
-        let mmap = MmapOptions::new()
-            .map_raw(&file)
-            .context("could not mmap the memfd")?;
-
-        let ptr = mmap.as_mut_ptr();
+    fn init_structures(&mut self) -> Box<dyn LockImpl> {
+        let ptr = self.shmem.as_ptr();
         let free_list_ptr = unsafe { ptr.offset(Self::MUTEX_SIZE.try_into().unwrap()) };
+        let (lock, used_size) = unsafe { Mutex::new(ptr, free_list_ptr).unwrap() };
 
-        let _free_mutex = if init_mutex {
-            let (lock, used_size) = unsafe { Mutex::new(ptr, free_list_ptr).unwrap() };
+        if used_size > Self::MUTEX_SIZE {
+            panic!("Mutex size larger than expected!");
+        }
 
-            if used_size > Self::MUTEX_SIZE {
-                panic!("Mutex size larger than expected!");
-            }
+        // populate free-list
+        let mut free_list = Self::get_free_list(free_list_ptr, self.num_slots);
+        for i in 0..self.num_slots {
+            free_list.push(i);
+        }
 
-            // populate free-list
-            let mut free_list = Self::get_free_list(free_list_ptr, num_slots);
-            for i in 0..num_slots {
-                free_list.push(i);
-            }
+        lock
+    }
 
-            lock
-        } else {
-            let (lock, used_size) = unsafe { Mutex::from_existing(ptr, free_list_ptr).unwrap() };
-
-            if used_size > Self::MUTEX_SIZE {
-                panic!("Mutex size larger than expected!");
-            }
-
-            lock
-        };
-
-        Ok(SharedSlabAllocator {
+    fn from_handle(handle: SHMHandle, init_structures: bool) -> Result<Self> {
+        let id = handle.id;
+        let num_slots = handle.info.num_slots;
+        let total_len = handle.info.total_len;
+        let shmem = ShmemConf::new().os_id(id).size(total_len).open().unwrap();
+        let mut slab = SharedSlabAllocator {
             page_size: page_size::get(),
             num_slots,
-            slot_size,
-            mmap,
-            file,
-        })
+            slot_size: handle.info.slot_size,
+            shmem,
+            total_len,
+        };
+        if init_structures {
+            slab.init_structures();
+        }
+        Ok(slab)
+    }
+    
+    pub fn connect(handle: SHMHandle) -> Result<Self> {
+        Self::from_handle(handle, false)
     }
 
     fn get_mutex(&self) -> Box<dyn LockImpl> {
-        let ptr = self.mmap.as_mut_ptr();
+        let ptr = self.shmem.as_ptr();
         let free_list_ptr = unsafe { ptr.offset(Self::MUTEX_SIZE.try_into().unwrap()) };
         let (lock, _) = unsafe { Mutex::from_existing(ptr, free_list_ptr).unwrap() };
         lock
@@ -326,10 +309,11 @@ impl SharedSlabAllocator {
 
     pub fn get_handle(&self) -> SHMHandle {
         SHMHandle {
-            fd: self.file.as_raw_fd(),
+            id: String::from(self.shmem.get_os_id()),
             info: SHMInfo {
                 num_slots: self.num_slots,
                 slot_size: self.slot_size,
+                total_len: self.total_len,
             },
         }
     }
@@ -415,7 +399,7 @@ impl SharedSlabAllocator {
 
     fn get_slot_sync_ptr(&self, slot_idx: usize) -> *mut u8 {
         let offset = self.get_slot_sync_offset(slot_idx);
-        let base_ptr = self.mmap.as_mut_ptr();
+        let base_ptr = self.shmem.as_ptr();
         unsafe { base_ptr.offset(offset) }
     }
 
@@ -442,13 +426,13 @@ impl SharedSlabAllocator {
 
     fn get_ptr_for_slot(&self, slot_idx: usize) -> *const u8 {
         let slot_offset = self.get_slot_offset(slot_idx);
-        let base_ptr = self.mmap.as_mut_ptr();
+        let base_ptr = self.shmem.as_ptr();
         unsafe { base_ptr.offset(slot_offset) }
     }
 
     fn get_mut_ptr_for_slot(&self, slot_idx: usize) -> *mut u8 {
         let slot_offset = self.get_slot_offset(slot_idx);
-        let base_ptr = self.mmap.as_mut_ptr();
+        let base_ptr = self.shmem.as_ptr();
         unsafe { base_ptr.offset(slot_offset) }
     }
 
@@ -478,6 +462,7 @@ mod test {
     use std::time::Duration;
 
     use memmap2::MmapOptions;
+    use shared_memory::ShmemConf;
 
     use crate::{align_to, FreeStack, SharedSlabAllocator, SlotForWriting};
 
@@ -540,7 +525,7 @@ mod test {
 
     #[test]
     fn test_simple_alloc_free() {
-        let mut ssa = SharedSlabAllocator::new(4, 255, true).unwrap();
+        let mut ssa = SharedSlabAllocator::new(4, 255).unwrap();
         let mut slotw: SlotForWriting = ssa.get_mut().unwrap();
         assert_eq!(slotw.slot_idx, 3); // we get the slot from the top
         let slot_size = slotw.size;
@@ -565,7 +550,7 @@ mod test {
 
     #[test]
     fn test_connect() {
-        let mut ssa = SharedSlabAllocator::new(4, 255, true).unwrap();
+        let mut ssa = SharedSlabAllocator::new(4, 255).unwrap();
         let mut slotw: SlotForWriting = ssa.get_mut().unwrap();
         assert_eq!(slotw.slot_idx, 3); // we get the slot from the top
         let slot_size = slotw.size;
@@ -579,7 +564,7 @@ mod test {
 
         let handle = ssa.get_handle();
         println!("handle: {handle:?}");
-        let mut ssa2 = SharedSlabAllocator::connect(handle.fd, &handle.info)
+        let mut ssa2 = SharedSlabAllocator::connect(handle)
             .expect("should be able to connect to existing shared memory");
 
         let slotr = ssa2.get(slotw.slot_idx);
@@ -591,7 +576,7 @@ mod test {
 
     #[test]
     fn test_clone_and_connect() {
-        let mut ssa = SharedSlabAllocator::new(4, 255, true).unwrap();
+        let mut ssa = SharedSlabAllocator::new(4, 255).unwrap();
         let mut slotw: SlotForWriting = ssa.get_mut().unwrap();
         assert_eq!(slotw.slot_idx, 3); // we get the slot from the top
         let slot_size = slotw.size;
@@ -618,7 +603,7 @@ mod test {
 
     #[test]
     fn test_connect_threaded() {
-        let mut ssa = SharedSlabAllocator::new(4, 255, true).unwrap();
+        let mut ssa = SharedSlabAllocator::new(4, 255).unwrap();
         let handle = ssa.get_handle();
 
         // Channels for sending the slot index from the producer to the child thread:
@@ -633,7 +618,7 @@ mod test {
         crossbeam::scope(|s| {
             s.spawn(|_| {
                 // "connect" to shared memory:
-                let mut ssa2 = SharedSlabAllocator::connect(handle.fd, &handle.info)
+                let mut ssa2 = SharedSlabAllocator::connect(handle)
                     .expect("should be able to connect to existing shared memory");
 
                 // just for testing that our test is robust-ish:
@@ -662,7 +647,8 @@ mod test {
             // we need to wait until the child has mmapped the file,
             // otherwise we can run ahead and close the file on this thread,
             // before the child has had the chance to mmap.
-            init_r.recv().unwrap();
+            init_r.recv_timeout(Duration::from_millis(200)).unwrap();
+
 
             // write into shm:
             let mut slotw: SlotForWriting = ssa.get_mut().unwrap();
@@ -676,5 +662,20 @@ mod test {
             done_r.recv_timeout(Duration::from_millis(100)).unwrap();
         })
         .unwrap();
+    }
+
+    #[test]
+    fn test_shmem_assumptions() {
+        fn from_handle(id: &str) {
+            ShmemConf::new().os_id(id).size(69420).open().unwrap();
+        }
+        let id = {
+            let shmem = ShmemConf::new().size(69420).create().unwrap();
+            // works: the original still is open
+            from_handle(shmem.get_os_id());
+            shmem.get_os_id().to_string()
+        };
+        // fails, the file was removed already
+        from_handle(&id);
     }
 }
