@@ -8,36 +8,24 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
-use log::{debug, error, info, warn, trace};
+use log::{debug, error, info, trace, warn};
 
 use crate::{
-    chunk_stack::{ChunkStackForWriting, ChunkStackHandle, ChunkCSRLayout},
-    headers::{AcquisitionStart, ScanStart, HeaderTypes},
+    chunk_stack::{ChunkCSRLayout, ChunkStackForWriting, ChunkStackHandle},
+    csr_view_raw::CSRViewRaw,
+    headers::{AcquisitionStart, HeaderTypes, ScanStart},
     stream::{stream_recv_chunk, stream_recv_header, StreamError},
 };
 
 ///
 #[derive(PartialEq, Eq, Debug)]
 pub enum ResultMsg {
-    Error {
-        msg: String,
-    }, // generic error response, might need to specialize later
-    SerdeError {
-        msg: String,
-        recvd_msg: String,
-    },
-    AcquisitionStart {
-        header: AcquisitionStart,
-    },
-    ScanStart {
-        header: ScanStart,
-    },
-    FrameStack {
-        frame_stack: ChunkStackHandle,
-    },
-    End {
-        frame_stack: ChunkStackHandle,
-    },
+    Error { msg: String }, // generic error response, might need to specialize later
+    SerdeError { msg: String, recvd_msg: String },
+    AcquisitionStart { header: AcquisitionStart },
+    ScanStart { header: ScanStart },
+    FrameStack { frame_stack: ChunkStackHandle },
+    End { frame_stack: ChunkStackHandle },
 }
 
 pub enum ControlMsg {
@@ -60,7 +48,10 @@ enum AcquisitionError {
     Disconnected,
     Cancelled,
     BufferFull,
-    SlotSizeTooSmall { slot_size: usize, chunk_size: usize },
+    SlotSizeTooSmall {
+        slot_size: usize,
+        chunk_size: usize,
+    },
 
     /// Example: an unexpected header was received
     StateError {
@@ -91,7 +82,10 @@ impl Display for AcquisitionError {
             AcquisitionError::Cancelled => {
                 write!(f, "acquisition cancelled")
             }
-            AcquisitionError::SlotSizeTooSmall { slot_size, chunk_size } => {
+            AcquisitionError::SlotSizeTooSmall {
+                slot_size,
+                chunk_size,
+            } => {
                 write!(f, "slot size {slot_size} too small for chunk {chunk_size}")
             }
             AcquisitionError::Disconnected => {
@@ -162,7 +156,7 @@ fn wait_for_acquisition(
                 // again, so we need to bail out:
                 let msg = format!("expected `AcquisitionStart` header, got {other:?}");
                 return Err(AcquisitionError::StateError { msg });
-            },
+            }
         }
 
         check_for_control(control_channel)?;
@@ -201,14 +195,17 @@ fn wait_for_scan(
                 info!("passive scan done; free slots: {}/{}", free, total);
             }
             HeaderTypes::AcquisitionEnd { header } => {
-                info!("AcquisitionEnd header received for sequence {}", header.sequence);
+                info!(
+                    "AcquisitionEnd header received for sequence {}",
+                    header.sequence
+                );
                 return Ok(());
             }
             other => {
                 // for now, be strict about what headers we expect:
                 let msg = format!("expected `ScanStart` header, got {other:?}");
                 return Err(AcquisitionError::StateError { msg });
-            },
+            }
         }
 
         check_for_control(control_channel)?;
@@ -246,7 +243,7 @@ fn handle_scan(
 
     // approx uppper bound of image size in bytes
     // FIXME! maybe we can approximate this based on dwell time / max. hit rate etc.?
-    let approx_size_bytes = 1024*1024;
+    let approx_size_bytes = 1024 * 1024;
 
     let slot = match shm.get_mut() {
         None => return Err(AcquisitionError::BufferFull),
@@ -256,7 +253,7 @@ fn handle_scan(
         ChunkStackForWriting::new(slot, chunks_per_stack, approx_size_bytes as usize);
 
     loop {
-        if last_control_check.elapsed() > Duration::from_millis(300) {
+        if last_control_check.elapsed() > Duration::from_millis(100) {
             last_control_check = Instant::now();
             check_for_control(to_thread_r)?;
         }
@@ -264,15 +261,13 @@ fn handle_scan(
         let mut header_bytes: [u8; 32] = [0; 32];
         let header = stream_recv_header(stream, &mut header_bytes)?;
 
-        trace!("got a header: {header:?}");
-
         match header {
             HeaderTypes::ArrayChunk { header } => {
                 let nbytes = header.get_chunk_size_bytes(&acquisition_header);
 
                 if chunk_stack.total_size() < nbytes {
                     // chunk is too large for the slot size, bail out...
-                    return Err(AcquisitionError::SlotSizeTooSmall { 
+                    return Err(AcquisitionError::SlotSizeTooSmall {
                         slot_size: chunk_stack.total_size(),
                         chunk_size: nbytes,
                     });
@@ -293,6 +288,17 @@ fn handle_scan(
                         let old_chunk_stack = replace(&mut chunk_stack, new_frame_stack);
                         old_chunk_stack.writing_done(shm)
                     };
+
+                    // XXX debugging stuff here....
+                    // {
+                    //     let slot_r = shm.get(handle.slot.slot_idx);
+                    //     assert_eq!(
+                    //         handle.total_bytes_used - handle.total_bytes_padding,
+                    //         handle.get_layout().iter().map(|l| l.data_length_bytes).sum()
+                    //     );
+                    //     handle.get_chunk_views_raw(&slot_r);
+                    // }
+
                     from_thread_s.send(ResultMsg::FrameStack {
                         frame_stack: handle,
                     })?;
@@ -300,7 +306,7 @@ fn handle_scan(
                 let sizes = header.get_sizes(&acquisition_header);
                 // FIXME: alignment will change!
                 // offsets will be aligned in the future, and will come from the chunk header
-                let meta = ChunkCSRLayout {
+                let layout = ChunkCSRLayout {
                     indptr_dtype: acquisition_header.indptr_dtype,
                     indptr_offset: 0,
                     indptr_size: sizes.indptr,
@@ -314,12 +320,17 @@ fn handle_scan(
                     nnz: header.length,
                     data_length_bytes: nbytes,
                 };
-                let buf = chunk_stack.slice_for_writing(nbytes, meta);
+                let buf = chunk_stack.slice_for_writing(nbytes, layout.clone());
                 stream_recv_chunk(stream, buf)?;
+                assert_eq!(buf.len(), nbytes);
+                CSRViewRaw::from_bytes_with_layout(buf, &layout);
             }
             HeaderTypes::ScanEnd { header } => {
                 let elapsed = t0.elapsed();
-                info!("scan {} done in {elapsed:?}, reading acquisition footer...", header.sequence);
+                info!(
+                    "scan {} done in {elapsed:?}, reading acquisition footer...",
+                    header.sequence
+                );
 
                 let handle = chunk_stack.writing_done(shm);
                 from_thread_s.send(ResultMsg::End {

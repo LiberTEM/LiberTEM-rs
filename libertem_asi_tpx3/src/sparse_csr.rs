@@ -9,7 +9,7 @@ use crate::{
 };
 
 ///
-/// Interprete a slice of bytes as a CSR array.
+/// Helper for splitting CSR arrays
 ///
 /// It's assumed that the parts are in the following order:
 ///
@@ -18,33 +18,19 @@ use crate::{
 /// - values / data
 ///
 /// Currently, there is also assumed to not be any padding between the parts.
-pub struct SparseCSR<'a> {
+pub struct CSRSplitter<'a> {
     raw_data: &'a [u8],
-
-    indices_dtype: DType,
-    indptr_dtype: DType,
-    values_dtype: DType,
-
-    nnz: u32,
-    nrows: u32,
+    layout: ChunkCSRLayout,
 }
 
-impl<'a> SparseCSR<'a> {
+impl<'a> CSRSplitter<'a> {
     pub fn from_bytes(
         raw_data: &'a [u8],
-        indices_dtype: DType,
-        indptr_dtype: DType,
-        values_dtype: DType,
-        nnz: u32,
-        nrows: u32,
+        layout: ChunkCSRLayout,
     ) -> Self {
         Self {
             raw_data,
-            indices_dtype,
-            indptr_dtype,
-            values_dtype,
-            nnz,
-            nrows,
+            layout
         }
     }
 
@@ -52,12 +38,12 @@ impl<'a> SparseCSR<'a> {
         &self,
         mid: usize,
     ) -> (ChunkCSRLayout, ChunkCSRLayout) {
-        match self.indptr_dtype {
+        match self.layout.indptr_dtype {
             DType::U8 => self.get_split_info_generic::<u8>(mid),
             DType::U16 => self.get_split_info_generic::<u16>(mid),
             DType::U32 => self.get_split_info_generic::<u32>(mid),
             DType::U64 | DType::U1 | DType::U4 => {
-                panic!("indptr type {:?} not supported (yet?)", self.indptr_dtype)
+                panic!("indptr type {:?} not supported (yet?)", self.layout.indptr_dtype)
             }
         }
     }
@@ -72,32 +58,32 @@ impl<'a> SparseCSR<'a> {
     {
         let view: CSRViewRaw = CSRViewRaw::from_bytes(
             self.raw_data,
-            self.nnz,
-            self.nrows,
-            self.indptr_dtype,
-            self.indices_dtype,
-            self.values_dtype,
+            self.layout.nnz,
+            self.layout.nframes,
+            self.layout.indptr_dtype,
+            self.layout.indices_dtype,
+            self.layout.value_dtype,
         );
 
         let left_nnz = view.get_indptr::<IP>()[mid].try_into().unwrap();
         let left_nframes = mid;
         let left_indptr_size = size_of::<IP>() * (left_nframes + 1);
-        let left_indices_size = left_nnz as usize * self.indices_dtype.size();
-        let left_values_size = left_nnz as usize * self.values_dtype.size();
+        let left_indices_size = left_nnz as usize * self.layout.indices_dtype.size();
+        let left_values_size = left_nnz as usize * self.layout.value_dtype.size();
         let left_size = left_indices_size + left_indptr_size + left_values_size;
 
-        let right_nnz = self.nnz - left_nnz;
-        let right_nframes = self.nrows as usize - left_nframes;
+        let right_nnz = self.layout.nnz - left_nnz;
+        let right_nframes = self.layout.nframes as usize - left_nframes;
         let right_indptr_size = size_of::<IP>() * (right_nframes + 1);
-        let right_indices_size = right_nnz as usize * self.indices_dtype.size();
-        let right_values_size = right_nnz as usize * self.values_dtype.size();
+        let right_indices_size = right_nnz as usize * self.layout.indices_dtype.size();
+        let right_values_size = right_nnz as usize * self.layout.value_dtype.size();
         let right_size = right_indices_size + right_indptr_size + right_values_size;
 
         (
             ChunkCSRLayout {
-                indptr_dtype: self.indptr_dtype,
-                indices_dtype: self.indices_dtype,
-                value_dtype: self.values_dtype,
+                indptr_dtype: self.layout.indptr_dtype,
+                indices_dtype: self.layout.indices_dtype,
+                value_dtype: self.layout.value_dtype,
                 nframes: left_nframes.try_into().unwrap(),
                 nnz: left_nnz,
                 data_length_bytes: left_size,
@@ -109,9 +95,9 @@ impl<'a> SparseCSR<'a> {
                 value_size: left_values_size,
             },
             ChunkCSRLayout {
-                indptr_dtype: self.indptr_dtype,
-                indices_dtype: self.indices_dtype,
-                value_dtype: self.values_dtype,
+                indptr_dtype: self.layout.indptr_dtype,
+                indices_dtype: self.layout.indices_dtype,
+                value_dtype: self.layout.value_dtype,
                 nframes: right_nframes.try_into().unwrap(),
                 nnz: right_nnz,
                 data_length_bytes: right_size,
@@ -132,12 +118,12 @@ impl<'a> SparseCSR<'a> {
         left: &mut [u8],
         right: &mut [u8],
     ) -> (ChunkCSRLayout, ChunkCSRLayout) {
-        match self.indptr_dtype {
+        match self.layout.indptr_dtype {
             DType::U8 => self.split_generic::<u8>(mid, left, right),
             DType::U16 => self.split_generic::<u16>(mid, left, right),
             DType::U32 => self.split_generic::<u32>(mid, left, right),
             DType::U64 | DType::U1 | DType::U4 => {
-                panic!("indptr type {:?} not supported (yet?)", self.indptr_dtype)
+                panic!("indptr type {:?} not supported (yet?)", self.layout.indptr_dtype)
             }
         }
     }
@@ -159,55 +145,51 @@ impl<'a> SparseCSR<'a> {
         IP: numpy::Element + FromBytes + AsBytes + Copy + std::ops::Sub<Output = IP>,
         u32: From<IP>,
     {
-        let view: CSRViewRaw = CSRViewRaw::from_bytes(
+        let view: CSRViewRaw = CSRViewRaw::from_bytes_with_layout(
             self.raw_data,
-            self.nnz,
-            self.nrows,
-            self.indptr_dtype,
-            self.indices_dtype,
-            self.values_dtype,
+            &self.layout,
         );
 
-        let (meta_a, meta_b) = self.get_split_info_generic::<IP>(mid);
+        let (layout_a, layout_b) = self.get_split_info_generic::<IP>(mid);
 
         // to find nnz values, we need to look up in the `indptr` array
         // where the values/coords for the left part stop:
-        let left_nnz = meta_a.nnz;
-        let left_rows: u32 = meta_a.nframes;
+        let left_nnz = layout_a.nnz;
+        let left_rows: u32 = layout_a.nframes;
         let mut left: CSRViewRawMut = CSRViewRawMut::from_bytes(
             left,
             left_nnz,
             left_rows,
-            self.indptr_dtype,
-            self.indices_dtype,
-            self.values_dtype,
+            self.layout.indptr_dtype,
+            self.layout.indices_dtype,
+            self.layout.value_dtype,
         );
         left.copy_into_indices_raw(
-            &view.get_indices_raw()[..left_nnz as usize * self.indices_dtype.size()],
+            &view.get_indices_raw()[..left_nnz as usize * self.layout.indices_dtype.size()],
         );
         left.copy_into_values_raw(
-            &view.get_values_raw()[..left_nnz as usize * self.values_dtype.size()],
+            &view.get_values_raw()[..left_nnz as usize * self.layout.value_dtype.size()],
         );
         left.copy_into_indptr(&view.get_indptr::<IP>()[..left_rows as usize + 1]);
 
         // This takes the symmetric parts of the slices above
-        let right_nnz = meta_b.nnz;
-        let right_rows: u32 = meta_b.nframes;
+        let right_nnz = layout_b.nnz;
+        let right_rows: u32 = layout_b.nframes;
         let mut right: CSRViewRawMut = CSRViewRawMut::from_bytes(
             right,
             right_nnz,
             right_rows,
-            self.indptr_dtype,
-            self.indices_dtype,
-            self.values_dtype,
+            self.layout.indptr_dtype,
+            self.layout.indices_dtype,
+            self.layout.value_dtype,
         );
-        assert_eq!(right.get_indices_raw().len(), view.get_indices_raw().len() - (left_nnz as usize * self.indices_dtype.size()));
-        assert_eq!(right.get_values_raw().len(), view.get_values_raw().len() - (left_nnz as usize * self.values_dtype.size()));
+        assert_eq!(right.get_indices_raw().len(), view.get_indices_raw().len() - (left_nnz as usize * self.layout.indices_dtype.size()));
+        assert_eq!(right.get_values_raw().len(), view.get_values_raw().len() - (left_nnz as usize * self.layout.value_dtype.size()));
         right.copy_into_indices_raw(
-            &view.get_indices_raw()[left_nnz as usize * self.indices_dtype.size()..],
+            &view.get_indices_raw()[left_nnz as usize * self.layout.indices_dtype.size()..],
         );
         right.copy_into_values_raw(
-            &view.get_values_raw()[left_nnz as usize * self.values_dtype.size()..],
+            &view.get_values_raw()[left_nnz as usize * self.layout.value_dtype.size()..],
         );
         right
             .get_indptr::<IP>()
@@ -220,7 +202,7 @@ impl<'a> SparseCSR<'a> {
             .get_indptr::<IP>()
             .iter_mut()
             .for_each(|ptr| *ptr = *ptr - first);
-        (meta_a, meta_b)
+        (layout_a, layout_b)
     }
 }
 
@@ -296,7 +278,7 @@ mod tests {
     use crate::{
         csr_view::{CSRView, CSRViewMut},
         headers::DType,
-        sparse_csr::{CSRSizes, SparseCSR},
+        sparse_csr::{CSRSizes, CSRSplitter}, chunk_stack::ChunkCSRLayout,
     };
 
     #[test]
@@ -310,6 +292,22 @@ mod tests {
         const SIZES: CSRSizes = CSRSizes::new::<u16, u16, u16>(NNZ, NROWS);
         let mut buf: [u8; SIZES.total()] = [0; SIZES.total()];
         println!("SIZES: {SIZES:?}");
+
+        let layout = ChunkCSRLayout {
+            nframes: NROWS,
+            nnz: NNZ,
+            data_length_bytes: SIZES.total(),
+            indptr_dtype: DType::U16,
+            indptr_offset: 0,
+            indptr_size: SIZES.indptr,
+            indices_dtype: DType::U16,
+            indices_offset: SIZES.indptr,
+            indices_size: SIZES.indices,
+            value_dtype: DType::U16,
+            value_offset: SIZES.indptr + SIZES.indices,
+            value_size: SIZES.values,
+        };
+        layout.validate();
 
         let view_mut: CSRViewMut<u16, u16, u16> = CSRViewMut::from_bytes(&mut buf, NNZ, NROWS);
 
@@ -344,7 +342,7 @@ mod tests {
         println!("SIZES_RIGHT: {SIZES_RIGHT:?}");
 
         // the actual split happens here:
-        let csr = SparseCSR::from_bytes(&buf, DType::U16, DType::U16, DType::U16, 12, 3);
+        let csr = CSRSplitter::from_bytes(&buf, layout);
         csr.split_into(2, &mut left_buf, &mut right_buf);
 
         // now, view the results:
@@ -371,6 +369,22 @@ mod tests {
         const SIZES: CSRSizes = CSRSizes::new::<u16, u16, u16>(NNZ, NROWS);
         let mut buf: [u8; SIZES.total()] = [0; SIZES.total()];
         println!("SIZES: {SIZES:?}");
+
+        let layout = ChunkCSRLayout {
+            nframes: NROWS,
+            nnz: NNZ,
+            data_length_bytes: SIZES.total(),
+            indptr_dtype: DType::U16,
+            indptr_offset: 0,
+            indptr_size: SIZES.indptr,
+            indices_dtype: DType::U16,
+            indices_offset: SIZES.indptr,
+            indices_size: SIZES.indices,
+            value_dtype: DType::U16,
+            value_offset: SIZES.indptr + SIZES.indices,
+            value_size: SIZES.values,
+        };
+        layout.validate();
 
         let view_mut: CSRViewMut<u16, u16, u16> = CSRViewMut::from_bytes(&mut buf, NNZ, NROWS);
 
@@ -406,7 +420,7 @@ mod tests {
         println!("SIZES_RIGHT: {SIZES_RIGHT:?}");
 
         // the actual split happens here:
-        let csr = SparseCSR::from_bytes(&buf, DType::U16, DType::U16, DType::U16, 12, 7);
+        let csr = CSRSplitter::from_bytes(&buf, layout);
         csr.split_into(2, &mut left_buf, &mut right_buf);
 
         // now, view the results:
@@ -427,18 +441,5 @@ mod tests {
         assert_eq!(right_view.indices, &[8, 9, 10, 11]);
         assert_eq!(right_view.indptr, &[0, 4, 4, 4, 4, 4]);
         assert_eq!(right_view.values, &[256, 512, 1024, 2048]);
-    }
-
-    #[test]
-    fn test_align_stuff() {
-        // just to reproduce that we need data aligned to have zerocopy work:
-        let mut bytes: [u8; 1024] = [0; 1024];
-        (&mut bytes[..]).write_all(b"ab").unwrap();
-        let data: Vec<u64> = vec![1, 2, 3];
-        (&mut bytes[2..]).write_all(data.as_bytes()).unwrap();
-
-        let data_read: &[u64] = LayoutVerified::new_slice(&bytes[2..]).unwrap().into_slice();
-        println!("{data_read:?}");
-        assert_eq!(data_read, vec![1, 2, 3]);
     }
 }

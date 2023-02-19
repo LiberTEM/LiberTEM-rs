@@ -1,6 +1,6 @@
 use zerocopy::{AsBytes, FromBytes, LayoutVerified};
 
-use crate::{headers::DType, sparse_csr::CSRSizes, chunk_stack::ChunkCSRLayout};
+use crate::{chunk_stack::ChunkCSRLayout, headers::DType, sparse_csr::CSRSizes};
 
 /// A view into a CSR array stored in `raw_data`, only interpreting the `indptr` array
 /// as concrete values, leaving `indices` and `values` as bytes.
@@ -17,8 +17,21 @@ fn validate_csr_data(
 
     let len = raw_data.len();
     assert!(sizes.indptr <= len, "indptr={}, len={}", sizes.indptr, len);
-    assert!(sizes.indptr + sizes.indices <= len);
-    assert!(sizes.indptr + sizes.indices + sizes.values <= len);
+    assert!(
+        sizes.indptr + sizes.indices <= len,
+        "indptr={}, indices={}, len={}",
+        sizes.indptr,
+        sizes.indices,
+        len
+    );
+    assert!(
+        sizes.indptr + sizes.indices + sizes.values <= len,
+        "indptr={}, indices={}, values={}, len={}",
+        sizes.indptr,
+        sizes.indices,
+        sizes.values,
+        len
+    );
 }
 
 pub struct CSRViewRaw<'a> {
@@ -57,10 +70,7 @@ impl<'a> CSRViewRaw<'a> {
         }
     }
 
-    pub fn from_bytes_with_layout(
-        raw_data: &'a [u8],
-        layout: &ChunkCSRLayout,
-    ) -> Self {
+    pub fn from_bytes_with_layout(raw_data: &'a [u8], layout: &ChunkCSRLayout) -> Self {
         Self::from_bytes(
             raw_data,
             layout.nnz,
@@ -70,7 +80,6 @@ impl<'a> CSRViewRaw<'a> {
             layout.value_dtype,
         )
     }
-
 
     fn get_sizes(&self) -> CSRSizes {
         CSRSizes::new_dyn(
@@ -143,10 +152,7 @@ impl<'a> CSRViewRawMut<'a> {
         }
     }
 
-    fn from_bytes_with_layout(
-        raw_data: &'a mut [u8],
-        layout: &ChunkCSRLayout,
-    ) -> Self {
+    fn from_bytes_with_layout(raw_data: &'a mut [u8], layout: &ChunkCSRLayout) -> Self {
         Self::from_bytes(
             raw_data,
             layout.nnz,

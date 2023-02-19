@@ -54,7 +54,6 @@ pub fn stream_recv_header(
         }
     }
 
-    trace!("stream_recv_header: read {} bytes", header_bytes.len());
     Ok(HeaderTypes::from_bytes(header_bytes)?)
 }
 
@@ -83,6 +82,5 @@ pub fn stream_recv_chunk(
     //    - this includes if it was interrupted in the meantime
     // - in case of read timeout, the error is passed down
     stream.read_exact(buf)?;
-    trace!("stream_recv_chunk: read {} bytes", buf.len());
     Ok(())
 }

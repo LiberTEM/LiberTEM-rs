@@ -39,14 +39,14 @@ impl Stats {
         self.slots_size_sum += chunk_stack.slot_size();
         self.frame_size_max = self.frame_size_max.max(
             chunk_stack
-                .get_meta()
+                .get_layout()
                 .iter()
                 .max_by_key(|fm| fm.data_length_bytes)
                 .map_or(self.frame_size_max, |fm| fm.data_length_bytes),
         );
         self.frame_size_min = self.frame_size_min.min(
             chunk_stack
-                .get_meta()
+                .get_layout()
                 .iter()
                 .min_by_key(|fm| fm.data_length_bytes)
                 .map_or(self.frame_size_min, |fm| fm.data_length_bytes),
