@@ -6,7 +6,7 @@ use pyo3::{exceptions::PyRuntimeError, ffi::PyMemoryView_FromMemory, prelude::*,
 
 #[cfg(test)]
 use zerocopy::{FromBytes, AsBytes};
-use crate::{exceptions::ConnectionError, chunk_stack::ChunkStackHandle, shm::recv_shm_handle};
+use crate::{exceptions::ConnectionError, chunk_stack::{ChunkStackHandle, ChunkCSRLayout}, shm::recv_shm_handle};
 
 #[pyclass]
 pub struct CamClient {
@@ -65,15 +65,15 @@ impl CamClient {
         &self,
         handle: &ChunkStackHandle,
         py: Python,
-    ) -> PyResult<Vec<(PyObject, PyObject, PyObject)>> {
+    ) -> PyResult<Vec<(ChunkCSRLayout, PyObject, PyObject, PyObject)>> {
         if let Some(shm) = &self.shm {
             let slot_r = shm.get(handle.slot.slot_idx);
 
-            Ok(handle.get_chunk_views_raw(&slot_r).iter().map(|view| {
+            Ok(handle.get_chunk_views_raw(&slot_r).iter().map(|(view, layout)| {
                 let indptr = self.get_memoryview(py, view.get_indptr_raw());
                 let indices = self.get_memoryview(py, view.get_indices_raw());
                 let values = self.get_memoryview(py, view.get_values_raw());
-                (indptr, indices, values)
+                (layout.clone(), indptr, indices, values)
             }).collect())
         } else {
             Err(PyRuntimeError::new_err("CamClient.get_chunk called with SHM closed"))
@@ -160,14 +160,11 @@ mod tests {
         println!("meta: {meta:?}");
 
         assert_eq!(fs.cursor, SIZES.total());
-
-        // we have one chunk in there:
-        assert_eq!(fs.len(), 1);
+        assert_eq!(fs.num_frames(), 7);
 
         let fs_handle = fs.writing_done(&mut shm);
 
-        // we still have one chunk in there:
-        assert_eq!(fs_handle.len(), 1);
+        assert_eq!(fs_handle.len(), NROWS);
 
         // initialize a Python interpreter so we are able to construct a PyBytes instance:
         prepare_freethreaded_python();
