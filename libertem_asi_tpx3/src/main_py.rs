@@ -143,7 +143,10 @@ impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
                         "serialization error: {msg}, message: {recvd_msg}",
                     )))
                 }
-                Some(ResultMsg::Error { msg }) => {
+                Some(ResultMsg::AcquisitionError { msg }) => {
+                    return Err(exceptions::PyRuntimeError::new_err(msg))
+                }
+                Some(ResultMsg::ReceiverError { msg }) => {
                     return Err(exceptions::PyRuntimeError::new_err(msg))
                 }
                 Some(ResultMsg::End { frame_stack }) => {
@@ -228,6 +231,8 @@ impl ASITpx3Connection {
             }
         };
 
+        info!("shm created, num_slots={num_slots}, slot_size={slot_size}, total_size={}", num_slots * slot_size);
+
         let local_shm = shm.clone_and_connect().expect("clone SHM");
 
         Ok(Self {
@@ -273,7 +278,8 @@ impl ASITpx3Connection {
                 Some(ResultMsg::ScanStart { header: _ }) => {
                     todo!("what do we do here?");
                 }
-                Some(ResultMsg::Error { msg }) => return Err(PyRuntimeError::new_err(msg)),
+                Some(ResultMsg::ReceiverError { msg }) => return Err(PyRuntimeError::new_err(msg)),
+                Some(ResultMsg::AcquisitionError { msg }) => return Err(PyRuntimeError::new_err(msg)),
                 Some(ResultMsg::SerdeError { msg, recvd_msg: _ }) => {
                     return Err(PyRuntimeError::new_err(msg))
                 }

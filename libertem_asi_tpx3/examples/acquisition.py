@@ -1,16 +1,14 @@
 from contextlib import contextmanager
 import os
-import sys
-import base64
 import logging
 import time
-from typing import NamedTuple, Optional, Tuple, Union
+from typing import Optional, Tuple
 import tempfile
 
 import scipy
-from typing_extensions import Literal
 import numpy as np
 from opentelemetry import trace
+from sparseconverter import SCIPY_CSR, ArrayBackend, for_backend, NUMPY
 
 from libertem.common import Shape, Slice
 from libertem.common.math import prod
@@ -97,7 +95,7 @@ class AsiCommHandler(TaskCommHandler):
                 "libertem.partition.start_idx": start_idx,
                 "libertem.partition.end_idx": end_idx,
             })
-            stack_size = 128  # in frames
+            stack_size = 1024  # in frames
             current_idx = start_idx
             while current_idx < end_idx:
                 current_stack_size = min(stack_size, end_idx - current_idx)
@@ -110,7 +108,7 @@ class AsiCommHandler(TaskCommHandler):
                     f"{len(chunk_stack)} <= {current_stack_size}"
                 t1 = time.perf_counter()
                 recv_time += t1 - t0
-                if len(chunk_stack) == 0:
+                if chunk_stack is None:
                     if current_idx != end_idx:
                         raise RuntimeError("premature end of frame iterator")
                     break
@@ -269,6 +267,7 @@ class AsiAcquisition(AcquisitionMixin, DataSet):
         self._nav_shape = self._acquisition_header.get_nav_shape()
         self._meta = DataSetMeta(
             shape=Shape(self._nav_shape + self._sig_shape, sig_dims=2),
+            array_backends=[SCIPY_CSR],
             raw_dtype=np.float32,  # this is a lie, the dtype can vary by chunk!
             dtype=np.float32,
         )
@@ -388,8 +387,8 @@ class AsiLivePartition(Partition):
         tile_start = self._start_idx
         stacks = get_chunk_stacks(self._worker_context.get_worker_queue())
         sig_shape = tuple(self.slice.shape.sig)
-        sig_size = self.slice.shape.sig.size
         sig_dims = len(sig_shape)
+        buf = None
         while to_read > 0:
             try:
                 stack = next(stacks)
@@ -400,6 +399,11 @@ class AsiLivePartition(Partition):
                 chunk_values_arr = np.frombuffer(chunk_values, dtype=chunk_layout.get_value_dtype())
                 chunk_indices_arr = np.frombuffer(chunk_indices, dtype=chunk_layout.get_indices_dtype())
                 chunk_indptr_arr = np.frombuffer(chunk_indptr, dtype=chunk_layout.get_indptr_dtype())
+                if chunk_layout.get_value_dtype() != np.dtype(dest_dtype):
+                    if buf is None or buf.shape[0] < chunk_values_arr.shape[0]:
+                        buf = np.zeros_like(chunk_values_arr, dtype=dest_dtype)
+                    buf[:chunk_values_arr.shape[0]] = chunk_values_arr
+                    chunk_values_arr = buf[:chunk_values_arr.shape[0]]
                 arr = scipy.sparse.csr_matrix(
                     (chunk_values_arr, chunk_indices_arr, chunk_indptr_arr),
                     shape=(chunk_layout.get_nframes(), prod(self.slice.shape.sig)),
@@ -408,9 +412,10 @@ class AsiLivePartition(Partition):
                 to_read -= frames_in_tile
 
                 tile_slice = Slice(
-                    origin=(self.slice.origin[0] + tile_start, ) + (0, ) * sig_dims,
+                    origin=(tile_start, ) + (0, ) * sig_dims,
                     shape=Shape((arr.shape[0], ) + sig_shape, sig_dims=sig_dims),
                 )
+                assert tile_slice.origin[0] < self._end_idx
                 yield DataTile(
                     data=arr,
                     tile_slice=tile_slice,

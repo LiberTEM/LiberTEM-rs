@@ -1,6 +1,6 @@
 use zerocopy::{FromBytes, AsBytes, LayoutVerified};
 
-use crate::sparse_csr::CSRSizes;
+use crate::{sparse_csr::CSRSizes, chunk_stack::ChunkCSRLayout};
 
 ///
 pub struct CSRView<'a, I, IP, V> {
@@ -43,6 +43,11 @@ where
             nrows,
         }
     }
+
+    pub fn from_bytes_with_layout(raw_data: &'a [u8], layout: &ChunkCSRLayout) -> Self {
+        Self::from_bytes(raw_data, layout.nnz, layout.nframes)
+    }
+
 
     /// check if the CSR matrix is valid
     pub fn assert_valid(&self) {
@@ -98,6 +103,10 @@ where
             nnz,
             nrows,
         }
+    }
+
+    pub fn from_bytes_with_layout(raw_data: &'a mut [u8], layout: &ChunkCSRLayout) -> Self {
+        Self::from_bytes(raw_data, layout.nnz, layout.nframes)
     }
 
     pub fn copy_from_slices(&mut self, indptr: &[IP], indices: &[I], values: &[V]) {

@@ -79,6 +79,10 @@ impl<'a> CSRSplitter<'a> {
         let right_values_size = right_nnz as usize * self.layout.value_dtype.size();
         let right_size = right_indices_size + right_indptr_size + right_values_size;
 
+        assert!(left_nframes > 0, "left_nframes = 0; self.layout.nframes = {}, mid={}", self.layout.nframes, mid);
+        assert!(right_nframes > 0, "right_nframes = 0; self.layout.nframes = {}, mid={}", self.layout.nframes, mid);
+
+        // FIXME: alignemnt of array parts
         (
             ChunkCSRLayout {
                 indptr_dtype: self.layout.indptr_dtype,
@@ -212,6 +216,8 @@ pub struct CSRSizes {
     pub indptr: usize,
     pub indices: usize,
     pub values: usize,
+    pub nnz: u32,
+    pub nrows: u32,
 }
 
 impl CSRSizes {
@@ -229,6 +235,8 @@ impl CSRSizes {
             indptr: indptr_size,
             indices: indices_size,
             values: values_size,
+            nnz,
+            nrows,
         }
     }
 
@@ -247,6 +255,8 @@ impl CSRSizes {
             indptr: indptr_size,
             indices: indices_size,
             values: values_size,
+            nnz,
+            nrows,
         }
     }
 
@@ -261,6 +271,8 @@ impl CSRSizes {
             indptr: indptr_size,
             indices: indices_size,
             values: values_size,
+            nnz,
+            nrows: chunk_header.nframes,
         }
     }
 

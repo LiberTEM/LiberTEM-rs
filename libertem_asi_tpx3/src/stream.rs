@@ -1,6 +1,6 @@
 use std::{net::TcpStream, io::Read};
 
-use log::{trace, info};
+use log::trace;
 
 use crate::headers::{HeaderTypes, WireFormatError};
 
@@ -45,7 +45,7 @@ pub fn stream_recv_header(
                 match e.kind() {
                     std::io::ErrorKind::WouldBlock | 
                     std::io::ErrorKind::TimedOut => {
-                        info!("error: {e}");
+                        trace!("stream error: {e}");
                         continue
                     },
                     _ => return Err(e.into())
