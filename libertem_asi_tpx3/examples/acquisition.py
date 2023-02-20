@@ -95,7 +95,7 @@ class AsiCommHandler(TaskCommHandler):
                 "libertem.partition.start_idx": start_idx,
                 "libertem.partition.end_idx": end_idx,
             })
-            stack_size = 1024  # in frames
+            stack_size = 1000000000000
             current_idx = start_idx
             while current_idx < end_idx:
                 current_stack_size = min(stack_size, end_idx - current_idx)
