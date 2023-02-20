@@ -73,4 +73,7 @@ docs/_build/
 
 # Perf stuff
 perf.data
+perf.data.old
 flamegraph.svg
+
+*.perf
