@@ -20,9 +20,17 @@ use crate::{
 ///
 #[derive(PartialEq, Eq, Debug)]
 pub enum ResultMsg {
-    Error { msg: String }, // generic error response, might need to specialize later
     SerdeError { msg: String, recvd_msg: String },
     AcquisitionStart { header: AcquisitionStart },
+
+    /// An error bubbled up and the background thread was terminated:
+    ReceiverError { msg: String },
+
+    /// An error happened while the acquisition was running, probably need to
+    /// inform upstream users...
+    /// (the background thread is still running, though, and reconnecting to the data source)
+    AcquisitionError { msg: String },
+
     ScanStart { header: ScanStart },
     FrameStack { frame_stack: ChunkStackHandle },
     End { frame_stack: ChunkStackHandle },
@@ -71,7 +79,7 @@ impl From<StreamError> for AcquisitionError {
 }
 
 impl<T> From<SendError<T>> for AcquisitionError {
-    fn from(value: SendError<T>) -> Self {
+    fn from(_value: SendError<T>) -> Self {
         AcquisitionError::Disconnected
     }
 }
@@ -137,14 +145,21 @@ fn wait_for_acquisition(
 
         match header {
             HeaderTypes::AcquisitionStart { header } => {
-                wait_for_scan(
+                match wait_for_scan(
                     header,
                     control_channel,
                     from_thread_s,
                     stream,
                     frame_stack_size,
                     shm,
-                )?;
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let msg = format!("Error while an acquisition was running: {e:?}");
+                        from_thread_s.send(ResultMsg::AcquisitionError { msg }).unwrap();
+                        return Err(e)
+                    }
+                }
 
                 let free = shm.num_slots_free();
                 let total = shm.num_slots_total();
@@ -226,7 +241,7 @@ fn wait_for_scan(
 ///
 fn handle_scan(
     acquisition_header: AcquisitionStart,
-    scan_header: ScanStart,
+    _scan_header: ScanStart,
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
     stream: &mut TcpStream,
@@ -241,16 +256,14 @@ fn handle_scan(
         header: acquisition_header.clone(),
     })?;
 
-    // approx uppper bound of image size in bytes
-    // FIXME! maybe we can approximate this based on dwell time / max. hit rate etc.?
-    let approx_size_bytes = 1024 * 1024;
-
     let slot = match shm.get_mut() {
         None => return Err(AcquisitionError::BufferFull),
         Some(x) => x,
     };
     let mut chunk_stack =
-        ChunkStackForWriting::new(slot, chunks_per_stack, approx_size_bytes as usize);
+        ChunkStackForWriting::new(slot, chunks_per_stack);
+
+    let mut frame_counter: u64 = 0;
 
     loop {
         if last_control_check.elapsed() > Duration::from_millis(100) {
@@ -283,7 +296,6 @@ fn handle_scan(
                         let new_frame_stack = ChunkStackForWriting::new(
                             slot,
                             chunks_per_stack,
-                            approx_size_bytes as usize,
                         );
                         let old_chunk_stack = replace(&mut chunk_stack, new_frame_stack);
                         old_chunk_stack.writing_done(shm)
@@ -303,6 +315,10 @@ fn handle_scan(
                         frame_stack: handle,
                     })?;
                 }
+
+                trace!("got an ArrayChunk at {frame_counter}; size={}", header.nframes);
+                frame_counter += header.nframes as u64;
+
                 let sizes = header.get_sizes(&acquisition_header);
                 // FIXME: alignment will change!
                 // offsets will be aligned in the future, and will come from the chunk header
@@ -322,7 +338,6 @@ fn handle_scan(
                 };
                 let buf = chunk_stack.slice_for_writing(nbytes, layout.clone());
                 stream_recv_chunk(stream, buf)?;
-                assert_eq!(buf.len(), nbytes);
                 CSRViewRaw::from_bytes_with_layout(buf, &layout);
             }
             HeaderTypes::ScanEnd { header } => {
@@ -350,7 +365,7 @@ fn handle_scan(
 fn background_thread_wrap(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
-    uri: String,
+    uri: &str,
     frame_stack_size: usize,
     shm: SharedSlabAllocator,
 ) {
@@ -359,69 +374,97 @@ fn background_thread_wrap(
         // NOTE: `shm` is dropped in case of an error, so anyone who tries to connect afterwards
         // will get an error
         from_thread_s
-            .send(ResultMsg::Error {
+            .send(ResultMsg::ReceiverError {
                 msg: err.to_string(),
             })
             .unwrap();
     }
 }
 
+/// Make a stream, returning None on timeout
+fn make_stream(remote: &str) -> Option<TcpStream> {
+    info!("connecting to {remote}");
+    let stream = match TcpStream::connect(remote) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to connect to {remote} ({e})");
+            return None;
+        }
+    };
+    info!("Connected to {remote}");
+    // stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    Some(stream)
+}
+
+fn passive_loop(
+    to_thread_r: &Receiver<ControlMsg>,
+    from_thread_s: &Sender<ResultMsg>,
+    remote: &str,
+    frame_stack_size: usize,
+    shm: &mut SharedSlabAllocator,
+) -> Result<(), AcquisitionError> {
+    loop {
+        let mut stream = loop {
+            match make_stream(remote) {
+                Some(s) => break s,
+                None => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+            }
+        };
+
+        'inner: loop {
+            match wait_for_acquisition(
+                to_thread_r,
+                from_thread_s,
+                &mut stream,
+                frame_stack_size,
+                shm,
+            ) {
+                Ok(_) => {}
+                Err(AcquisitionError::Disconnected) => {
+                    return Ok(()); // the other end of the channel is gone, so :shrug:
+                }
+                Err(AcquisitionError::Cancelled) => {
+                    error!("Cancelled - reconnecting...");
+                    break 'inner;
+                }
+                Err(AcquisitionError::StreamError { err }) => {
+                    error!("Got a stream error: {err:?} - reconnecting...");
+                    break 'inner;
+                },
+                e => {
+                    return e; // other error, give up? maybe we can retry instead?
+                }
+            }
+        }
+    }
+}
+
 fn background_thread(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
-    remote: String,
+    remote: &str,
     frame_stack_size: usize,
     mut shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
-    // automatically reconnect on errors
-    'outer: loop {
-        info!("connecting to {remote}");
-        let mut stream = match TcpStream::connect(&remote) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("failed to connect to {remote} ({e}), retrying...");
-                std::thread::sleep(Duration::from_secs(1));
-                continue;
+    loop {
+        // control: main threads tells us to start or quit
+        let control = to_thread_r.recv_timeout(Duration::from_millis(100));
+        match control {
+            Ok(ControlMsg::StartAcquisitionPassive) => {
+                passive_loop(to_thread_r, from_thread_s, remote, frame_stack_size, &mut shm)?;
             }
-        };
-        info!("connected to {remote}");
-        // stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
-
-        // handle control messages and start acquisition
-        'inner: loop {
-            // control: main threads tells us to start or quit
-            let control = to_thread_r.recv_timeout(Duration::from_millis(100));
-            match control {
-                Ok(ControlMsg::StartAcquisitionPassive) => {
-                    match wait_for_acquisition(
-                        to_thread_r,
-                        from_thread_s,
-                        &mut stream,
-                        frame_stack_size,
-                        &mut shm,
-                    ) {
-                        Ok(_) => {}
-                        Err(AcquisitionError::Disconnected) => {
-                            return Ok(()); // the channel is gone, so :shrug:
-                        }
-                        Err(AcquisitionError::Cancelled) => {
-                            break 'inner; // reconnect
-                        }
-                        e => {
-                            return e; // other error, give up? maybe we can retry instead?
-                        }
-                    }
-                }
-                Ok(ControlMsg::StopThread) => {
-                    debug!("background_thread: got a StopThread message");
-                    break 'outer;
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    debug!("background_thread: control channel has disconnected");
-                    break 'outer;
-                }
-                Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do
+            Ok(ControlMsg::StopThread) => {
+                debug!("background_thread: got a StopThread message");
+                break;
             }
+            Err(RecvTimeoutError::Disconnected) => {
+                debug!("background_thread: control channel has disconnected");
+                break;
+            }
+            Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do
         }
     }
     debug!("background_thread: is done");
@@ -467,7 +510,7 @@ impl TPXReceiver {
                         background_thread_wrap(
                             &to_thread_r,
                             &from_thread_s,
-                            uri.to_string(),
+                            &uri,
                             frame_stack_size,
                             shm,
                         )

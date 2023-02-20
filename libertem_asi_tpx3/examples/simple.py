@@ -31,6 +31,7 @@ if __name__ == "__main__":
     conn = ASITpx3Connection(
         uri="localhost:8283",
         chunks_per_stack=2,
+        num_slots=4000,
         bytes_per_chunk=150000,
         huge=False,
     )

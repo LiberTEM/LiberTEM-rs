@@ -1,5 +1,5 @@
 use bincode::serialize;
-use ipc_test::{SharedSlabAllocator, SlotForWriting, SlotInfo, Slot};
+use ipc_test::{SharedSlabAllocator, Slot, SlotForWriting, SlotInfo};
 use log::trace;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -10,9 +10,8 @@ use serde::{Deserialize, Serialize};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::{
-    csr_view::CSRView,
-    headers::DType,
-    sparse_csr::{CSRSizes, CSRSplitter}, csr_view_raw::CSRViewRaw, common::align_to,
+    common::align_to, csr_view::CSRView, csr_view_raw::CSRViewRaw, headers::DType,
+    sparse_csr::{CSRSplitter, CSRSizes},
 };
 
 /// Information about one array chunk and the layout of the CSR sub-arrays in memory
@@ -45,6 +44,24 @@ pub struct ChunkCSRLayout {
 }
 
 impl ChunkCSRLayout {
+    pub fn from_sizes(sizes: &CSRSizes, indptr_dtype: DType, indices_dtype: DType, value_dtype: DType) -> Self 
+    {
+        Self {
+            nframes: sizes.nrows,
+            nnz: sizes.nnz,
+            data_length_bytes: sizes.total(),
+            indptr_dtype,
+            indptr_offset: 0,
+            indptr_size: sizes.indptr,
+            indices_dtype,
+            indices_offset: sizes.indptr,
+            indices_size: sizes.indices,
+            value_dtype,
+            value_offset: sizes.indptr + sizes.indices,
+            value_size: sizes.values,
+        }
+    }
+
     pub fn validate(&self) {
         // validate length and sizes:
         assert_eq!(
@@ -99,30 +116,28 @@ pub struct ChunkStackForWriting {
     pub(crate) cursor: usize,
 
     padding_bytes: usize,
-
-    /// number of bytes reserved for each array chunk (currently: scan line)
-    /// because of varying occupancy, this is just the "planning" number
-    bytes_per_chunk: usize,
 }
 
 impl ChunkStackForWriting {
-    pub fn new(slot: SlotForWriting, capacity: usize, bytes_per_chunk: usize) -> Self {
+    pub fn new(slot: SlotForWriting, chunks_per_stack: usize) -> Self {
         ChunkStackForWriting {
             slot,
             cursor: 0,
             padding_bytes: 0,
-            bytes_per_chunk,
             // reserve a bit more, as we don't know the upper bound of frames
             // per stack and using a bit more memory is better than having to
             // resize the vectors
-            layout: Vec::with_capacity(2 * capacity),
-            offsets: Vec::with_capacity(2 * capacity),
+            layout: Vec::with_capacity(2 * chunks_per_stack),
+            offsets: Vec::with_capacity(2 * chunks_per_stack),
         }
     }
 
     /// number of frames in this chunk stack
     pub fn num_frames(&self) -> usize {
-        self.layout.iter().map(|layout| layout.get_nframes() as usize).sum()
+        self.layout
+            .iter()
+            .map(|layout| layout.get_nframes() as usize)
+            .sum()
     }
 
     pub fn num_chunks(&self) -> usize {
@@ -152,8 +167,18 @@ impl ChunkStackForWriting {
         self.offsets.push(start);
         let total_size = self.total_size();
         let slice = self.slot.as_slice_mut();
-        assert!(start < slice.len(), "start < slice.len() (start={}, len={})", start, slice.len());
-        assert!(stop <= slice.len(), "stop <= slice.len() (stop={}, len={})", stop, slice.len());
+        assert!(
+            start < slice.len(),
+            "start < slice.len() (start={}, len={})",
+            start,
+            slice.len()
+        );
+        assert!(
+            stop <= slice.len(),
+            "stop <= slice.len() (stop={}, len={})",
+            stop,
+            slice.len()
+        );
         let dest = &mut slice[start..stop];
         // FIXME: parametrize alignment?
         let padding = align_to(nbytes, 8) - nbytes;
@@ -228,7 +253,6 @@ impl ChunkStackHandle {
     ///
     /// The length of the left stack returned is equal to `mid`.
     ///
-    // FIXME: take into account the alignment of the chunks in the slot
     pub fn split_at(self, mid: u32, shm: &mut SharedSlabAllocator) -> (Self, Self) {
         // FIXME: this whole thing is falliable, so modify return type to Result<> (or PyResult<>?)
 
@@ -247,15 +271,22 @@ impl ChunkStackHandle {
         let mut frames_in_left = 0;
         let mut split_found = false;
 
+        // partition the chunks into left/mid/right
         for (layout, offset) in self.layout.iter().zip(&self.offsets) {
             if split_found {
                 // we already found our split point, so everything else needs to
                 // be copied wholesale to the right stack:
                 chunks_right.push((layout.clone(), *offset));
-            } else if frames_in_left + layout.nframes < mid {
+            } else if frames_in_left + layout.nframes <= mid {
                 // the whole chunk fits into the planned left stack:
                 frames_in_left += layout.nframes;
                 chunks_left.push((layout.clone(), *offset));
+                if frames_in_left == mid {
+                    // direct match, we don't actually have to split
+                    // a chunk in half, only the stack:
+                    split_found = true;
+                    chunk_split = None;
+                }
             } else {
                 // the chunk doesn't fit into the left stack, so that's the
                 // one we need to split:
@@ -265,6 +296,8 @@ impl ChunkStackHandle {
             }
         }
 
+        // println!("left={:?}, right={:?}, split={:?} mid={mid}", chunks_left, chunks_right, chunk_split);
+
         if !split_found {
             panic!(
                 "split not found! mid={mid} chunks_left.len()={}, chunks_right.len()={} layout={:?} offsets={:?}",
@@ -272,115 +305,57 @@ impl ChunkStackHandle {
             );
         }
 
-        assert!(split_found);
-        let (chunk_split_layout, chunk_split_offset, split_frames_in_left_part) =
-            chunk_split.unwrap();
+        let slot: ipc_test::Slot = shm.get(self.slot.slot_idx);
+        let slice = slot.as_slice();
 
-        let mut left_layout: Vec<ChunkCSRLayout> = Vec::new();
-        let mut left_offsets: Vec<usize> = Vec::new();
-        let mut left_padding = 0;
-        let mut right_layout: Vec<ChunkCSRLayout> = Vec::new();
-        let mut right_offsets: Vec<usize> = Vec::new();
-        let mut right_padding = 0;
+        let slot_left = shm.get_mut().expect("shm slot for writing");
+        let mut stack_left = ChunkStackForWriting::new(slot_left, chunks_left.len() + 1);
 
-        let (left, left_cursor, right, right_cursor) = {
-            let slot: ipc_test::Slot = shm.get(self.slot.slot_idx);
-            let slice = slot.as_slice();
+        for (layout, offset) in chunks_left.into_iter() {
+            let dst = stack_left.slice_for_writing(layout.data_length_bytes, layout.clone());
+            let src = &slice[offset..offset + layout.data_length_bytes];
+            dst.copy_from_slice(src);
+        }
 
-            let mut slot_left = shm.get_mut().expect("shm slot for writing");
-            let slice_left = slot_left.as_slice_mut();
+        let slot_right = shm.get_mut().expect("shm slot for writing");
+        let mut stack_right = ChunkStackForWriting::new(slot_right, chunks_right.len() + 1);
 
-            // cursor points to free space in the slot:
-            let mut left_cursor = 0;
-
-            for (m, offset) in chunks_left.into_iter() {
-                // offset and other meta information from these chunks can be taken as-is; they are not moved
-                // relative to the slot beginning:
-                left_offsets.push(offset);
-
-                // the payload data can be copied, too:
-                let dst = &mut slice_left[offset..offset + m.data_length_bytes];
-                let src = &slice[offset..offset + m.data_length_bytes];
-                dst.copy_from_slice(src);
-
-                left_cursor = offset + m.data_length_bytes; // FIXME: align here?
-
-                left_layout.push(m);
-            }
-
-            let mut slot_right = shm.get_mut().expect("shm slot for writing");
-            let slice_right = slot_right.as_slice_mut();
-
+        if let Some((chunk_split_layout, chunk_split_offset, split_frames_in_left_part)) = chunk_split {
             let split_slice_src =
                 &slice[chunk_split_offset..chunk_split_offset + chunk_split_layout.data_length_bytes];
-            let csr_to_split = CSRSplitter::from_bytes(
-                split_slice_src,
-                chunk_split_layout,
-            );
+            let csr_to_split = CSRSplitter::from_bytes(split_slice_src, chunk_split_layout);
 
             let relative_mid = split_frames_in_left_part;
-            let (lm, rm) = csr_to_split.get_split_info(relative_mid);
-            lm.validate();
-            rm.validate();
+            let (layout_split_left, layout_split_right) = csr_to_split.get_split_info(relative_mid);
+            layout_split_left.validate();
+            layout_split_right.validate();
 
-            let split_dst_left = &mut slice_left[left_cursor..left_cursor + lm.data_length_bytes];
-            let split_dst_right = &mut slice_right[0..rm.data_length_bytes];
+            let split_dst_left =
+                stack_left.slice_for_writing(layout_split_left.data_length_bytes, layout_split_left);
+            let split_dst_right =
+                stack_right.slice_for_writing(layout_split_right.data_length_bytes, layout_split_right);
 
-            let (split_left_layout, split_right_layout) =
-                csr_to_split.split_into(relative_mid, split_dst_left, split_dst_right);
+            csr_to_split.split_into(relative_mid, split_dst_left, split_dst_right);
+        }
 
-            left_layout.push(split_left_layout);
-            left_offsets.push(left_cursor);
+        for (layout, offset) in chunks_right.into_iter() {
+            let dst = stack_right.slice_for_writing(layout.data_length_bytes, layout.clone());
+            let src = &slice[offset..offset + layout.data_length_bytes];
+            dst.copy_from_slice(src);
+        }
 
-            right_layout.push(split_right_layout);
-            right_offsets.push(0);
+        let left = stack_left.writing_done(shm);
+        let right = stack_right.writing_done(shm);
 
-            let mut right_cursor = split_dst_right.len();
+        // free our own slot
+        shm.free_idx(self.slot.slot_idx);
 
-            for (m, offset) in chunks_right.into_iter() {
-                // calculate new offset as a running cursor:
-                right_offsets.push(right_cursor);
-
-                // FIXME: actually copy over the data itself!
-                let dst = &mut slice_right[right_cursor..right_cursor + m.data_length_bytes];
-                let src = &slice[offset..offset + m.data_length_bytes];
-                dst.copy_from_slice(src);
-
-                right_cursor += m.data_length_bytes; // FIXME: align here?
-
-                right_layout.push(m);
-            }
-
-            let left = shm.writing_done(slot_left);
-            let right = shm.writing_done(slot_right);
-
-            shm.free_idx(self.slot.slot_idx);
-
-            (left, left_cursor, right, right_cursor)
-        };
-
-        (
-            ChunkStackHandle {
-                slot: left,
-                layout: left_layout,
-                offsets: left_offsets,
-                total_bytes_used: left_cursor,
-                total_bytes_padding: left_padding,
-            },
-            ChunkStackHandle {
-                slot: right,
-                layout: right_layout,
-                offsets: right_offsets,
-                total_bytes_used: right_cursor,
-                total_bytes_padding: right_padding,
-            },
-        )
+        (left, right)
     }
 
-    pub fn get_chunk_views<'a, I, IP, V>(
-        &'a self,
-        slot_r: &'a Slot,
-    ) -> Vec<CSRView<I, IP, V>>
+    // FIXME: this doesn't make sense for stacks with different V-type per chunk!
+    // (which is something that could happen...)
+    pub fn get_chunk_views<'a, I, IP, V>(&'a self, slot_r: &'a Slot) -> Vec<CSRView<I, IP, V>>
     where
         I: numpy::Element + FromBytes + AsBytes,
         IP: numpy::Element + FromBytes + AsBytes,
@@ -388,12 +363,11 @@ impl ChunkStackHandle {
     {
         let raw_data = slot_r.as_slice();
 
-        self
-            .get_layout()
+        self.get_layout()
             .iter()
             .zip(&self.offsets)
             .map(|(layout, offset)| {
-                let arr_data = &raw_data[*offset..layout.data_length_bytes];
+                let arr_data = &raw_data[*offset..*offset+layout.data_length_bytes];
                 let view = CSRView::from_bytes(arr_data, layout.nnz, layout.nframes);
                 view
             })
@@ -406,15 +380,20 @@ impl ChunkStackHandle {
     ) -> Vec<(CSRViewRaw, ChunkCSRLayout)> {
         let raw_data = slot_r.as_slice();
 
-        self
-            .get_layout()
+        self.get_layout()
             .iter()
             .zip(&self.offsets)
             .map(|(layout, offset)| {
-                let arr_data = &raw_data[*offset..layout.data_length_bytes];
+                let arr_data = &raw_data[*offset..*offset+layout.data_length_bytes];
                 layout.validate();
-                trace!("constructing csr view from layout {layout:?} with arr_data length {}", arr_data.len());
-                (CSRViewRaw::from_bytes_with_layout(arr_data, layout), layout.clone())
+                trace!(
+                    "constructing csr view from layout {layout:?} with arr_data length {}",
+                    arr_data.len()
+                );
+                (
+                    CSRViewRaw::from_bytes_with_layout(arr_data, layout),
+                    layout.clone(),
+                )
             })
             .collect()
     }
@@ -474,7 +453,7 @@ mod tests {
     fn test_chunk_stack() {
         let mut shm = SharedSlabAllocator::new(1, 4096, false).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
-        let mut fs = ChunkStackForWriting::new(slot, 1, 256);
+        let mut fs = ChunkStackForWriting::new(slot, 1);
         assert_eq!(fs.cursor, 0);
         let layout = ChunkCSRLayout {
             nframes: 1,
@@ -511,23 +490,10 @@ mod tests {
         const NROWS: u32 = 7;
         const SIZES: CSRSizes = CSRSizes::new::<u32, u32, u32>(NNZ, NROWS);
 
-        let mut fs = ChunkStackForWriting::new(slot, 1, SIZES.total());
+        let mut fs = ChunkStackForWriting::new(slot, 1);
         assert_eq!(fs.cursor, 0);
 
-        let layout = ChunkCSRLayout {
-            nframes: NROWS,
-            nnz: NNZ,
-            data_length_bytes: SIZES.total(),
-            indptr_dtype: DType::U32,
-            indptr_offset: 0,
-            indptr_size: SIZES.indptr,
-            indices_dtype: DType::U32,
-            indices_offset: SIZES.indptr,
-            indices_size: SIZES.indices,
-            value_dtype: DType::U32,
-            value_offset: SIZES.indptr + SIZES.indices,
-            value_size: SIZES.values,
-        };
+        let layout = ChunkCSRLayout::from_sizes(&SIZES, DType::U32, DType::U32, DType::U32);
         layout.validate();
 
         let slice = fs.slice_for_writing(SIZES.total(), layout.clone());
@@ -561,17 +527,114 @@ mod tests {
 
         let slot_a: Slot = shm.get(a.slot.slot_idx);
         let slot_b: Slot = shm.get(b.slot.slot_idx);
-        let slice_a = &slot_a.as_slice();
-        let slice_b = &slot_b.as_slice();
 
         println!("a.first_layout() = {:?}", a.first_layout());
         println!("b.first_layout() = {:?}", b.first_layout());
 
-        // this testcase only splits a single chunk, which is then at the beginning of the slot:
-        let view_a: CSRView<u32, u32, u32> = CSRView::from_bytes(slice_a, 8, 2);
+        let a_views = a.get_chunk_views(&slot_a);
+        let view_a: &CSRView<u32, u32, u32> = a_views.first().unwrap();
         assert_eq!(view_a.indptr, &[0, 4, 8]);
         assert_eq!(view_a.indices, &[0, 1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(view_a.values, &[1, 2, 4, 8, 16, 32, 64, 128]);
+
+        let b_views = b.get_chunk_views(&slot_b);
+        let view_b: &CSRView<u32, u32, u32> = b_views.first().unwrap();
+        assert_eq!(view_b.indptr, &[0, 4, 4, 4, 4, 4]);
+        assert_eq!(view_b.indices, &[8, 9, 10, 11]);
+        assert_eq!(view_b.values, &[256, 512, 1024, 2048]);
+
+        // when the split is done, there should be one free shm slot:
+        assert_eq!(shm.num_slots_free(), 1);
+
+        // and we can free them again:
+        shm.free_idx(a.slot.slot_idx);
+        shm.free_idx(b.slot.slot_idx);
+
+        assert_eq!(shm.num_slots_free(), 3);
+    }
+
+    #[test]
+    fn test_split_chunk_stack_handle_exact_fit() {
+
+        // Idea here:
+        // have three chunks in the stack, let's say like this, with number of frames indicated:
+        //
+        // [ [16] [16] [16] ]
+        //
+        // If we now request a split at 32, it fits evenly by taking two whole chunks.
+
+        // need at least three slots: one is the source, two for the results.
+        let mut shm = SharedSlabAllocator::new(3, 4096, false).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+
+        // let's make a plan first:
+        const NNZ: u32 = 12;
+        const NROWS: u32 = 7;
+        const SIZES: CSRSizes = CSRSizes::new::<u32, u32, u32>(NNZ, NROWS);
+
+        let mut fs = ChunkStackForWriting::new(slot, 1);
+        assert_eq!(fs.cursor, 0);
+
+        let layout = ChunkCSRLayout::from_sizes(&SIZES, DType::U32, DType::U32, DType::U32);
+        layout.validate();
+
+        // CHUNK 1
+        let slice = fs.slice_for_writing(SIZES.total(), layout.clone());
+        let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes_with_layout(slice, &layout);
+        // generate some predictable pattern:
+        let values: Vec<u32> = (0..12).map(|i| (1 << (i % 16))).collect();
+        let indices: Vec<u32> = (0..12).collect();
+        let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
+        view_mut.copy_from_slices(&indptr, &indices, &values);
+        println!("values: {values:?}");
+        assert_eq!(values.len(), 12);
+        println!("indices: {indices:?}");
+        assert_eq!(indices.len(), 12);
+        println!("indptr: {indptr:?}");
+        assert_eq!(indptr.len() as u32, NROWS + 1);
+        println!("layout: {layout:?}");
+        assert_eq!(fs.cursor, SIZES.total());
+        println!("{:?}", &fs.slot.as_slice()[..SIZES.total()]);
+
+        // CHUNK 2: same layout as above...
+        let slice = fs.slice_for_writing(SIZES.total(), layout.clone());
+        let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes_with_layout(slice, &layout);
+        // generate some predictable pattern:
+        let values: Vec<u32> = (12..24).map(|i| (1 << (i % 16))).collect();
+        let indices: Vec<u32> = (0..12).collect();
+        let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
+        view_mut.copy_from_slices(&indptr, &indices, &values);
+        println!("values: {values:?}");
+        assert_eq!(values.len(), 12);
+        println!("indices: {indices:?}");
+        assert_eq!(indices.len(), 12);
+        println!("indptr: {indptr:?}");
+        assert_eq!(indptr.len() as u32, NROWS + 1);
+        println!("layout: {layout:?}");
+        assert_eq!(fs.cursor, 2 * SIZES.total());
+        println!("{:?}", &fs.slot.as_slice()[..SIZES.total()]);
+
+        // CHUNK 3: same layout as above...
+        let slice = fs.slice_for_writing(SIZES.total(), layout.clone());
+        let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes_with_layout(slice, &layout);
+        // generate some predictable pattern:
+        let values: Vec<u32> = (24..36).map(|i| (1 << (i % 16))).collect();
+        let indices: Vec<u32> = (0..12).collect();
+        let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
+        view_mut.copy_from_slices(&indptr, &indices, &values);
+        println!("values: {values:?}");
+        assert_eq!(values.len(), 12);
+        println!("indices: {indices:?}");
+        assert_eq!(indices.len(), 12);
+        println!("indptr: {indptr:?}");
+        assert_eq!(indptr.len() as u32, NROWS + 1);
+        println!("layout: {layout:?}");
+        assert_eq!(fs.cursor, 3 * SIZES.total());
+        println!("{:?}", &fs.slot.as_slice()[..SIZES.total()]);
+
+        let fs_handle = fs.writing_done(&mut shm);
+
+        let (a, b) = fs_handle.split_at(14, &mut shm);
 
         // when the split is done, there should be one free shm slot:
         assert_eq!(shm.num_slots_free(), 1);
@@ -589,7 +652,7 @@ mod tests {
         let mut shm = SharedSlabAllocator::new(3, 4096, false).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
 
-        let mut fs = ChunkStackForWriting::new(slot, 1, 4096);
+        let mut fs = ChunkStackForWriting::new(slot, 1);
 
         assert!(fs.can_fit(4096));
         assert!(fs.can_fit(1024));
@@ -630,5 +693,7 @@ mod tests {
         assert_eq!(fs.padding_bytes, 7);
         assert_eq!(fs.cursor, 4096);
         assert!(!fs.can_fit(1));
+        assert!(!fs.can_fit(8));
+        assert!(!fs.can_fit(4096));
     }
 }

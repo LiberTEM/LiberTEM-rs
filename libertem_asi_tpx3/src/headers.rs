@@ -1,5 +1,4 @@
 use bincode::{Options, ErrorKind};
-use log::trace;
 use pyo3::pyclass;
 use serde::{Serialize, Deserialize};
 
@@ -41,17 +40,7 @@ impl HeaderTypes {
                 HeaderTypes::ScanStart { header }
             }
             0x02 => {
-                let mut header: ArrayChunk = options.deserialize_from(bytes.as_slice())?;
-                // // XXX: these values are wrong in our test data!
-                // header.value_dtype = DType::U32;
-                // header.nframes = 512*512;
-
-                // let mut header_bytes: [u8; 32] = [0; 32];
-
-                // options.serialize_into(&mut header_bytes[..], &header).unwrap();
-
-                // trace!("fixed-up header: {:02x?}", &header_bytes[..]);
-
+                let header: ArrayChunk = options.deserialize_from(bytes.as_slice())?;
                 HeaderTypes::ArrayChunk { header }
             }
             0x03 => {
@@ -90,7 +79,7 @@ impl DType {
             3 => DType::U16,
             4 => DType::U32,
             5 => DType::U64,
-            _ => panic!("Unknown value: {value}"),
+            _ => panic!("Unknown value for dtype: {value}"),
         }
     }
 
@@ -133,7 +122,7 @@ impl FormatType {
         match value {
             0 => FormatType::CSR,
             1 => FormatType::ToT,
-            _ => panic!("Unknown value: {value}"),
+            _ => panic!("Unknown value for format type: {value}"),
         }
     }
 }

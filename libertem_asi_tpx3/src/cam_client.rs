@@ -126,7 +126,7 @@ mod tests {
         const NROWS: u32 = 7;
         const SIZES: CSRSizes = CSRSizes::new::<u32, u32, u32>(NNZ, NROWS);
 
-        let mut fs = ChunkStackForWriting::new(slot, 1, SIZES.total());
+        let mut fs = ChunkStackForWriting::new(slot, 1);
 
         assert_eq!(fs.cursor, 0);
         let meta = ChunkCSRLayout {

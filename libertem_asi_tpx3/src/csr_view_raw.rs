@@ -152,7 +152,7 @@ impl<'a> CSRViewRawMut<'a> {
         }
     }
 
-    fn from_bytes_with_layout(raw_data: &'a mut [u8], layout: &ChunkCSRLayout) -> Self {
+    pub fn from_bytes_with_layout(raw_data: &'a mut [u8], layout: &ChunkCSRLayout) -> Self {
         Self::from_bytes(
             raw_data,
             layout.nnz,
