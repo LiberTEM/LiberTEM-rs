@@ -29,11 +29,13 @@ tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
 
-def get_chunk_stacks(request_queue):
+def get_chunk_stacks(worker_context: WorkerContext):
     """
     Consume all CHUNK_STACK messages from the request queue until we get an
     END_PARTITION message (which we also consume)
     """
+    request_queue = worker_context.get_worker_queue()
+
     with request_queue.get() as msg:
         header, _ = msg
         header_type = header["type"]
@@ -385,7 +387,7 @@ class AsiLivePartition(Partition):
         to_read = self._end_idx - self._start_idx
         depth = tiling_scheme.depth
         tile_start = self._start_idx
-        stacks = get_chunk_stacks(self._worker_context.get_worker_queue())
+        stacks = get_chunk_stacks(self._worker_context)
         sig_shape = tuple(self.slice.shape.sig)
         sig_dims = len(sig_shape)
         buf = None

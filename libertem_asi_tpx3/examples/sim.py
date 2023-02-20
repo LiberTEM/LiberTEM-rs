@@ -29,10 +29,13 @@ def handle_connection(cache_fd, total_size, conn, sleep):
             t1 = time.perf_counter()
             thp = total_size / 1024 / 1024 / (t1-t0)
             total_sent_this_conn += total_size
-            print(f"done, throughput={thp}")
+            print(f"done in {t1-t0:.3f}s, throughput={thp:.3f}MiB/s")
             time.sleep(sleep)
+            t2 = time.perf_counter()
+            thp_with_sleep = total_size / 1024 / 1024 / (t2-t0)
+            print(f"throughput_with_sleep={thp_with_sleep:.3f}MiB/s")
     finally:
-        print(f"connection closed, total_sent = {total_sent_this_conn}")
+        print(f"connection closed, total_sent = {total_sent_this_conn/1024/1024/1024:.3f}GiB")
 
 
 def start_server(cache_fd, total_size, sleep):
