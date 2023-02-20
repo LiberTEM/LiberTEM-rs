@@ -1,18 +1,27 @@
 import time
 
 from libertem.udf.sum import SumUDF
+from libertem.executor.pipelined import PipelinedExecutor
 from libertem_live.api import LiveContext
 from acquisition import AsiAcquisition, AsiDetectorConnection
 
 
 if __name__ == "__main__":
     # ctx = LiveContext.make_with('inline')
-    ctx = LiveContext()
+    #
+    executor = PipelinedExecutor(
+        spec=PipelinedExecutor.make_spec(
+            cpus=range(20), cudas=[]
+        ),
+        pin_workers=True,
+        delayed_gc=False,
+    )
+    ctx = LiveContext(executor=executor)
     conn = AsiDetectorConnection(
         uri="localhost:8283",
         chunks_per_stack=8,
         bytes_per_chunk=150000,
-        num_slots=4000,
+        num_slots=2000,
     )
     n = 1
     while True:
