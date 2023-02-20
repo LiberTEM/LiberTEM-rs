@@ -1,0 +1,21 @@
+[package]
+name = "playegui"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+egui = "0.21.0"
+eframe = { version = "0.21.0", features = ["default_fonts", "glow", "persistence"] }
+serde = { version = "1", features = ["derive"] }
+tracing-subscriber = "0.3"
+serde_json = "1.0.93"
+websocket = "0.26.5"
+log = "0.4.17"
+crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
+ndarray = "0.15.6"
+bs_sys = { path = "../bs-sys" }
+ndarray-stats = "0.5.1"
+scarlet = "1.1.0"
+colors-transform = "0.2.11"
