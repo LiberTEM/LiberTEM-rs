@@ -426,10 +426,6 @@ fn passive_loop(
                 Err(AcquisitionError::Disconnected) => {
                     return Ok(()); // the other end of the channel is gone, so :shrug:
                 }
-                Err(AcquisitionError::Cancelled) => {
-                    error!("Cancelled - reconnecting...");
-                    break 'inner;
-                }
                 Err(AcquisitionError::StreamError { err }) => {
                     error!("Got a stream error: {err:?} - reconnecting...");
                     break 'inner;
@@ -454,7 +450,14 @@ fn background_thread(
         let control = to_thread_r.recv_timeout(Duration::from_millis(100));
         match control {
             Ok(ControlMsg::StartAcquisitionPassive) => {
-                passive_loop(to_thread_r, from_thread_s, remote, frame_stack_size, &mut shm)?;
+                match passive_loop(to_thread_r, from_thread_s, remote, frame_stack_size, &mut shm) {
+                    Ok(_) => {},
+                    Err(AcquisitionError::Cancelled) => {
+                        info!("Cancelled - stopping thread and closing connection...");
+                        break;
+                    }
+                    e @ Err(_) => return e,
+                }
             }
             Ok(ControlMsg::StopThread) => {
                 debug!("background_thread: got a StopThread message");
