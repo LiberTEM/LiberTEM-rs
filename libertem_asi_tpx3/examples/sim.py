@@ -59,18 +59,21 @@ def start_server(cache_fd, total_size, sleep):
 
 
 @click.command()
-@click.argument('path', type=click.Path(exists=True))
+@click.argument('paths', type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True), nargs=-1)
 @click.option('--sleep', type=float)
-def main(path, sleep=0.5):
+def main(paths, sleep=0.5):
     print("populating cache...")
     cache_fd = memfd.memfd_create("tpx_cache", 0)
-    with open(path, "rb") as f:
-        in_bytes = f.read()
+    total_size = 0
+    for path in paths:
         written = 0
-        while written < len(in_bytes):
-            written += os.write(cache_fd, in_bytes[written:])
+        print(f"reading {path}")
+        with open(path, "rb") as f:
+            in_bytes = f.read()
+            while written < len(in_bytes):
+                written += os.write(cache_fd, in_bytes[written:])
+        total_size += written
     os.lseek(cache_fd, 0, 0)
-    total_size = written
     print(f"cache populated, total_size={total_size}")
 
     start_server(cache_fd, total_size, sleep)
