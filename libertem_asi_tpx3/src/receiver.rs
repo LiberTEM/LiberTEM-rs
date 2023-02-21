@@ -316,21 +316,19 @@ fn handle_scan(
                     })?;
                 }
 
-                trace!("got an ArrayChunk at {frame_counter}; size={}", header.nframes);
+                trace!("got an ArrayChunk of size {nbytes} bytes at {frame_counter}; size={}; header={header:?}", header.nframes);
                 frame_counter += header.nframes as u64;
 
                 let sizes = header.get_sizes(&acquisition_header);
-                // FIXME: alignment will change!
-                // offsets will be aligned in the future, and will come from the chunk header
                 let layout = ChunkCSRLayout {
                     indptr_dtype: acquisition_header.indptr_dtype,
                     indptr_offset: 0,
                     indptr_size: sizes.indptr,
                     indices_dtype: acquisition_header.indices_dtype,
-                    indices_offset: sizes.indptr,
+                    indices_offset: header.indices_offset as usize,
                     indices_size: sizes.indices,
                     value_dtype: header.value_dtype,
-                    value_offset: sizes.indptr + sizes.indices,
+                    value_offset: header.values_offset as usize,
                     value_size: sizes.values,
                     nframes: header.nframes,
                     nnz: header.length,
@@ -392,7 +390,7 @@ fn make_stream(remote: &str) -> Option<TcpStream> {
         }
     };
     info!("Connected to {remote}");
-    // stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
     Some(stream)
 }
 
@@ -408,6 +406,7 @@ fn passive_loop(
             match make_stream(remote) {
                 Some(s) => break s,
                 None => {
+                    check_for_control(to_thread_r)?;
                     std::thread::sleep(Duration::from_secs(1));
                     continue;
                 }
@@ -427,6 +426,8 @@ fn passive_loop(
                     return Ok(()); // the other end of the channel is gone, so :shrug:
                 }
                 Err(AcquisitionError::StreamError { err }) => {
+                    // FIXME: should probably bubble this one up further, as it
+                    // may leave buffer contents "undefined"... => clean SHM is best
                     error!("Got a stream error: {err:?} - reconnecting...");
                     break 'inner;
                 },

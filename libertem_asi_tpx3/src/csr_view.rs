@@ -18,13 +18,14 @@ where
     IP: numpy::Element + FromBytes + AsBytes,
     V: numpy::Element + FromBytes + AsBytes,
 {
-    pub fn from_bytes(raw_data: &'a [u8], nnz: u32, nrows: u32) -> Self {
-        let sizes = CSRSizes::new::<I, IP, V>(nnz, nrows);
-
-        let indptr_raw = &raw_data[0..sizes.indptr];
-        let indices_raw = &raw_data[sizes.indptr..sizes.indptr + sizes.indices];
+    pub fn from_bytes(raw_data: &'a [u8], sizes: &CSRSizes) -> Self {
+        let mut offset = sizes.indptr_padding;
+        let indptr_raw = &raw_data[offset..offset+sizes.indptr];
+        offset += sizes.indices_padding;
+        let indices_raw = &raw_data[offset+sizes.indptr..offset + sizes.indptr + sizes.indices];
+        offset += sizes.values_padding;
         let values_raw =
-            &raw_data[sizes.indptr + sizes.indices..sizes.indptr + sizes.indices + sizes.values];
+            &raw_data[offset + sizes.indptr + sizes.indices..offset + sizes.indptr + sizes.indices + sizes.values];
 
         // FIXME: error handling
         // FIXME: all of these need to be properly aligned according to
@@ -39,13 +40,14 @@ where
             indices,
             indptr,
             values,
-            nnz,
-            nrows,
+            nnz: sizes.nnz,
+            nrows: sizes.nrows,
         }
     }
 
     pub fn from_bytes_with_layout(raw_data: &'a [u8], layout: &ChunkCSRLayout) -> Self {
-        Self::from_bytes(raw_data, layout.nnz, layout.nframes)
+        let sizes = CSRSizes::from_layout(layout);
+        Self::from_bytes(raw_data, &sizes)
     }
 
 
@@ -78,14 +80,14 @@ where
     IP: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
     V: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
 {
-    pub fn from_bytes(raw_data: &'a mut [u8], nnz: u32, nrows: u32) -> Self {
-        let sizes = CSRSizes::new::<I, IP, V>(nnz, nrows);
-
-        let (indptr_raw, rest) = raw_data.split_at_mut(sizes.indptr);
-        let (indices_raw, values_raw) = rest.split_at_mut(sizes.indices);
+    pub fn from_bytes(raw_data: &'a mut [u8], sizes: &CSRSizes) -> Self {
+        let mut offset = sizes.indptr_padding;
+        let (indptr_raw, rest) = raw_data[offset..].split_at_mut(sizes.indptr);
+        offset = sizes.indices_padding;
+        let (indices_raw, values_raw) = rest[offset..].split_at_mut(sizes.indices);
         assert_eq!(sizes.values, values_raw.len());
 
-        // FIXME: error handling, alignment
+        // FIXME: error handling
         let indptr: &mut [IP] = LayoutVerified::new_slice(indptr_raw)
             .unwrap()
             .into_mut_slice();
@@ -100,13 +102,14 @@ where
             indices,
             indptr,
             values,
-            nnz,
-            nrows,
+            nnz: sizes.nnz,
+            nrows: sizes.nrows,
         }
     }
 
     pub fn from_bytes_with_layout(raw_data: &'a mut [u8], layout: &ChunkCSRLayout) -> Self {
-        Self::from_bytes(raw_data, layout.nnz, layout.nframes)
+        let sizes = CSRSizes::from_layout(layout);
+        Self::from_bytes(raw_data, &sizes)
     }
 
     pub fn copy_from_slices(&mut self, indptr: &[IP], indices: &[I], values: &[V]) {
