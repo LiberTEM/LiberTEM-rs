@@ -199,7 +199,7 @@ impl eframe::App for TemplateApp {
                 // plot_ui.vline(VLine::new(-9.0).name("Lines vertical"));
                 //plot_ui.image(image.name("Image"));
 
-                self.acquisition_history.iter().rev().take(2).for_each(|id| {
+                self.acquisition_history.iter().rev().take(2).rev().for_each(|id| {
                     if let Some(item) = self.acquisitions.get(id) {
                         let (_, texture, bbox) = item;
                         let texture_id = texture.as_ref().unwrap();
