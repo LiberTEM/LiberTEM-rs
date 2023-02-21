@@ -16,6 +16,7 @@ from libertem.udf.sum import SumUDF
 from libertem.udf.sumsigudf import SumSigUDF
 from libertem.executor.pipelined import PipelinedExecutor
 from libertem_live.api import LiveContext
+from libertem_live.udf.monitor import SignalMonitorUDF
 from acquisition import AsiAcquisition, AsiDetectorConnection
 
 from libertem.udf.base import UDFResults
@@ -59,6 +60,8 @@ class WSServer:
         self.ws_connected = set()
         self.udfs = [
             SumSigUDF(),
+            # SumUDF()
+            # SignalMonitorUDF(),
         ]
 
     async def __call__(self, websocket: WebSocketServerProtocol):
@@ -114,10 +117,8 @@ class WSServer:
         # print(delta_for_blit.shape, delta_for_blit, list(delta_for_blit[-1]))
 
         # FIXME: remove allocating copy - maybe copy into pre-allocated buffer instead?
-        print(len(delta_for_blit.tobytes()))
         # compressed = await sync_to_async(lambda: lz4.frame.compress(np.copy(delta_for_blit)))
         compressed = await sync_to_async(lambda: bitshuffle.compress_lz4(np.copy(delta_for_blit)))
-        print(len(compressed))
 
         return memoryview(compressed), bbox, delta_for_blit.shape, delta_for_blit.dtype
 
@@ -175,6 +176,7 @@ class WSServer:
                 if pending_acq is None:
                     continue
                 acq_id = await self.handle_pending_acquisition(pending_acq)
+                print(f"acquisition starting with id={acq_id}")
                 previous_results = None
                 try:
                     aq = self.ctx.prepare_from_pending(

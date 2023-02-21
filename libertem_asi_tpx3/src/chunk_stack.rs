@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::{
-    common::align_to, csr_view::CSRView, csr_view_raw::CSRViewRaw, headers::DType,
-    sparse_csr::{CSRSplitter, CSRSizes},
+    common::align_to,
+    csr_view::CSRView,
+    csr_view_raw::CSRViewRaw,
+    headers::DType,
+    sparse_csr::{CSRSizes, CSRSplitter},
 };
 
 /// Information about one array chunk and the layout of the CSR sub-arrays in memory
@@ -44,30 +47,37 @@ pub struct ChunkCSRLayout {
 }
 
 impl ChunkCSRLayout {
-    pub fn from_sizes(sizes: &CSRSizes, indptr_dtype: DType, indices_dtype: DType, value_dtype: DType) -> Self 
-    {
+    pub fn from_sizes(
+        sizes: &CSRSizes,
+        indptr_dtype: DType,
+        indices_dtype: DType,
+        value_dtype: DType,
+    ) -> Self {
         Self {
             nframes: sizes.nrows,
             nnz: sizes.nnz,
             data_length_bytes: sizes.total(),
             indptr_dtype,
-            indptr_offset: 0,
+            indptr_offset: sizes.indptr_padding,
             indptr_size: sizes.indptr,
             indices_dtype,
-            indices_offset: sizes.indptr,
+            indices_offset: sizes.indptr + sizes.indices_padding + sizes.indptr_padding,
             indices_size: sizes.indices,
             value_dtype,
-            value_offset: sizes.indptr + sizes.indices,
+            value_offset: sizes.indptr
+                + sizes.indices
+                + sizes.values_padding
+                + sizes.indices_padding
+                + sizes.indptr_padding,
             value_size: sizes.values,
         }
     }
 
     pub fn validate(&self) {
         // validate length and sizes:
-        assert_eq!(
-            self.data_length_bytes,
-            self.indptr_size + self.indices_size + self.value_size
-        );
+
+        // we can have some padding here, so total length can be slightly larger:
+        assert!(self.data_length_bytes >= self.indptr_size + self.indices_size + self.value_size);
         assert_eq!(
             self.indices_size,
             self.nnz as usize * self.indices_dtype.size()
@@ -115,6 +125,7 @@ pub struct ChunkStackForWriting {
     /// offset where the next chunk will be written
     pub(crate) cursor: usize,
 
+    /// total padding between chunks in bytes
     padding_bytes: usize,
 }
 
@@ -162,6 +173,7 @@ impl ChunkStackForWriting {
     pub fn slice_for_writing(&mut self, nbytes: usize, layout: ChunkCSRLayout) -> &mut [u8] {
         let start = self.cursor;
         let stop = start + nbytes;
+        trace!("slice_for_writing: layout={layout:?}");
         layout.validate();
         self.layout.push(layout);
         self.offsets.push(start);
@@ -320,9 +332,11 @@ impl ChunkStackHandle {
         let slot_right = shm.get_mut().expect("shm slot for writing");
         let mut stack_right = ChunkStackForWriting::new(slot_right, chunks_right.len() + 1);
 
-        if let Some((chunk_split_layout, chunk_split_offset, split_frames_in_left_part)) = chunk_split {
-            let split_slice_src =
-                &slice[chunk_split_offset..chunk_split_offset + chunk_split_layout.data_length_bytes];
+        if let Some((chunk_split_layout, chunk_split_offset, split_frames_in_left_part)) =
+            chunk_split
+        {
+            let split_slice_src = &slice
+                [chunk_split_offset..chunk_split_offset + chunk_split_layout.data_length_bytes];
             let csr_to_split = CSRSplitter::from_bytes(split_slice_src, chunk_split_layout);
 
             let relative_mid = split_frames_in_left_part;
@@ -330,10 +344,10 @@ impl ChunkStackHandle {
             layout_split_left.validate();
             layout_split_right.validate();
 
-            let split_dst_left =
-                stack_left.slice_for_writing(layout_split_left.data_length_bytes, layout_split_left);
-            let split_dst_right =
-                stack_right.slice_for_writing(layout_split_right.data_length_bytes, layout_split_right);
+            let split_dst_left = stack_left
+                .slice_for_writing(layout_split_left.data_length_bytes, layout_split_left);
+            let split_dst_right = stack_right
+                .slice_for_writing(layout_split_right.data_length_bytes, layout_split_right);
 
             csr_to_split.split_into(relative_mid, split_dst_left, split_dst_right);
         }
@@ -367,8 +381,9 @@ impl ChunkStackHandle {
             .iter()
             .zip(&self.offsets)
             .map(|(layout, offset)| {
-                let arr_data = &raw_data[*offset..*offset+layout.data_length_bytes];
-                let view = CSRView::from_bytes(arr_data, layout.nnz, layout.nframes);
+                let arr_data = &raw_data[*offset..*offset + layout.data_length_bytes];
+                let sizes = CSRSizes::from_layout(layout);
+                let view = CSRView::from_bytes(arr_data, &sizes);
                 view
             })
             .collect()
@@ -384,7 +399,7 @@ impl ChunkStackHandle {
             .iter()
             .zip(&self.offsets)
             .map(|(layout, offset)| {
-                let arr_data = &raw_data[*offset..*offset+layout.data_length_bytes];
+                let arr_data = &raw_data[*offset..*offset + layout.data_length_bytes];
                 layout.validate();
                 trace!(
                     "constructing csr view from layout {layout:?} with arr_data length {}",
@@ -497,7 +512,7 @@ mod tests {
         layout.validate();
 
         let slice = fs.slice_for_writing(SIZES.total(), layout.clone());
-        let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes(slice, NNZ, NROWS);
+        let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes(slice, &SIZES);
 
         // generate some predictable pattern:
         let values: Vec<u32> = (0..12).map(|i| (1 << (i % 16))).collect();
@@ -555,7 +570,6 @@ mod tests {
 
     #[test]
     fn test_split_chunk_stack_handle_exact_fit() {
-
         // Idea here:
         // have three chunks in the stack, let's say like this, with number of frames indicated:
         //
@@ -580,7 +594,8 @@ mod tests {
 
         // CHUNK 1
         let slice = fs.slice_for_writing(SIZES.total(), layout.clone());
-        let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes_with_layout(slice, &layout);
+        let mut view_mut: CSRViewMut<u32, u32, u32> =
+            CSRViewMut::from_bytes_with_layout(slice, &layout);
         // generate some predictable pattern:
         let values: Vec<u32> = (0..12).map(|i| (1 << (i % 16))).collect();
         let indices: Vec<u32> = (0..12).collect();
@@ -598,7 +613,8 @@ mod tests {
 
         // CHUNK 2: same layout as above...
         let slice = fs.slice_for_writing(SIZES.total(), layout.clone());
-        let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes_with_layout(slice, &layout);
+        let mut view_mut: CSRViewMut<u32, u32, u32> =
+            CSRViewMut::from_bytes_with_layout(slice, &layout);
         // generate some predictable pattern:
         let values: Vec<u32> = (12..24).map(|i| (1 << (i % 16))).collect();
         let indices: Vec<u32> = (0..12).collect();
@@ -616,7 +632,8 @@ mod tests {
 
         // CHUNK 3: same layout as above...
         let slice = fs.slice_for_writing(SIZES.total(), layout.clone());
-        let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes_with_layout(slice, &layout);
+        let mut view_mut: CSRViewMut<u32, u32, u32> =
+            CSRViewMut::from_bytes_with_layout(slice, &layout);
         // generate some predictable pattern:
         let values: Vec<u32> = (24..36).map(|i| (1 << (i % 16))).collect();
         let indices: Vec<u32> = (0..12).collect();

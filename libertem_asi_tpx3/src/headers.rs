@@ -218,27 +218,30 @@ pub struct ArrayChunk {
     pub length: u32,
 
     // indptr always starts at zero
-    // pub indices_offset: u32,
-    // pub values_offset: u32,
+    pub indices_offset: u32,
+    pub values_offset: u32,
 
-    //reserved: [u8; 14],
-    reserved: [u8; 22],
+    reserved: [u8; 14],
+    //reserved: [u8; 22],
 }
 
 impl ArrayChunk {
-    pub fn new(value_dtype: DType, nframes: u32, length: u32) -> Self {
+    pub fn new(value_dtype: DType, nframes: u32, length: u32, indices_offset: u32, values_offset: u32) -> Self {
         ArrayChunk {
             tag: 2,
             value_dtype,
             nframes,
             length,
-            // reserved: [0;14]
-            reserved: [0;22]
+            indices_offset,
+            values_offset,
+            reserved: [0;14]
+            // reserved: [0;22]
         }
     }
 
     pub fn get_chunk_size_bytes(&self, acquisition_header: &AcquisitionStart) -> usize {
-        self.get_sizes(acquisition_header).total()
+        let sizes = self.get_sizes(acquisition_header);
+        sizes.total()
     }
 
     pub fn get_sizes(&self, acquisition_header: &AcquisitionStart) -> CSRSizes {
