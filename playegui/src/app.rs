@@ -83,32 +83,34 @@ impl TemplateApp {
     /// Applies at most one pending message. Call each frame to balance work a bit.
     fn apply_pending_messages(&mut self) {
         if let Some(receiver) = &self.data_source {
-            if let Ok(msg) = receiver.try_recv() {
-                trace!("{msg:?}");
-                match msg {
-                    AcqMessage::AcquisitionStarted(started) => {
-                    }
-                    AcqMessage::AcquisitionEnded(ended) => {
-                        // meh
-                        //self.acquisitions.remove(&ended.id);
-                        trace!("before: {} {}", self.acquisition_history.len(), self.acquisitions.len());
-                        let len = self.acquisition_history.len();
-                        let max_size = 2;
-                        if len > max_size {
-                            self.acquisition_history.drain(..len - max_size).for_each(|k| {
-                                trace!("removing {k}");
-                                self.acquisitions.remove(&k);
-                            });
+            while !receiver.is_empty() {
+                if let Ok(msg) = receiver.try_recv() {
+                    trace!("{msg:?}");
+                    match msg {
+                        AcqMessage::AcquisitionStarted(started) => {
                         }
-                        trace!("after: {} {}", self.acquisition_history.len(), self.acquisitions.len());
-                    }
-                    AcqMessage::AcquisitionResult(..) => {
-                        // mmmmeh? bg thread will create texture for us in different msg...
-                    }
-                    AcqMessage::UpdatedData(id, data, bbox) => {
-                        trace!("inserting id {id}");
-                        if self.acquisitions.insert(id.clone(), (data, None, bbox)).is_none() {
-                            self.acquisition_history.push(id);
+                        AcqMessage::AcquisitionEnded(ended) => {
+                            // meh
+                            //self.acquisitions.remove(&ended.id);
+                            trace!("before: {} {}", self.acquisition_history.len(), self.acquisitions.len());
+                            let len = self.acquisition_history.len();
+                            let max_size = 2;
+                            if len > max_size {
+                                self.acquisition_history.drain(..len - max_size).for_each(|k| {
+                                    trace!("removing {k}");
+                                    self.acquisitions.remove(&k);
+                                });
+                            }
+                            trace!("after: {} {}", self.acquisition_history.len(), self.acquisitions.len());
+                        }
+                        AcqMessage::AcquisitionResult(..) => {
+                            // mmmmeh? bg thread will create texture for us in different msg...
+                        }
+                        AcqMessage::UpdatedData(id, data, bbox) => {
+                            trace!("inserting id {id}");
+                            if self.acquisitions.insert(id.clone(), (data, None, bbox)).is_none() {
+                                self.acquisition_history.push(id);
+                            }
                         }
                     }
                 }
@@ -157,6 +159,10 @@ impl eframe::App for TemplateApp {
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.horizontal(|ui| {
+                    let queue_size = self.data_source.as_ref().map(|data_source| data_source.len());
+                    ui.label(format!("queue size: {:?}", queue_size));
+                });
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.label("powered by ");

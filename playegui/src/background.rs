@@ -91,6 +91,7 @@ impl BackgroundState {
         self.acquisitions.get(acq_id)
     }
 
+    // FIXME: limit retention! otherwise it. just. keeps. growing!
     fn integrate_message(&mut self, msg: AcqMessage) -> Option<&AcquisitionData> {
         match msg {
             AcqMessage::AcquisitionStarted(_) => None,
