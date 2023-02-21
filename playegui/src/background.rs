@@ -95,12 +95,15 @@ impl BackgroundState {
     fn integrate_message(&mut self, msg: AcqMessage) -> Option<&AcquisitionData> {
         match msg {
             AcqMessage::AcquisitionStarted(_) => None,
-            AcqMessage::AcquisitionEnded(_) => None,
-            AcqMessage::AcquisitionResult(meta, data) => {
-                let key = meta.id.clone();
-                let mut delta_full = Array2::zeros([meta.shape.0 as usize, meta.shape.1 as usize]);
+            AcqMessage::AcquisitionEnded(ended) => {
+                self.acquisitions.remove(&ended.id);
+                None
+            },
+            AcqMessage::AcquisitionResult(result, data) => {
+                let key = result.id.clone();
+                let mut delta_full = Array2::zeros([result.shape.0 as usize, result.shape.1 as usize]);
 
-                let (ymin, ymax, xmin, xmax) = meta.bbox;
+                let (ymin, ymax, xmin, xmax) = result.bbox;
 
                 let bbox = BBox {
                     ymin,
@@ -132,7 +135,7 @@ impl BackgroundState {
                     })
                     .or_insert_with(move || AcquisitionData::new(delta_full, bbox, &key));
 
-                self.acquisitions.get(&meta.id)
+                self.acquisitions.get(&result.id)
             }
             AcqMessage::UpdatedData(..) => {
                 None
@@ -160,7 +163,7 @@ fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
     let width = data.shape()[1];
 
     let to_rgba = |(idx, value): (usize, &f32)|{
-        let hsl = colors_transform::Hsl::from(1.0, 0.0, *value);
+        let hsl = colors_transform::Hsl::from(1.0, 0.0, *value * 100.0);
         let c = hsl.to_rgb();
 
         let x = (idx % width) as u16;
@@ -173,9 +176,9 @@ fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
         };
 
         [
-            (c.get_red() * 255.0) as u8,
-            (c.get_green() * 255.0) as u8,
-            (c.get_blue() * 255.0) as u8,
+            c.get_red() as u8,
+            c.get_green() as u8,
+            c.get_blue() as u8,
             a,
         ]
     };
