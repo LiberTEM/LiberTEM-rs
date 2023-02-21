@@ -4,7 +4,7 @@ use colors_transform::Color;
 use crossbeam::channel::Sender;
 use egui::{TextureHandle, ColorImage, plot::Text};
 use log::{error, info, trace};
-use ndarray::{Array2, ArrayViewMut2, Array1, s};
+use ndarray::{Array2, ArrayViewMut2, Array1, s, Ix, Ix2};
 use ndarray_stats::QuantileExt;
 use scarlet::{colormap::{ColorMap, ListedColorMap}, prelude::{RGBColor}};
 use websocket::ClientBuilder;
@@ -146,38 +146,50 @@ impl Default for BackgroundState {
     }
 }
 
-fn render_to_rgb(data: &Array2<f32>) -> ColorImage {
+fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
     let valid = data.iter().filter(|&value| *value != 0.0);
     let vmin = &valid.clone().fold(f32::INFINITY, |a, &b| a.min(b));
     let vmax = &valid.fold(0.0f32, |a, &b| a.max(b));
     let shape = data.shape();
 
-    let normalizer = |v: &f32| {
-        (v - vmin) / (vmax - vmin)
+    let normalizer = |(idx, v): (usize, &f32)| {
+        (idx, (v - vmin) / (vmax - vmin))
     };
 
-    let to_rgb = |value: &f32|{
+    let width = data.shape()[1];
+
+    let to_rgba = |(idx, value): (usize, &f32)|{
         let hsl = colors_transform::Hsl::from(1.0, 0.0, *value);
         let c = hsl.to_rgb();
+
+        let x = (idx % width) as u16;
+        let y = (idx / width) as u16;
+
+        let a = if x >= bbox.xmin && x <= bbox.xmax && y >= bbox.ymin && y <= bbox.ymax {
+            255
+        } else {
+            0
+        };
 
         [
             (c.get_red() * 255.0) as u8,
             (c.get_green() * 255.0) as u8,
             (c.get_blue() * 255.0) as u8,
+            a,
         ]
     };
 
     let flat_shape = data.shape()[0] * data.shape()[1];
     let data_flat = data.to_shape(flat_shape).unwrap();
-    let iter_flat = data_flat.iter();
+    let iter_flat = data_flat.indexed_iter();
 
     let mapped: Vec<u8> = if *vmax == *vmin {
-        iter_flat.flat_map(to_rgb).collect()
+        iter_flat.flat_map(to_rgba).collect()
     } else {
-        iter_flat.map(normalizer).flat_map(|v| to_rgb(&v)).collect()
+        iter_flat.map(normalizer).flat_map(|(idx, v)| to_rgba((idx, &v))).collect()
     };
 
-    ColorImage::from_rgb([shape[0], shape[1]], &mapped)
+    ColorImage::from_rgba_unmultiplied([shape[0], shape[1]], &mapped)
 }
 
 fn apply_colormap<CM>(data: &Array2<f32>, colormap: &CM) -> ColorImage
@@ -233,7 +245,7 @@ pub fn background_thread(sender: Sender<AcqMessage>) {
                 trace!("received message: {msg:?}");
                 // in case of error, the other thread is dead, so we don't really care...
                 if let Some(data) = bg_state.integrate_message(msg.clone()) {
-                    let img = render_to_rgb(data.get_latest());
+                    let img = render_to_rgb(data.get_latest(), data.get_bbox());
                     sender.send(AcqMessage::UpdatedData(data.get_id().to_string(), img, data.get_bbox().to_owned())).unwrap();
                 }
                 sender.send(msg).unwrap();
