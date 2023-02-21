@@ -4,7 +4,6 @@ use std::{
     slice::{from_raw_parts, from_raw_parts_mut},
     sync::atomic::{AtomicU8, Ordering},
 };
-use std::backtrace::Backtrace;
 
 use memfd::{FileSeal, HugetlbSize, MemfdOptions};
 use memmap2::{MmapOptions, MmapRaw};
@@ -83,7 +82,6 @@ pub struct SharedSlabAllocator {
     /// size of each slot in bytes
     slot_size: usize,
 
-    page_size: usize,
     mmap: MmapRaw,
     file: File,
 }
@@ -215,7 +213,10 @@ impl FreeStack {
 impl SharedSlabAllocator {
     const MUTEX_SIZE: usize = 64;
     const SYNC_SLOT_SIZE: usize = 64;
-    const ALIGNMENT: usize = 4096; // FIXME: does this need to be a runtime thing?
+
+    fn get_alignment() -> usize {
+        align_to(page_size::get(), 4096)
+    }
 
     pub fn new(num_slots: usize, slot_size: usize, huge: bool) -> Result<Self> {
         let o = MemfdOptions::default().allow_sealing(true);
@@ -233,10 +234,10 @@ impl SharedSlabAllocator {
         let slot_sync_size = Self::SYNC_SLOT_SIZE * num_slots;
         let overhead: usize = align_to(
             free_list_size + slot_sync_size + Self::MUTEX_SIZE,
-            Self::ALIGNMENT,
+            Self::get_alignment(),
         );
 
-        let slot_size = align_to(slot_size, Self::ALIGNMENT);
+        let slot_size = align_to(slot_size, Self::get_alignment());
 
         // total length needs to be aligned to huge page size:
         let total_len = align_to(
@@ -309,7 +310,6 @@ impl SharedSlabAllocator {
         };
 
         Ok(SharedSlabAllocator {
-            page_size: page_size::get(),
             num_slots,
             slot_size,
             mmap,
@@ -413,6 +413,7 @@ impl SharedSlabAllocator {
         atomic.store(0, Ordering::Release);
     }
 
+    /// Pointer to where the synchornization variable for slot `slot_idx` is stored
     fn get_slot_sync_ptr(&self, slot_idx: usize) -> *mut u8 {
         let offset = self.get_slot_sync_offset(slot_idx);
         let base_ptr = self.mmap.as_mut_ptr();
@@ -432,7 +433,7 @@ impl SharedSlabAllocator {
         let slot_sync_size = Self::SYNC_SLOT_SIZE * self.num_slots;
         let slot_zero: isize = align_to(
             free_list_size + slot_sync_size + Self::MUTEX_SIZE,
-            Self::ALIGNMENT,
+            Self::get_alignment(),
         )
         .try_into()
         .unwrap();
