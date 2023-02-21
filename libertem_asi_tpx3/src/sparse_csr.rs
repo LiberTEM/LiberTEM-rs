@@ -171,8 +171,6 @@ impl<'a> CSRSplitter<'a> {
         left.copy_into_indptr(&view.get_indptr::<IP>()[..left_rows as usize + 1]);
 
         // This takes the symmetric parts of the slices above
-        let right_nnz = layout_b.nnz;
-        let right_rows = layout_b.nframes;
         let mut right: CSRViewRawMut = CSRViewRawMut::from_bytes_with_layout(
             right,
             &layout_b,
