@@ -1,39 +1,10 @@
 use zerocopy::{AsBytes, FromBytes, LayoutVerified};
 
-use crate::{chunk_stack::ChunkCSRLayout, headers::DType, sparse_csr::CSRSizes};
+use crate::{chunk_stack::ChunkCSRLayout, sparse_csr::CSRSizes};
 
 /// A view into a CSR array stored in `raw_data`, only interpreting the `indptr` array
 /// as concrete values, leaving `indices` and `values` as bytes.
 ///
-fn validate_csr_data(
-    raw_data: &[u8],
-    nnz: u32,
-    nrows: u32,
-    indptr_dtype: DType,
-    indices_dtype: DType,
-    values_dtype: DType,
-) {
-    let sizes = CSRSizes::new_dyn(nnz, nrows, indptr_dtype, indices_dtype, values_dtype);
-
-    let len = raw_data.len();
-    assert!(sizes.indptr <= len, "indptr={}, len={}", sizes.indptr, len);
-    assert!(
-        sizes.indptr + sizes.indices <= len,
-        "indptr={}, indices={}, len={}",
-        sizes.indptr,
-        sizes.indices,
-        len
-    );
-    assert!(
-        sizes.indptr + sizes.indices + sizes.values <= len,
-        "indptr={}, indices={}, values={}, len={}",
-        sizes.indptr,
-        sizes.indices,
-        sizes.values,
-        len
-    );
-}
-
 pub struct CSRViewRaw<'a> {
     raw_data: &'a [u8],
     layout: ChunkCSRLayout,
