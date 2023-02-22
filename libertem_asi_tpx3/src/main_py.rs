@@ -2,9 +2,7 @@
 
 use std::{
     convert::Infallible,
-    sync::{self, atomic::AtomicBool},
-    thread::JoinHandle,
-    time::{Duration, Instant},
+    time::{Duration, Instant}, path::{PathBuf},
 };
 
 use crate::{
@@ -15,7 +13,6 @@ use crate::{
         AcquisitionStart,
     },
     receiver::{ReceiverStatus, ResultMsg, TPXReceiver},
-    shm::serve_shm_handle,
     stats::Stats,
 };
 
@@ -180,9 +177,6 @@ struct ASITpx3Connection {
     receiver: TPXReceiver,
     remainder: Vec<ChunkStackHandle>,
     local_shm: SharedSlabAllocator,
-    shm_stop_event: Option<sync::Arc<AtomicBool>>,
-    shm_join_handle: Option<JoinHandle<()>>,
-    shm_socket_path: Option<String>,
     stats: Stats,
 }
 
@@ -195,13 +189,6 @@ impl ASITpx3Connection {
 
     fn close_impl(&mut self) {
         self.receiver.close();
-        if let Some(stop_event) = &self.shm_stop_event {
-            stop_event.store(true, sync::atomic::Ordering::Relaxed);
-            if let Some(join_handle) = self.shm_join_handle.take() {
-                join_handle.join().expect("join background thread");
-            }
-        }
-        self.shm_socket_path = None;
     }
 }
 
@@ -211,6 +198,7 @@ impl ASITpx3Connection {
     fn new(
         uri: &str,
         chunks_per_stack: usize,
+        handle_path: String,
         num_slots: Option<usize>,
         bytes_per_chunk: Option<usize>,
         huge: Option<bool>,
@@ -222,6 +210,7 @@ impl ASITpx3Connection {
             num_slots,
             slot_size,
             huge.map_or_else(|| false, |x| x),
+            &PathBuf::from(handle_path),
         ) {
             Ok(shm) => shm,
             Err(e) => {
@@ -238,9 +227,6 @@ impl ASITpx3Connection {
         Ok(Self {
             receiver: TPXReceiver::new(uri, chunks_per_stack, shm),
             remainder: Vec::new(),
-            shm_stop_event: None,
-            shm_join_handle: None,
-            shm_socket_path: None,
             local_shm,
             stats: Stats::new(),
         })
@@ -295,20 +281,8 @@ impl ASITpx3Connection {
         }
     }
 
-    fn serve_shm(mut slf: PyRefMut<Self>, socket_path: &str) -> PyResult<()> {
-        let (stop_event, join_handle) = serve_shm_handle(slf.receiver.shm_handle, socket_path);
-        slf.shm_stop_event = Some(stop_event);
-        slf.shm_join_handle = Some(join_handle);
-        slf.shm_socket_path = Some(socket_path.to_string());
-        Ok(())
-    }
-
     fn get_socket_path(&self) -> PyResult<String> {
-        if let Some(path) = &self.shm_socket_path {
-            Ok(path.clone())
-        } else {
-            Err(PyRuntimeError::new_err("not serving shm at the moment"))
-        }
+        Ok(self.local_shm.get_handle().os_handle)
     }
 
     fn is_running(slf: PyRef<Self>) -> bool {

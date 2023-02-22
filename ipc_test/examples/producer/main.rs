@@ -11,6 +11,7 @@ const ITEMSIZE: usize = std::mem::size_of::<u16>();
 const SLOT_SIZE_ITEMS: usize = 512*512;
 const SLOT_SIZE_BYTES: usize = SLOT_SIZE_ITEMS*ITEMSIZE;
 
+#[cfg(feature = "disabled")]
 fn handle_connection(mut stream: UnixStream, num_slots: usize, send_num_items: usize, huge: bool) {
     println!("handling consumer");
     let mut ssa = SharedSlabAllocator::new(
@@ -95,6 +96,8 @@ fn main() {
         match stream {
             Ok(stream) => {
                 /* connection succeeded */
+
+                #[cfg(feature = "disabled")]
                 thread::spawn(move || handle_connection(stream, args.slots, args.num_items, !args.disable_huge));
             }
             Err(err) => {
