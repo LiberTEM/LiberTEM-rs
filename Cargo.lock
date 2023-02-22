@@ -1832,7 +1832,6 @@ dependencies = [
  "nix 0.26.2",
  "numpy",
  "pyo3",
- "sendfd",
  "serde",
  "serde_json",
  "spin_sleep",

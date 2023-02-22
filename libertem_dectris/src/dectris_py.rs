@@ -2,9 +2,7 @@
 
 use std::{
     convert::Infallible,
-    sync::{self, atomic::AtomicBool},
-    thread::JoinHandle,
-    time::{Duration, Instant},
+    time::{Duration, Instant}, path::PathBuf,
 };
 
 use crate::{
@@ -15,7 +13,6 @@ use crate::{
     exceptions::{ConnectionError, DecompressError, TimeoutError},
     frame_stack::FrameStackHandle,
     receiver::{DectrisReceiver, ReceiverStatus, ResultMsg},
-    shm::serve_shm_handle,
     sim::DectrisSim,
     stats::Stats,
 };
@@ -181,9 +178,6 @@ struct DectrisConnection {
     receiver: DectrisReceiver,
     remainder: Vec<FrameStackHandle>,
     local_shm: SharedSlabAllocator,
-    shm_stop_event: Option<sync::Arc<AtomicBool>>,
-    shm_join_handle: Option<JoinHandle<()>>,
-    shm_socket_path: Option<String>,
     stats: Stats,
 }
 
@@ -202,13 +196,6 @@ impl DectrisConnection {
 
     fn close_impl(&mut self) {
         self.receiver.close();
-        if let Some(stop_event) = &self.shm_stop_event {
-            stop_event.store(true, sync::atomic::Ordering::Relaxed);
-            if let Some(join_handle) = self.shm_join_handle.take() {
-                join_handle.join().expect("join background thread");
-            }
-        }
-        self.shm_socket_path = None;
     }
 }
 
@@ -218,6 +205,7 @@ impl DectrisConnection {
     fn new(
         uri: &str,
         frame_stack_size: usize,
+        handle_path: String,
         num_slots: Option<usize>,
         bytes_per_frame: Option<usize>,
         huge: Option<bool>,
@@ -229,6 +217,7 @@ impl DectrisConnection {
             num_slots,
             slot_size,
             huge.map_or_else(|| false, |x| x),
+            &PathBuf::from(handle_path),
         ) {
             Ok(shm) => shm,
             Err(e) => {
@@ -243,9 +232,6 @@ impl DectrisConnection {
         Ok(Self {
             receiver: DectrisReceiver::new(uri, frame_stack_size, shm),
             remainder: Vec::new(),
-            shm_stop_event: None,
-            shm_join_handle: None,
-            shm_socket_path: None,
             local_shm,
             stats: Stats::new(),
         })
@@ -297,20 +283,8 @@ impl DectrisConnection {
         }
     }
 
-    fn serve_shm(mut slf: PyRefMut<Self>, socket_path: &str) -> PyResult<()> {
-        let (stop_event, join_handle) = serve_shm_handle(slf.receiver.shm_handle, socket_path);
-        slf.shm_stop_event = Some(stop_event);
-        slf.shm_join_handle = Some(join_handle);
-        slf.shm_socket_path = Some(socket_path.to_string());
-        Ok(())
-    }
-
     fn get_socket_path(&self) -> PyResult<String> {
-        if let Some(path) = &self.shm_socket_path {
-            Ok(path.clone())
-        } else {
-            Err(PyRuntimeError::new_err("not serving shm at the moment"))
-        }
+        Ok(self.local_shm.get_handle().os_handle)
     }
 
     fn is_running(slf: PyRef<Self>) -> bool {

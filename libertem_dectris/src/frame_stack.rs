@@ -250,12 +250,23 @@ impl FrameStackHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::FrameStackForWriting;
     use ipc_test::{SharedSlabAllocator, Slot};
+    use tempfile::{tempdir, TempDir};
+
+    fn get_socket_path() -> (TempDir, PathBuf) {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.path().join("stuff.socket");
+
+        (socket_dir, socket_as_path)
+    }
 
     #[test]
     fn test_frame_stack() {
-        let mut shm = SharedSlabAllocator::new(1, 4096, false).unwrap();
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
         let mut fs = FrameStackForWriting::new(slot, 1, 256);
         let dimage = crate::common::DImage {
@@ -285,8 +296,9 @@ mod tests {
 
     #[test]
     fn test_split_frame_stack_handle() {
+        let (_socket_dir, socket_as_path) = get_socket_path();
         // need at least three slots: one is the source, two for the results.
-        let mut shm = SharedSlabAllocator::new(3, 4096, false).unwrap();
+        let mut shm = SharedSlabAllocator::new(3, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
         let mut fs = FrameStackForWriting::new(slot, 2, 16);
         let dimage = crate::common::DImage {
