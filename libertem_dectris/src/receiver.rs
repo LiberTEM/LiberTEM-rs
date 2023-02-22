@@ -639,10 +639,3 @@ impl DectrisReceiver {
         self.status = ReceiverStatus::Closed;
     }
 }
-
-impl Default for DectrisReceiver {
-    fn default() -> Self {
-        let shm = SharedSlabAllocator::new(5000, 512 * 512 * 2, true).expect("create shm");
-        Self::new("tcp://127.0.0.1:9999", 1, shm)
-    }
-}

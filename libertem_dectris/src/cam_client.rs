@@ -12,7 +12,6 @@ use crate::{
     common::PixelType,
     exceptions::{ConnectionError, DecompressError},
     frame_stack::FrameStackHandle,
-    shm::recv_shm_handle,
 };
 
 #[pyclass]
@@ -105,9 +104,8 @@ impl CamClient {
 #[pymethods]
 impl CamClient {
     #[new]
-    fn new(socket_path: &str) -> PyResult<Self> {
-        let handle = recv_shm_handle(socket_path);
-        match SharedSlabAllocator::connect(handle.fd, &handle.info) {
+    fn new(handle_path: &str) -> PyResult<Self> {
+        match SharedSlabAllocator::connect(handle_path) {
             Ok(shm) => Ok(CamClient { shm: Some(shm) }),
             Err(e) => {
                 let msg = format!("failed to connect to SHM: {:?}", e);
@@ -180,6 +178,8 @@ impl Drop for CamClient {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use lz4::block::CompressionMode;
     use numpy::PyArray;
     use tempfile::tempdir;
@@ -192,12 +192,20 @@ mod tests {
         bs,
         cam_client::CamClient,
         frame_stack::{FrameStackForWriting, FrameStackHandle},
-        shm::serve_shm_handle,
     };
+    use tempfile::TempDir;
+
+    fn get_socket_path() -> (TempDir, PathBuf) {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.path().join("stuff.socket");
+
+        (socket_dir, socket_as_path)
+    }
 
     #[test]
     fn test_cam_client() {
-        let mut shm = SharedSlabAllocator::new(1, 4096, false).unwrap();
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
         let mut fs = FrameStackForWriting::new(slot, 1, 512);
         let dimage = crate::common::DImage {
@@ -256,14 +264,7 @@ mod tests {
             assert_eq!(fs_handle, new_handle);
         });
 
-        // start to serve the shm connection via a unix domain socket:
-        let handle = shm.get_handle();
-        let socket_dir = tempdir().unwrap();
-        let socket_as_path = socket_dir.into_path().join("stuff.socket");
-        let socket_path = socket_as_path.to_string_lossy();
-        serve_shm_handle(handle, &socket_path);
-
-        let client = CamClient::new(&socket_path).unwrap();
+        let client = CamClient::new(&socket_as_path.to_str().unwrap()).unwrap();
 
         let slot_r: ipc_test::Slot = shm.get(fs_handle.slot.slot_idx);
         let slice = slot_r.as_slice();
@@ -288,7 +289,8 @@ mod tests {
 
     #[test]
     fn test_cam_client_lz4() {
-        let mut shm = SharedSlabAllocator::new(1, 4096, false).unwrap();
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
         let mut fs = FrameStackForWriting::new(slot, 1, 512);
         let dimage = crate::common::DImage {
@@ -339,14 +341,7 @@ mod tests {
             assert_eq!(fs_handle, new_handle);
         });
 
-        // start to serve the shm connection via a unix domain socket:
-        let handle = shm.get_handle();
-        let socket_dir = tempdir().unwrap();
-        let socket_as_path = socket_dir.into_path().join("stuff.socket");
-        let socket_path = socket_as_path.to_string_lossy();
-        serve_shm_handle(handle, &socket_path);
-
-        let client = CamClient::new(&socket_path).unwrap();
+        let client = CamClient::new(&socket_as_path.to_str().unwrap()).unwrap();
 
         let slot_r: ipc_test::Slot = shm.get(fs_handle.slot.slot_idx);
         let slice = slot_r.as_slice();
