@@ -1801,25 +1801,17 @@ name = "libertem-asi-tpx3"
 version = "0.2.2"
 dependencies = [
  "bincode",
- "clap 3.2.23",
  "crossbeam",
  "crossbeam-channel",
  "env_logger",
  "ipc-test",
  "log 0.4.17",
- "memmap2",
- "nix 0.26.2",
- "num-traits",
  "numpy",
  "pyo3",
- "sendfd",
  "serde",
- "serde_json",
- "spin_sleep",
  "tempfile",
  "uuid",
  "zerocopy",
- "zmq",
 ]
 
 [[package]]
