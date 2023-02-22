@@ -1,6 +1,6 @@
-use zerocopy::{FromBytes, AsBytes, LayoutVerified};
+use zerocopy::{AsBytes, FromBytes, LayoutVerified};
 
-use crate::{sparse_csr::CSRSizes, chunk_stack::ChunkCSRLayout};
+use crate::{chunk_stack::ChunkCSRLayout, sparse_csr::CSRSizes};
 
 ///
 pub struct CSRView<'a, I, IP, V> {
@@ -20,12 +20,12 @@ where
 {
     pub fn from_bytes(raw_data: &'a [u8], sizes: &CSRSizes) -> Self {
         let mut offset = sizes.indptr_padding;
-        let indptr_raw = &raw_data[offset..offset+sizes.indptr];
+        let indptr_raw = &raw_data[offset..offset + sizes.indptr];
         offset += sizes.indices_padding;
-        let indices_raw = &raw_data[offset+sizes.indptr..offset + sizes.indptr + sizes.indices];
+        let indices_raw = &raw_data[offset + sizes.indptr..offset + sizes.indptr + sizes.indices];
         offset += sizes.values_padding;
-        let values_raw =
-            &raw_data[offset + sizes.indptr + sizes.indices..offset + sizes.indptr + sizes.indices + sizes.values];
+        let values_raw = &raw_data[offset + sizes.indptr + sizes.indices
+            ..offset + sizes.indptr + sizes.indices + sizes.values];
 
         // FIXME: error handling
         // FIXME: all of these need to be properly aligned according to
@@ -49,7 +49,6 @@ where
         let sizes = CSRSizes::from_layout(layout);
         Self::from_bytes(raw_data, &sizes)
     }
-
 
     /// check if the CSR matrix is valid
     pub fn assert_valid(&self) {

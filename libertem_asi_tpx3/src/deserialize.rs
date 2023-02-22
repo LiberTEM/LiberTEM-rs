@@ -1,17 +1,21 @@
-use serde::{Deserialize, Deserializer, de::{self}};
+use serde::{
+    de::{self},
+    Deserialize, Deserializer,
+};
 
-use std::fmt;
 use serde::de::Visitor;
+use std::fmt;
 
-use crate::headers::{FormatType, DType};
+use crate::headers::{DType, FormatType};
 
 impl<'de> Deserialize<'de> for FormatType {
     fn deserialize<D>(deserializer: D) -> Result<FormatType, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_u8(U8Visitor).map(FormatType::from_u8)
-
+        deserializer
+            .deserialize_u8(U8Visitor)
+            .map(FormatType::from_u8)
     }
 }
 

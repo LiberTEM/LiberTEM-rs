@@ -7,7 +7,7 @@ use std::{
 };
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
-use ipc_test::{SharedSlabAllocator, SHMHandle};
+use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
 
 use crate::{
@@ -20,20 +20,35 @@ use crate::{
 ///
 #[derive(PartialEq, Eq, Debug)]
 pub enum ResultMsg {
-    SerdeError { msg: String, recvd_msg: String },
-    AcquisitionStart { header: AcquisitionStart },
+    SerdeError {
+        msg: String,
+        recvd_msg: String,
+    },
+    AcquisitionStart {
+        header: AcquisitionStart,
+    },
 
     /// An error bubbled up and the background thread was terminated:
-    ReceiverError { msg: String },
+    ReceiverError {
+        msg: String,
+    },
 
     /// An error happened while the acquisition was running, probably need to
     /// inform upstream users...
     /// (the background thread is still running, though, and reconnecting to the data source)
-    AcquisitionError { msg: String },
+    AcquisitionError {
+        msg: String,
+    },
 
-    ScanStart { header: ScanStart },
-    FrameStack { frame_stack: ChunkStackHandle },
-    End { frame_stack: ChunkStackHandle },
+    ScanStart {
+        header: ScanStart,
+    },
+    FrameStack {
+        frame_stack: ChunkStackHandle,
+    },
+    End {
+        frame_stack: ChunkStackHandle,
+    },
 }
 
 pub enum ControlMsg {
@@ -156,8 +171,10 @@ fn wait_for_acquisition(
                     Ok(_) => {}
                     Err(e) => {
                         let msg = format!("Error while an acquisition was running: {e:?}");
-                        from_thread_s.send(ResultMsg::AcquisitionError { msg }).unwrap();
-                        return Err(e)
+                        from_thread_s
+                            .send(ResultMsg::AcquisitionError { msg })
+                            .unwrap();
+                        return Err(e);
                     }
                 }
 
@@ -260,8 +277,7 @@ fn handle_scan(
         None => return Err(AcquisitionError::BufferFull),
         Some(x) => x,
     };
-    let mut chunk_stack =
-        ChunkStackForWriting::new(slot, chunks_per_stack);
+    let mut chunk_stack = ChunkStackForWriting::new(slot, chunks_per_stack);
 
     let mut frame_counter: u64 = 0;
 
@@ -293,10 +309,7 @@ fn handle_scan(
                             None => return Err(AcquisitionError::BufferFull),
                             Some(x) => x,
                         };
-                        let new_frame_stack = ChunkStackForWriting::new(
-                            slot,
-                            chunks_per_stack,
-                        );
+                        let new_frame_stack = ChunkStackForWriting::new(slot, chunks_per_stack);
                         let old_chunk_stack = replace(&mut chunk_stack, new_frame_stack);
                         old_chunk_stack.writing_done(shm)
                     };
@@ -338,14 +351,21 @@ fn handle_scan(
                 stream_recv_chunk(stream, buf)?;
                 CSRViewRaw::from_bytes_with_layout(buf, &layout);
             }
-            HeaderTypes::ScanEnd { header } => {
+            HeaderTypes::ScanEnd { .. } => {
                 let elapsed = t0.elapsed();
-                info!(
-                    "scan {} done in {elapsed:?}, reading acquisition footer...",
-                    header.sequence
-                );
+                info!("scan done in {elapsed:?}",);
 
                 let handle = chunk_stack.writing_done(shm);
+                from_thread_s.send(ResultMsg::End {
+                    frame_stack: handle,
+                })?;
+                return Ok(());
+            }
+            HeaderTypes::AcquisitionEnd { .. } => {
+                let elapsed = t0.elapsed();
+                warn!("AcquisitionEnd after {elapsed:?} - probably cancelled?",);
+                let handle = chunk_stack.writing_done(shm);
+                // FIXME: send a different result message in this case?
                 from_thread_s.send(ResultMsg::End {
                     frame_stack: handle,
                 })?;
@@ -390,7 +410,9 @@ fn make_stream(remote: &str) -> Option<TcpStream> {
         }
     };
     info!("Connected to {remote}");
-    stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
     Some(stream)
 }
 
@@ -430,7 +452,7 @@ fn passive_loop(
                     // may leave buffer contents "undefined"... => clean SHM is best
                     error!("Got a stream error: {err:?} - reconnecting...");
                     break 'inner;
-                },
+                }
                 e => {
                     return e; // other error, give up? maybe we can retry instead?
                 }
@@ -451,8 +473,14 @@ fn background_thread(
         let control = to_thread_r.recv_timeout(Duration::from_millis(100));
         match control {
             Ok(ControlMsg::StartAcquisitionPassive) => {
-                match passive_loop(to_thread_r, from_thread_s, remote, frame_stack_size, &mut shm) {
-                    Ok(_) => {},
+                match passive_loop(
+                    to_thread_r,
+                    from_thread_s,
+                    remote,
+                    frame_stack_size,
+                    &mut shm,
+                ) {
+                    Ok(_) => {}
                     Err(AcquisitionError::Cancelled) => {
                         info!("Cancelled - stopping thread and closing connection...");
                         break;

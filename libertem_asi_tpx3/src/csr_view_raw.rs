@@ -19,9 +19,7 @@ impl<'a> CSRViewRaw<'a> {
     }
 
     fn get_sizes(&self) -> CSRSizes {
-        CSRSizes::from_layout(
-            &self.layout,
-        )
+        CSRSizes::from_layout(&self.layout)
     }
 
     pub fn get_indptr<IP>(&self) -> &'a [IP]
@@ -67,9 +65,7 @@ impl<'a> CSRViewRawMut<'a> {
     }
 
     fn get_sizes(&self) -> CSRSizes {
-        CSRSizes::from_layout(
-            &self.layout,
-        )
+        CSRSizes::from_layout(&self.layout)
     }
 
     pub fn get_indptr<IP>(&mut self) -> &mut [IP]
@@ -110,8 +106,7 @@ impl<'a> CSRViewRawMut<'a> {
     pub fn get_values_raw(&mut self) -> &mut [u8] {
         let offset = self.layout.value_offset;
         let sizes = self.get_sizes();
-        &mut self.raw_data
-            [offset..offset + sizes.values]
+        &mut self.raw_data[offset..offset + sizes.values]
     }
 
     pub fn copy_into_values_raw(&mut self, src: &[u8]) {

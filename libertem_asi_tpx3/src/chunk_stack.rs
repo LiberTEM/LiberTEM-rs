@@ -465,7 +465,7 @@ mod tests {
 
     use super::ChunkStackForWriting;
     use ipc_test::{SharedSlabAllocator, Slot};
-    use tempfile::{TempDir, tempdir};
+    use tempfile::{tempdir, TempDir};
 
     fn get_socket_path() -> (TempDir, PathBuf) {
         let socket_dir = tempdir().unwrap();

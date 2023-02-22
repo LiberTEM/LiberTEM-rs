@@ -2,16 +2,15 @@
 
 use std::{
     convert::Infallible,
-    time::{Duration, Instant}, path::{PathBuf},
+    path::PathBuf,
+    time::{Duration, Instant},
 };
 
 use crate::{
     cam_client::CamClient,
     chunk_stack::ChunkStackHandle,
     exceptions::{ConnectionError, TimeoutError},
-    headers::{
-        AcquisitionStart,
-    },
+    headers::AcquisitionStart,
     receiver::{ReceiverStatus, ResultMsg, TPXReceiver},
     stats::Stats,
 };
@@ -82,8 +81,7 @@ impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
                         frame_stack.len()
                     );
                     self.stats.count_split();
-                    let (left, right) =
-                        frame_stack.split_at(max_size, self.shm);
+                    let (left, right) = frame_stack.split_at(max_size, self.shm);
                     self.remainder.push(right);
                     assert!(left.len() <= max_size);
                     return Ok(Some(left));
@@ -220,7 +218,10 @@ impl ASITpx3Connection {
             }
         };
 
-        info!("shm created, num_slots={num_slots}, slot_size={slot_size}, total_size={}", num_slots * slot_size);
+        info!(
+            "shm created, num_slots={num_slots}, slot_size={slot_size}, total_size={}",
+            num_slots * slot_size
+        );
 
         let local_shm = shm.clone_and_connect().expect("clone SHM");
 
@@ -265,7 +266,9 @@ impl ASITpx3Connection {
                     todo!("what do we do here?");
                 }
                 Some(ResultMsg::ReceiverError { msg }) => return Err(PyRuntimeError::new_err(msg)),
-                Some(ResultMsg::AcquisitionError { msg }) => return Err(PyRuntimeError::new_err(msg)),
+                Some(ResultMsg::AcquisitionError { msg }) => {
+                    return Err(PyRuntimeError::new_err(msg))
+                }
                 Some(ResultMsg::SerdeError { msg, recvd_msg: _ }) => {
                     return Err(PyRuntimeError::new_err(msg))
                 }
@@ -300,11 +303,7 @@ impl ASITpx3Connection {
         slf.close_impl();
     }
 
-    fn get_next_stack(
-        &mut self,
-        py: Python,
-        max_size: u32,
-    ) -> PyResult<Option<ChunkStackHandle>> {
+    fn get_next_stack(&mut self, py: Python, max_size: u32) -> PyResult<Option<ChunkStackHandle>> {
         let mut iter = ChunkIterator::new(
             &mut self.receiver,
             &mut self.local_shm,
