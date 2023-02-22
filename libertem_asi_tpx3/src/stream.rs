@@ -1,4 +1,4 @@
-use std::{net::TcpStream, io::Read};
+use std::{io::Read, net::TcpStream};
 
 use log::trace;
 
@@ -38,19 +38,14 @@ pub fn stream_recv_header(
 
     loop {
         match stream.read_exact(header_bytes) {
-            Ok(_) => {
-                break
-            },
-            Err(e) => {
-                match e.kind() {
-                    std::io::ErrorKind::WouldBlock | 
-                    std::io::ErrorKind::TimedOut => {
-                        trace!("stream error: {e}");
-                        continue
-                    },
-                    _ => return Err(e.into())
+            Ok(_) => break,
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                    trace!("stream error: {e}");
+                    continue;
                 }
-            }
+                _ => return Err(e.into()),
+            },
         }
     }
 
@@ -58,10 +53,7 @@ pub fn stream_recv_header(
 }
 
 /// Fill `buf` with data
-pub fn stream_recv_chunk(
-    stream: &mut TcpStream,
-    buf: &mut [u8],
-) -> Result<(), StreamError> {
+pub fn stream_recv_chunk(stream: &mut TcpStream, buf: &mut [u8]) -> Result<(), StreamError> {
     //
     // Possible situations to handle:
     //

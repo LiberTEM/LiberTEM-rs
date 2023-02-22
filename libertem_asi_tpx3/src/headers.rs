@@ -1,6 +1,6 @@
-use bincode::{Options, ErrorKind};
+use bincode::{ErrorKind, Options};
 use pyo3::pyclass;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use crate::sparse_csr::CSRSizes;
 
@@ -127,13 +127,12 @@ impl FormatType {
     }
 }
 
-
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 #[pyclass]
 pub struct AcquisitionStart {
     tag: u8, // const. 0x00
 
-    /// 
+    ///
     pub version: u8,
     pub format_type: FormatType,
 
@@ -146,14 +145,21 @@ pub struct AcquisitionStart {
 
     /// identifier
     pub sequence: u32,
-    reserved: [u8;15],
-
+    reserved: [u8; 15],
     // for future: maybe `scan_pattern: Vec<(u64, u64)>,`
     // -> separate message
 }
 
 impl AcquisitionStart {
-    pub fn new(version: u8, format_type: FormatType, nav_shape: (u16, u16), indptr_dtype: DType, sig_shape: (u16, u16), indices_dtype: DType, sequence: u32) -> Self {
+    pub fn new(
+        version: u8,
+        format_type: FormatType,
+        nav_shape: (u16, u16),
+        indptr_dtype: DType,
+        sig_shape: (u16, u16),
+        indices_dtype: DType,
+        sequence: u32,
+    ) -> Self {
         AcquisitionStart {
             tag: 0,
             version,
@@ -163,7 +169,7 @@ impl AcquisitionStart {
             sig_shape,
             indices_dtype,
             sequence,
-            reserved: [0;15]
+            reserved: [0; 15],
         }
     }
 }
@@ -179,7 +185,7 @@ pub struct ScanStart {
     /// sequence number for scans in this acquisition
     pub sequence: u32,
     pub metadata_length: u64,
-    reserved: [u8;19],
+    reserved: [u8; 19],
 }
 
 impl ScanStart {
@@ -188,7 +194,7 @@ impl ScanStart {
             tag: 1,
             sequence,
             metadata_length,
-            reserved: [0;19]
+            reserved: [0; 19],
         }
     }
 }
@@ -198,22 +204,22 @@ impl ScanStart {
 /// the data is encoded as little endian integers, according to the
 /// dtypes specified in the acquisition header and the value dtype
 /// for each chunk.
-/// 
+///
 /// sizes in bytes:
 /// size of the indptr part: size_of::<indptr_dtype> * (nframes + 1)
 /// size of the indices part: size_of::<indices_dtype> * length
-/// size of the values part: size_of::<value_dtype> * length 
+/// size of the values part: size_of::<value_dtype> * length
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 #[pyclass]
 pub struct ArrayChunk {
-    tag: u8,  // const. 0x02
+    tag: u8, // const. 0x02
 
     /// data type of individual pixels
     pub value_dtype: DType,
 
     /// number of frames in this chunk
     pub nframes: u32,
-    
+
     /// number of non-zero elements in the array
     pub length: u32,
 
@@ -226,7 +232,13 @@ pub struct ArrayChunk {
 }
 
 impl ArrayChunk {
-    pub fn new(value_dtype: DType, nframes: u32, length: u32, indices_offset: u32, values_offset: u32) -> Self {
+    pub fn new(
+        value_dtype: DType,
+        nframes: u32,
+        length: u32,
+        indices_offset: u32,
+        values_offset: u32,
+    ) -> Self {
         ArrayChunk {
             tag: 2,
             value_dtype,
@@ -234,8 +246,7 @@ impl ArrayChunk {
             length,
             indices_offset,
             values_offset,
-            reserved: [0;14]
-            // reserved: [0;22]
+            reserved: [0; 14], // reserved: [0;22]
         }
     }
 
@@ -251,31 +262,30 @@ impl ArrayChunk {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct ScanEnd {
-    tag: u8,  // const. 0x03
+    tag: u8, // const. 0x03
 
     /// the same sequence number as in the matching `ScanStart`
     pub sequence: u32,
-    reserved: [u8;27],
+    reserved: [u8; 27],
 }
-
 
 impl ScanEnd {
     pub fn new(sequence: u32) -> Self {
         ScanEnd {
             tag: 3,
             sequence,
-            reserved: [0;27]
+            reserved: [0; 27],
         }
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct AcquisitionEnd {
-    tag: u8,  // const. 0x04
+    tag: u8, // const. 0x04
 
     /// the same sequence id as in the matching `AcquisitionStart`
     pub sequence: u32,
-    reserved: [u8;27],
+    reserved: [u8; 27],
 }
 
 impl AcquisitionEnd {
@@ -283,7 +293,7 @@ impl AcquisitionEnd {
         AcquisitionEnd {
             tag: 4,
             sequence,
-            reserved: [0;27]
+            reserved: [0; 27],
         }
     }
 }

@@ -48,10 +48,7 @@ impl<'a> CSRSplitter<'a> {
         IP: numpy::Element + FromBytes + AsBytes + Copy + std::ops::Sub<Output = IP>,
         u32: From<IP>,
     {
-        let view: CSRViewRaw = CSRViewRaw::from_bytes_with_layout(
-            self.raw_data,
-            &self.layout,
-        );
+        let view: CSRViewRaw = CSRViewRaw::from_bytes_with_layout(self.raw_data, &self.layout);
 
         let left_nnz = view.get_indptr::<IP>()[mid].try_into().unwrap();
         let left_nframes = mid;
@@ -158,10 +155,7 @@ impl<'a> CSRSplitter<'a> {
         // where the values/coords for the left part stop:
         let left_nnz = layout_a.nnz;
         let left_rows = layout_a.nframes;
-        let mut left: CSRViewRawMut = CSRViewRawMut::from_bytes_with_layout(
-            left,
-            &layout_a,
-        );
+        let mut left: CSRViewRawMut = CSRViewRawMut::from_bytes_with_layout(left, &layout_a);
         left.copy_into_indices_raw(
             &view.get_indices_raw()[..left_nnz as usize * self.layout.indices_dtype.size()],
         );
@@ -171,10 +165,7 @@ impl<'a> CSRSplitter<'a> {
         left.copy_into_indptr(&view.get_indptr::<IP>()[..left_rows as usize + 1]);
 
         // This takes the symmetric parts of the slices above
-        let mut right: CSRViewRawMut = CSRViewRawMut::from_bytes_with_layout(
-            right,
-            &layout_b,
-        );
+        let mut right: CSRViewRawMut = CSRViewRawMut::from_bytes_with_layout(right, &layout_b);
         assert_eq!(
             right.get_indices_raw().len(),
             view.get_indices_raw().len() - (left_nnz as usize * self.layout.indices_dtype.size())
@@ -218,7 +209,7 @@ pub struct CSRSizes {
     pub indices_padding: usize,
 
     pub values: usize,
-    
+
     /// padding _before_ values
     pub values_padding: usize,
 
@@ -227,10 +218,7 @@ pub struct CSRSizes {
 }
 
 impl CSRSizes {
-    pub const fn new<I, IP, V>(
-        nnz: u32,
-        nrows: u32,
-    ) -> Self
+    pub const fn new<I, IP, V>(nnz: u32, nrows: u32) -> Self
     where
         I: numpy::Element + FromBytes + AsBytes,
         IP: numpy::Element + FromBytes + AsBytes,
@@ -291,7 +279,8 @@ impl CSRSizes {
         // ..........|..|......
         //           ^  \- values_offset
         //            \- indices_offset + indices_size
-        let values_padding = chunk_header.values_offset as usize - (chunk_header.indices_offset as usize + indices_size);
+        let values_padding = chunk_header.values_offset as usize
+            - (chunk_header.indices_offset as usize + indices_size);
 
         Self {
             indptr: indptr_size,

@@ -4,9 +4,12 @@ use ipc_test::SharedSlabAllocator;
 use log::trace;
 use pyo3::{exceptions::PyRuntimeError, ffi::PyMemoryView_FromMemory, prelude::*, FromPyPointer};
 
+use crate::{
+    chunk_stack::{ChunkCSRLayout, ChunkStackHandle},
+    exceptions::ConnectionError,
+};
 #[cfg(test)]
-use zerocopy::{FromBytes, AsBytes};
-use crate::{exceptions::ConnectionError, chunk_stack::{ChunkStackHandle, ChunkCSRLayout}};
+use zerocopy::{AsBytes, FromBytes};
 
 #[pyclass]
 pub struct CamClient {
@@ -19,25 +22,25 @@ impl CamClient {
         let length = raw_data.len();
 
         let mv = unsafe {
-            PyMemoryView_FromMemory(
-                ptr as *mut i8,
-                length.try_into().unwrap(),
-                PyBUF_READ,
-            )
+            PyMemoryView_FromMemory(ptr as *mut i8, length.try_into().unwrap(), PyBUF_READ)
         };
         let from_ptr: &PyAny = unsafe { FromPyPointer::from_owned_ptr(py, mv) };
         from_ptr.into_py(py)
     }
 
     #[cfg(test)]
-    fn get_slices<'a, I, IP, V>(&'a self, slot_r: &'a ipc_test::Slot, handle: &'a ChunkStackHandle) -> Vec<(&[IP], &[I], &[V])>
+    fn get_slices<'a, I, IP, V>(
+        &'a self,
+        slot_r: &'a ipc_test::Slot,
+        handle: &'a ChunkStackHandle,
+    ) -> Vec<(&[IP], &[I], &[V])>
     where
         I: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
         IP: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
         V: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
     {
-
-        handle.get_chunk_views::<I, IP, V>(slot_r)
+        handle
+            .get_chunk_views::<I, IP, V>(slot_r)
             .iter()
             .map(|view| (view.indptr, view.indices, view.values))
             .collect()
@@ -68,14 +71,20 @@ impl CamClient {
         if let Some(shm) = &self.shm {
             let slot_r = shm.get(handle.slot.slot_idx);
 
-            Ok(handle.get_chunk_views_raw(&slot_r).iter().map(|(view, layout)| {
-                let indptr = self.get_memoryview(py, view.get_indptr_raw());
-                let indices = self.get_memoryview(py, view.get_indices_raw());
-                let values = self.get_memoryview(py, view.get_values_raw());
-                (layout.clone(), indptr, indices, values)
-            }).collect())
+            Ok(handle
+                .get_chunk_views_raw(&slot_r)
+                .iter()
+                .map(|(view, layout)| {
+                    let indptr = self.get_memoryview(py, view.get_indptr_raw());
+                    let indices = self.get_memoryview(py, view.get_indices_raw());
+                    let values = self.get_memoryview(py, view.get_values_raw());
+                    (layout.clone(), indptr, indices, values)
+                })
+                .collect())
         } else {
-            Err(PyRuntimeError::new_err("CamClient.get_chunk called with SHM closed"))
+            Err(PyRuntimeError::new_err(
+                "CamClient.get_chunk called with SHM closed",
+            ))
         }
     }
 
@@ -111,8 +120,10 @@ mod tests {
 
     use crate::{
         cam_client::CamClient,
-        chunk_stack::{ChunkStackForWriting, ChunkStackHandle, ChunkCSRLayout},
-        headers::DType, sparse_csr::CSRSizes, csr_view::CSRViewMut,
+        chunk_stack::{ChunkCSRLayout, ChunkStackForWriting, ChunkStackHandle},
+        csr_view::CSRViewMut,
+        headers::DType,
+        sparse_csr::CSRSizes,
     };
 
     #[test]
@@ -187,8 +198,9 @@ mod tests {
         let slices = client.get_slices::<u32, u32, u32>(&slot_r, &fs_handle);
         assert_eq!(slices.len(), 1);
 
-        assert_eq!(slices.get(0).unwrap(), &(
-            &indptr[..], &indices[..], &values[..]
-        ));
+        assert_eq!(
+            slices.get(0).unwrap(),
+            &(&indptr[..], &indices[..], &values[..])
+        );
     }
 }
