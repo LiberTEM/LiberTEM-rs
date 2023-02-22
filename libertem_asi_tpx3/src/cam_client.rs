@@ -6,7 +6,7 @@ use pyo3::{exceptions::PyRuntimeError, ffi::PyMemoryView_FromMemory, prelude::*,
 
 #[cfg(test)]
 use zerocopy::{FromBytes, AsBytes};
-use crate::{exceptions::ConnectionError, chunk_stack::{ChunkStackHandle, ChunkCSRLayout}, shm::recv_shm_handle};
+use crate::{exceptions::ConnectionError, chunk_stack::{ChunkStackHandle, ChunkCSRLayout}};
 
 #[pyclass]
 pub struct CamClient {
@@ -50,9 +50,8 @@ const PyBUF_READ: c_int = 0x100;
 #[pymethods]
 impl CamClient {
     #[new]
-    fn new(socket_path: &str) -> PyResult<Self> {
-        let handle = recv_shm_handle(socket_path);
-        match SharedSlabAllocator::connect(handle.fd, &handle.info) {
+    fn new(handle_path: &str) -> PyResult<Self> {
+        match SharedSlabAllocator::connect(&handle_path) {
             Ok(shm) => Ok(CamClient { shm: Some(shm) }),
             Err(e) => {
                 let msg = format!("failed to connect to SHM: {e:?}");
@@ -113,12 +112,16 @@ mod tests {
     use crate::{
         cam_client::CamClient,
         chunk_stack::{ChunkStackForWriting, ChunkStackHandle, ChunkCSRLayout},
-        shm::serve_shm_handle, headers::DType, sparse_csr::CSRSizes, csr_view::CSRViewMut,
+        headers::DType, sparse_csr::CSRSizes, csr_view::CSRViewMut,
     };
 
     #[test]
     fn test_cam_client() {
-        let mut shm = SharedSlabAllocator::new(1, 4096, false).unwrap();
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.into_path().join("stuff.socket");
+        let handle_path = socket_as_path.to_str().unwrap();
+
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
 
         // let's make a plan first:
@@ -176,15 +179,8 @@ mod tests {
             assert_eq!(fs_handle, new_handle);
         });
 
-        // start to serve the shm connection via a unix domain socket:
-        let handle = shm.get_handle();
-        let socket_dir = tempdir().unwrap();
-        let socket_as_path = socket_dir.into_path().join("stuff.socket");
-        let socket_path = socket_as_path.to_string_lossy();
-        serve_shm_handle(handle, &socket_path);
-
         // See that we can get the data out again, unchanged:
-        let client = CamClient::new(&socket_path).unwrap();
+        let client = CamClient::new(&handle_path).unwrap();
         let slot_r: ipc_test::Slot = shm.get(fs_handle.slot.slot_idx);
         let slice = slot_r.as_slice();
         println!("{slice:x?}");

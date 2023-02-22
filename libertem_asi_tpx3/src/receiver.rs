@@ -7,7 +7,7 @@ use std::{
 };
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
-use ipc_test::{SHMHandle, SharedSlabAllocator};
+use ipc_test::{SharedSlabAllocator, SHMHandle};
 use log::{debug, error, info, trace, warn};
 
 use crate::{
@@ -591,12 +591,5 @@ impl TPXReceiver {
             warn!("did not have a bg thread join handle, cannot join!");
         }
         self.status = ReceiverStatus::Closed;
-    }
-}
-
-impl Default for TPXReceiver {
-    fn default() -> Self {
-        let shm = SharedSlabAllocator::new(5000, 512 * 512 * 2, true).expect("create shm");
-        Self::new("tcp://127.0.0.1:9999", 1, shm)
     }
 }

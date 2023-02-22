@@ -454,6 +454,8 @@ impl ChunkStackHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use crate::{
         chunk_stack::ChunkCSRLayout,
         csr_view::{CSRView, CSRViewMut},
@@ -463,10 +465,19 @@ mod tests {
 
     use super::ChunkStackForWriting;
     use ipc_test::{SharedSlabAllocator, Slot};
+    use tempfile::{TempDir, tempdir};
+
+    fn get_socket_path() -> (TempDir, PathBuf) {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.path().join("stuff.socket");
+
+        (socket_dir, socket_as_path)
+    }
 
     #[test]
     fn test_chunk_stack() {
-        let mut shm = SharedSlabAllocator::new(1, 4096, false).unwrap();
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
         let mut fs = ChunkStackForWriting::new(slot, 1);
         assert_eq!(fs.cursor, 0);
@@ -495,9 +506,10 @@ mod tests {
     #[test]
     fn test_split_chunk_stack_handle() {
         // first case tested here: split a chunk stack that contains a single chunk into two
+        let (_socket_dir, socket_as_path) = get_socket_path();
 
         // need at least three slots: one is the source, two for the results.
-        let mut shm = SharedSlabAllocator::new(3, 4096, false).unwrap();
+        let mut shm = SharedSlabAllocator::new(3, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
 
         // let's make a plan first:
@@ -577,8 +589,10 @@ mod tests {
         //
         // If we now request a split at 32, it fits evenly by taking two whole chunks.
 
+        let (_socket_dir, socket_as_path) = get_socket_path();
+
         // need at least three slots: one is the source, two for the results.
-        let mut shm = SharedSlabAllocator::new(3, 4096, false).unwrap();
+        let mut shm = SharedSlabAllocator::new(3, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
 
         // let's make a plan first:
@@ -665,8 +679,9 @@ mod tests {
 
     #[test]
     fn test_can_fit() {
+        let (_socket_dir, socket_as_path) = get_socket_path();
         // slot size is rounded up to 4k blocks
-        let mut shm = SharedSlabAllocator::new(3, 4096, false).unwrap();
+        let mut shm = SharedSlabAllocator::new(3, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
 
         let mut fs = ChunkStackForWriting::new(slot, 1);

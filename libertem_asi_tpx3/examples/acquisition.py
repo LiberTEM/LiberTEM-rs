@@ -72,7 +72,7 @@ class AsiCommHandler(TaskCommHandler):
         self.conn = conn.get_conn_impl()
 
     @classmethod
-    def _make_socket_path(cls):
+    def _make_handle_path(cls):
         temp_path = tempfile.mkdtemp()
         return os.path.join(temp_path, 'asi-shm-socket')
 
@@ -170,15 +170,16 @@ class AsiDetectorConnection(DetectorConnection):
         self._chunks_per_stack = chunks_per_stack
 
         self._conn = self._connect()
-        self._conn.serve_shm(self._make_socket_path())
 
     def _connect(self):
+        handle_path = self._make_handle_path()
         return ASITpx3Connection(
             uri=self._uri,
             chunks_per_stack=self._chunks_per_stack,
             num_slots=self._num_slots,
             bytes_per_chunk=self._bytes_per_chunk,
             huge=self._huge_pages,
+            handle_path=handle_path,
         )
 
     def wait_for_acquisition(
@@ -198,7 +199,7 @@ class AsiDetectorConnection(DetectorConnection):
         return self._conn
 
     @classmethod
-    def _make_socket_path(cls):
+    def _make_handle_path(cls):
         temp_path = tempfile.mkdtemp()
         return os.path.join(temp_path, 'asi-shm-socket')
 
