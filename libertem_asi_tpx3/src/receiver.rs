@@ -13,7 +13,7 @@ use log::{debug, error, info, trace, warn};
 use crate::{
     chunk_stack::{ChunkCSRLayout, ChunkStackForWriting, ChunkStackHandle},
     csr_view_raw::CSRViewRaw,
-    headers::{AcquisitionStart, HeaderTypes, ScanStart},
+    headers::{AcquisitionStart, HeaderTypes, ScanStart, AcquisitionEnd, ScanEnd},
     stream::{stream_recv_chunk, stream_recv_header, StreamError},
 };
 
@@ -212,7 +212,7 @@ fn wait_for_scan(
 
         match header {
             HeaderTypes::ScanStart { header } => {
-                handle_scan(
+                match handle_scan(
                     acquisition_header.clone(),
                     header,
                     control_channel,
@@ -220,7 +220,17 @@ fn wait_for_scan(
                     stream,
                     frame_stack_size,
                     shm,
-                )?;
+                ) {
+                    Ok(ScanResult::ScanCancelled(header)) => {
+                        info!(
+                            "AcquisitionEnd header received for sequence {}",
+                            header.sequence
+                        );
+                        return Ok(());
+                    },
+                    Ok(ScanResult::ScanDone(_header)) => {},
+                    Err(e) => return Err(e),
+                };
 
                 let free = shm.num_slots_free();
                 let total = shm.num_slots_total();
@@ -244,6 +254,11 @@ fn wait_for_scan(
     }
 }
 
+enum ScanResult {
+    ScanDone(ScanEnd),
+    ScanCancelled(AcquisitionEnd),
+}
+
 ///
 /// Handle one scan: the `AcquisitionStart` and `ScanStart` messages should
 /// already be consumed, the following messages should be:
@@ -264,7 +279,7 @@ fn handle_scan(
     stream: &mut TcpStream,
     chunks_per_stack: usize,
     shm: &mut SharedSlabAllocator,
-) -> Result<(), AcquisitionError> {
+) -> Result<ScanResult, AcquisitionError> {
     let t0 = Instant::now();
     let mut last_control_check = Instant::now();
 
@@ -351,7 +366,7 @@ fn handle_scan(
                 stream_recv_chunk(stream, buf)?;
                 CSRViewRaw::from_bytes_with_layout(buf, &layout);
             }
-            HeaderTypes::ScanEnd { .. } => {
+            HeaderTypes::ScanEnd { header } => {
                 let elapsed = t0.elapsed();
                 info!("scan done in {elapsed:?}",);
 
@@ -359,9 +374,9 @@ fn handle_scan(
                 from_thread_s.send(ResultMsg::End {
                     frame_stack: handle,
                 })?;
-                return Ok(());
+                return Ok(ScanResult::ScanDone(header));
             }
-            HeaderTypes::AcquisitionEnd { .. } => {
+            HeaderTypes::AcquisitionEnd { header } => {
                 let elapsed = t0.elapsed();
                 warn!("AcquisitionEnd after {elapsed:?} - probably cancelled?",);
                 let handle = chunk_stack.writing_done(shm);
@@ -369,7 +384,7 @@ fn handle_scan(
                 from_thread_s.send(ResultMsg::End {
                     frame_stack: handle,
                 })?;
-                return Ok(());
+                return Ok(ScanResult::ScanCancelled(header));
             }
             other_header => {
                 let msg = format!("unexpected header in acquisition: {other_header:?}");
