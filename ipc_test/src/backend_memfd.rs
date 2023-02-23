@@ -1,5 +1,4 @@
 ///! Raw memory backend using memfd with huge page support
-
 // TODO:
 // #![forbid(clippy::unwrap_used)]
 use std::{
@@ -55,8 +54,7 @@ where
     (payload, fds[0])
 }
 
-fn handle_connection(mut stream: UnixStream, fd: RawFd, init_data_serialized: &[u8])
-{
+fn handle_connection(mut stream: UnixStream, fd: RawFd, init_data_serialized: &[u8]) {
     let fds = [fd];
 
     // message must not be empty:
@@ -134,7 +132,7 @@ where
 pub struct MemfdShm {
     mmap: MmapRaw,
 
-    #[allow(dead_code)]  // we keep the file around such that it is cleaned up on drop
+    #[allow(dead_code)] // we keep the file around such that it is cleaned up on drop
     file: File,
     socket_path: PathBuf,
     bg_thread: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
@@ -153,8 +151,8 @@ impl MemfdShm {
     /// from the operating system, mapping the memory area can fail.
     ///
     pub fn new<I>(enable_huge: bool, socket_path: &Path, size: usize, init_data: I) -> Self
-    where I:
-        Serialize
+    where
+        I: Serialize,
     {
         let memfd_options = MemfdOptions::default().allow_sealing(true);
         let memfd_options = if enable_huge {
@@ -194,8 +192,8 @@ impl MemfdShm {
     }
 
     pub fn connect<I>(handle: &str) -> (Self, I)
-    where I:
-        DeserializeOwned
+    where
+        I: DeserializeOwned,
     {
         let socket_path = Path::new(handle);
         let (init_data, fd) = recv_shm_handle::<I>(socket_path);
@@ -205,12 +203,15 @@ impl MemfdShm {
         let file = unsafe { File::from_raw_fd(fd) };
         let mmap = MmapOptions::new().map_raw(&file).unwrap();
 
-        (Self {
-            mmap,
-            file,
-            socket_path: socket_path.to_owned(),
-            bg_thread: None,
-        }, init_data)
+        (
+            Self {
+                mmap,
+                file,
+                socket_path: socket_path.to_owned(),
+                bg_thread: None,
+            },
+            init_data,
+        )
     }
 }
 

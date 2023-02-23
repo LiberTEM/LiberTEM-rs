@@ -84,8 +84,6 @@ impl FreeStack {
     }
 }
 
-
-
 #[cfg(test)]
 mod test {
     use memmap2::MmapOptions;
@@ -140,5 +138,4 @@ mod test {
         s.push(3);
         s.push(4); // panic! out of bounds.
     }
-
 }

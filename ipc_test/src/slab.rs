@@ -11,7 +11,7 @@ use anyhow::Result;
 use raw_sync::locks::{LockImpl, LockInit, Mutex};
 use serde::{Deserialize, Serialize};
 
-use crate::{align_to, shm::Shm, freestack::FreeStack};
+use crate::{align_to, freestack::FreeStack, shm::Shm};
 
 /// A handle for reading from a shared memory slot
 pub struct Slot {
@@ -76,7 +76,7 @@ impl SHMHandle {}
 pub struct SlabInfo {
     pub num_slots: usize,
     pub slot_size: usize,
-    pub total_size: usize,   // including management overheads
+    pub total_size: usize, // including management overheads
 }
 
 pub struct SharedSlabAllocator {
@@ -85,7 +85,6 @@ pub struct SharedSlabAllocator {
 
     /// size of each slot in bytes
     slot_size: usize,
-
 
     /// total size including overheads
     total_size: usize,

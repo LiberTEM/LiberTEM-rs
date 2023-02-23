@@ -1,8 +1,7 @@
 pub(crate) mod freestack;
 pub mod slab;
 
-pub use slab::{SharedSlabAllocator, SlotInfo, SlabInfo, Slot, SlotForWriting, SHMHandle};
-
+pub use slab::{SHMHandle, SharedSlabAllocator, SlabInfo, Slot, SlotForWriting, SlotInfo};
 
 // for testing:
 // #[cfg_attr(target_os = "linux", path = "backend_memfd.rs")]
