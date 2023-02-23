@@ -17,5 +17,5 @@ crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
 ndarray = "0.15.6"
 bs_sys = { path = "../bs-sys" }
 ndarray-stats = "0.5.1"
-scarlet = "1.1.0"
-colors-transform = "0.2.11"
+# scarlet = "1.1.0"
+# colors-transform = "0.2.11"
