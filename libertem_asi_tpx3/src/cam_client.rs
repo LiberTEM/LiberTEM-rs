@@ -54,7 +54,7 @@ const PyBUF_READ: c_int = 0x100;
 impl CamClient {
     #[new]
     fn new(handle_path: &str) -> PyResult<Self> {
-        match SharedSlabAllocator::connect(&handle_path) {
+        match SharedSlabAllocator::connect(handle_path) {
             Ok(shm) => Ok(CamClient { shm: Some(shm) }),
             Err(e) => {
                 let msg = format!("failed to connect to SHM: {e:?}");
@@ -191,7 +191,7 @@ mod tests {
         });
 
         // See that we can get the data out again, unchanged:
-        let client = CamClient::new(&handle_path).unwrap();
+        let client = CamClient::new(handle_path).unwrap();
         let slot_r: ipc_test::Slot = shm.get(fs_handle.slot.slot_idx);
         let slice = slot_r.as_slice();
         println!("{slice:x?}");
