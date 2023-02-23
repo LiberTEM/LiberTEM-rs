@@ -210,12 +210,12 @@ if __name__ == "__main__":
             cpus=range(20), cudas=[]
         ),
         pin_workers=False,
-        delayed_gc=False,
+        # delayed_gc=False,
     )
     ctx = LiveContext(executor=executor)
     conn = AsiDetectorConnection(
         uri="localhost:8283",
-        chunks_per_stack=8,
+        chunks_per_stack=16,
         bytes_per_chunk=1500000,
         num_slots=1000,
     )

@@ -8,15 +8,15 @@ from libertem_asi_tpx3 import ASITpx3Connection, CamClient, ChunkStackHandle
 
 
 if __name__ == "__main__":
+    sock = "/tmp/asi-tpx3-shm.sock"
     conn = ASITpx3Connection(
         uri="localhost:8283",
-        chunks_per_stack=2,
+        chunks_per_stack=16,
         num_slots=4000,
-        bytes_per_chunk=150000,
+        bytes_per_chunk=1500000,
         huge=False,
+        hande_path=sock,
     )
-
-    sock = "/tmp/asi-tpx3-shm.sock"
 
     conn.serve_shm(sock)
     conn.start_passive()
@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
         print(header)
 
-        cam_client = CamClient(socket_path=sock)
+        cam_client = CamClient(handle_path=sock)
 
         seen = 0
         frames_cursor = 0
