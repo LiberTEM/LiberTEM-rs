@@ -9,7 +9,6 @@ import numpy as np
 import uuid
 import websockets
 from websockets.legacy.server import WebSocketServerProtocol
-import lz4.frame
 import bitshuffle
 
 from libertem.udf.sum import SumUDF
@@ -53,10 +52,8 @@ def get_bbox(arr) -> typing.Tuple[int, ...]:
 
 
 class WSServer:
-    def __init__(self, conn: AsiDetectorConnection, executor: "JobExecutor", ctx: LiveContext):
-        self.conn = conn
-        self.executor = executor
-        self.ctx = ctx
+    def __init__(self):
+        self.connect()
         self.ws_connected = set()
         self.udfs = [
             SumSigUDF(),
@@ -177,51 +174,61 @@ class WSServer:
                     continue
                 acq_id = await self.handle_pending_acquisition(pending_acq)
                 print(f"acquisition starting with id={acq_id}")
+                t0 = time.perf_counter()
                 previous_results = None
                 try:
                     aq = self.ctx.prepare_from_pending(
                         pending_acq,
-                        conn=conn,
+                        conn=self.conn,
                         pending_aq=pending_acq,
                         frames_per_partition=4*8192,
                     )
                     last_update = 0
-                    async for partial_results in ctx.run_udf_iter(dataset=aq, udf=self.udfs, sync=False):
-                        if time.time() - last_update > min_delta:
-                            await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
-                            previous_results = copy.deepcopy(partial_results)
-                            last_update = time.time()
-                    await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
+                    try:
+                        async for partial_results in self.ctx.run_udf_iter(dataset=aq, udf=self.udfs, sync=False):
+                            if time.time() - last_update > min_delta:
+                                await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
+                                previous_results = copy.deepcopy(partial_results)
+                                last_update = time.time()
+                        await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        self.ctx.close()
+                        self.conn.close()
+                        self.connect()
                     previous_results = copy.deepcopy(partial_results)
                 finally:
                     await self.handle_acquisition_end(pending_acq, acq_id)
                 previous_results = None
+                t1 = time.perf_counter()
+                print(f"acquisition done with id={acq_id}; took {t1-t0:.3f}s")
 
+    def connect(self):
+        conn = AsiDetectorConnection(
+            uri="localhost:8283",
+            chunks_per_stack=16,
+            bytes_per_chunk=1500000,
+            num_slots=1000,
+        )
+        executor = PipelinedExecutor(
+            spec=PipelinedExecutor.make_spec(
+                cpus=range(20), cudas=[]
+            ),
+            pin_workers=False,
+            # delayed_gc=False,
+        )
+        ctx = LiveContext(executor=executor)
 
+        self.conn = conn
+        self.executor = executor
+        self.ctx = ctx
 
-async def main(conn, executor, ctx):
-    server = WSServer(conn, executor, ctx)
+async def main():
+    server = WSServer()
     await server.serve()
 
 
 if __name__ == "__main__":
-    executor = PipelinedExecutor(
-        spec=PipelinedExecutor.make_spec(
-            cpus=range(20), cudas=[]
-        ),
-        pin_workers=False,
-        # delayed_gc=False,
-    )
-    ctx = LiveContext(executor=executor)
-    conn = AsiDetectorConnection(
-        uri="localhost:8283",
-        chunks_per_stack=16,
-        bytes_per_chunk=1500000,
-        num_slots=1000,
-    )
 
-    try:
-        asyncio.run(main(conn, executor, ctx))
-    finally:
-        executor.close()
-        conn.close()
+    asyncio.run(main())
