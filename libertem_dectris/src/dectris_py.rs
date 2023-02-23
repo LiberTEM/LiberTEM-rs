@@ -2,7 +2,8 @@
 
 use std::{
     convert::Infallible,
-    time::{Duration, Instant}, path::PathBuf,
+    path::PathBuf,
+    time::{Duration, Instant},
 };
 
 use crate::{
