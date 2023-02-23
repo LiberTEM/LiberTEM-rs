@@ -140,13 +140,8 @@ pub fn decompress_lz4_into<T>(
 
     unsafe {
         let out_ptr = out.cast();
-        let count = bs_bindings::bshuf_decompress_lz4(
-            in_ptr,
-            out_ptr,
-            out_size,
-            elem_size,
-            block_size,
-        );
+        let count =
+            bs_bindings::bshuf_decompress_lz4(in_ptr, out_ptr, out_size, elem_size, block_size);
         if count < 0 {
             return Err(count.into());
         }
