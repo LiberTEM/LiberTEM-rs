@@ -13,7 +13,7 @@ use log::{debug, error, info, trace, warn};
 use crate::{
     chunk_stack::{ChunkCSRLayout, ChunkStackForWriting, ChunkStackHandle},
     csr_view_raw::CSRViewRaw,
-    headers::{AcquisitionStart, HeaderTypes, ScanStart, AcquisitionEnd, ScanEnd},
+    headers::{AcquisitionEnd, AcquisitionStart, HeaderTypes, ScanEnd, ScanStart},
     stream::{stream_recv_chunk, stream_recv_header, StreamError},
 };
 
@@ -227,8 +227,8 @@ fn wait_for_scan(
                             header.sequence
                         );
                         return Ok(());
-                    },
-                    Ok(ScanResult::ScanDone(_header)) => {},
+                    }
+                    Ok(ScanResult::ScanDone(_header)) => {}
                     Err(e) => return Err(e),
                 };
 
