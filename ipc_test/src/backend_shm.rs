@@ -5,7 +5,9 @@
 use std::{
     fs::{remove_file, OpenOptions},
     io::Write,
-    path::{Path, PathBuf}, str::FromStr, sync::Mutex,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Mutex,
 };
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
