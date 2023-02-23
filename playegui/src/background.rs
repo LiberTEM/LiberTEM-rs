@@ -1,15 +1,19 @@
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
-use colors_transform::Color;
-use crossbeam::channel::Sender;
-use egui::{TextureHandle, ColorImage, plot::Text};
-use log::{error, info, trace};
-use ndarray::{Array2, ArrayViewMut2, Array1, s, Ix, Ix2};
-use ndarray_stats::QuantileExt;
-use scarlet::{colormap::{ColorMap, ListedColorMap}, prelude::{RGBColor}};
+use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
+use egui::ColorImage;
+use log::{debug, error, info};
+use ndarray::{s, Array2, ArrayViewMut2};
 use websocket::ClientBuilder;
 
-use crate::messages::{AcqMessage, AcquisitionResult, BBox};
+use crate::messages::{AcqMessage, AcquisitionResult, BBox, MessagePart, ProcessingStats};
 
 pub fn decompress_into<T>(
     out_size: [usize; 2],
@@ -72,99 +76,160 @@ impl AcquisitionData {
     }
 }
 
+/// An error happened while consuming the sequence of messages
+#[derive(Debug)]
+pub enum ParseError {
+    /// An unexpected message part was encountered
+    UnexpectedMessage(MessagePart),
+}
+
 struct BackgroundState {
     acquisitions: HashMap<String, AcquisitionData>,
+    pending_messages: VecDeque<MessagePart>,
+    receiver: Receiver<MessagePart>,
+}
+
+struct ProcessResults<'a> {
+    processed: Vec<&'a AcquisitionData>,
+    to_remove: Vec<String>,
 }
 
 impl BackgroundState {
-    fn new() -> Self {
+    fn new(part_receiver: Receiver<MessagePart>) -> Self {
         Self {
             acquisitions: HashMap::new(),
+            pending_messages: VecDeque::new(),
+            receiver: part_receiver,
         }
     }
 
-    pub fn get_mut(&mut self, acq_id: &str) -> Option<&mut AcquisitionData> {
-        self.acquisitions.get_mut(acq_id)
-    }
+    /// Take one or more messages from the pending list and integrate
+    /// the parts into the full results. Returns a vec of acquisition
+    /// ids that were changed.
+    fn process_pending(&mut self) -> Result<ProcessResults, ParseError> {
+        let mut ids: Vec<String> = Vec::new();
+        let mut remove_ids: Vec<String> = Vec::new();
+        let start_time = Instant::now();
 
-    pub fn get(&self, acq_id: &str) -> Option<&AcquisitionData> {
-        self.acquisitions.get(acq_id)
-    }
-
-    // FIXME: limit retention! otherwise it. just. keeps. growing!
-    fn integrate_message(&mut self, msg: AcqMessage) -> Option<&AcquisitionData> {
-        match msg {
-            AcqMessage::AcquisitionStarted(_) => None,
-            AcqMessage::AcquisitionEnded(ended) => {
-                self.acquisitions.remove(&ended.id);
-                None
-            },
-            AcqMessage::AcquisitionResult(result, data) => {
-                let key = result.id.clone();
-                let mut delta_full = Array2::zeros([result.shape.0 as usize, result.shape.1 as usize]);
-
-                let (ymin, ymax, xmin, xmax) = result.bbox;
-
-                let bbox = BBox {
-                    ymin,
-                    ymax,
-                    xmin,
-                    xmax,
-                };
-
-                // println!("{:?} {:?}", meta.bbox, bbox);
-                let blit_shape = [(ymax - ymin + 1) as usize, (xmax - xmin + 1) as usize];
-
-                let mut delta_blit: Array2<f32> = Array2::zeros(blit_shape);
-
-                decompress_into(blit_shape, &data, &mut delta_blit.view_mut());
-
-                let slice_info = s![ymin as usize..(ymax+1) as usize, xmin as usize..(xmax+1) as usize];
-                // println!("slice: {:?}", slice_info);
-                // println!("delta_blit: {:?}", delta_blit.shape());
-                // println!("delta_full: {:?}", delta_full.shape());
-                let mut dest = delta_full.slice_mut(slice_info);
-                // println!("dest: {:?}", dest.shape());
-                dest.assign(&delta_blit);
-
-                self.acquisitions
-                    .entry(key.to_string())
-                    .and_modify(|acq_data| {
-                        acq_data.add_delta(&delta_full);
-                        acq_data.update_bbox(&bbox);
-                    })
-                    .or_insert_with(move || AcquisitionData::new(delta_full, bbox, &key));
-
-                self.acquisitions.get(&result.id)
+        loop {
+            if start_time.elapsed() > Duration::from_millis(1000) {
+                break;
             }
-            AcqMessage::UpdatedData(..) => {
-                None
-            },
+
+            let front_msg = if let Some(msg) = self.pending_messages.pop_front() {
+                msg
+            } else {
+                break;
+            };
+
+            let front_clone = front_msg.clone();
+
+            match front_msg {
+                MessagePart::AcquisitionStarted(_) => {}
+                MessagePart::AcquisitionEnded(ended) => {
+                    remove_ids.push(ended.id);
+                }
+                MessagePart::AcquisitionBinaryPart(_) => {
+                    return Err(ParseError::UnexpectedMessage(front_msg.clone()))
+                }
+                MessagePart::AcquisitionResultHeader(result_header) => {
+                    // FIXME: if we have more than one acquisition, how do we handle that?
+                    // should we have separate headers?
+                    let num_expected = 1;
+                    if self.pending_messages.len() < num_expected {
+                        self.pending_messages.push_front(front_clone);
+                        break;
+                    }
+                    let msg = self.pending_messages.pop_front().unwrap();
+                    if let MessagePart::AcquisitionBinaryPart(bin) = msg {
+                        self.merge_result(&bin, &result_header);
+                        ids.push(result_header.id.clone());
+                    } else {
+                        return Err(ParseError::UnexpectedMessage(msg));
+                    }
+                }
+            }
+        }
+
+        Ok(ProcessResults {
+            processed: ids
+                .iter()
+                .map(|id| self.acquisitions.get(id).unwrap())
+                .collect(),
+            to_remove: remove_ids,
+        })
+    }
+
+    fn merge_result(&mut self, data: &[u8], result: &AcquisitionResult) {
+        let key = result.id.clone();
+        let mut delta_full = Array2::zeros([result.shape.0 as usize, result.shape.1 as usize]);
+
+        let (ymin, ymax, xmin, xmax) = result.bbox;
+
+        let bbox = BBox {
+            ymin,
+            ymax,
+            xmin,
+            xmax,
+        };
+
+        // println!("{:?} {:?}", meta.bbox, bbox);
+        let blit_shape = [(ymax - ymin + 1) as usize, (xmax - xmin + 1) as usize];
+
+        let mut delta_blit: Array2<f32> = Array2::zeros(blit_shape);
+
+        decompress_into(blit_shape, data, &mut delta_blit.view_mut());
+
+        let slice_info = s![
+            ymin as usize..(ymax + 1) as usize,
+            xmin as usize..(xmax + 1) as usize
+        ];
+        // println!("slice: {:?}", slice_info);
+        // println!("delta_blit: {:?}", delta_blit.shape());
+        // println!("delta_full: {:?}", delta_full.shape());
+        let mut dest = delta_full.slice_mut(slice_info);
+        // println!("dest: {:?}", dest.shape());
+        dest.assign(&delta_blit);
+
+        self.acquisitions
+            .entry(key.to_string())
+            .and_modify(|acq_data| {
+                acq_data.add_delta(&delta_full);
+                acq_data.update_bbox(&bbox);
+            })
+            .or_insert_with(move || AcquisitionData::new(delta_full, bbox, &key));
+    }
+
+    /// Try to receive some messages, without a set deadline etc.
+    fn recv_some_messages(&mut self) {
+        while !self.receiver.is_empty() {
+            match self.receiver.try_recv() {
+                Ok(part) => {
+                    self.pending_messages.push_back(part);
+                }
+                Err(TryRecvError::Disconnected) => panic!("receiver thread is dead"),
+                Err(TryRecvError::Empty) => return,
+            }
         }
     }
 }
 
-impl Default for BackgroundState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub type ColorTuple = (f32, f32, f32);
 
 fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
+    // FIXME: be more intelligent about damage; instead of filtering, use the bboxes!
     let valid = data.iter().filter(|&value| *value != 0.0);
-    let vmin = &valid.clone().fold(f32::INFINITY, |a, &b| a.min(b));
-    let vmax = &valid.fold(0.0f32, |a, &b| a.max(b));
+    let (vmin, vmax) = &valid.fold((f32::INFINITY, f32::NEG_INFINITY), |a, &b| {
+        (a.0.min(b), a.1.max(b))
+    });
     let shape = data.shape();
 
-    let normalizer = |(idx, v): (usize, &f32)| {
-        (idx, (v - vmin) / (vmax - vmin))
-    };
+    let normalizer = |(idx, v): (usize, &f32)| (idx, (v - vmin) / (vmax - vmin));
 
     let width = data.shape()[1];
 
-    let to_rgba = |(idx, value): (usize, &f32)|{
-        let hsl = colors_transform::Hsl::from(1.0, 0.0, *value * 100.0);
-        let c = hsl.to_rgb();
+    let to_rgba = |(idx, value): (usize, &f32)| {
+        let c = 255.0 * *value;
 
         let x = (idx % width) as u16;
         let y = (idx / width) as u16;
@@ -175,12 +240,7 @@ fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
             0
         };
 
-        [
-            c.get_red() as u8,
-            c.get_green() as u8,
-            c.get_blue() as u8,
-            a,
-        ]
+        [c as u8, c as u8, c as u8, a]
     };
 
     let flat_shape = data.shape()[0] * data.shape()[1];
@@ -190,70 +250,120 @@ fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
     let mapped: Vec<u8> = if *vmax == *vmin {
         iter_flat.flat_map(to_rgba).collect()
     } else {
-        iter_flat.map(normalizer).flat_map(|(idx, v)| to_rgba((idx, &v))).collect()
+        iter_flat
+            .map(normalizer)
+            .flat_map(|(idx, v)| to_rgba((idx, &v)))
+            .collect()
     };
 
     ColorImage::from_rgba_unmultiplied([shape[0], shape[1]], &mapped)
 }
 
-fn apply_colormap<CM>(data: &Array2<f32>, colormap: &CM) -> ColorImage
-    where
-        CM: ColorMap<RGBColor>
-{
-    let vmin = data.min().unwrap();
-    let vmax = data.max().unwrap();
-    let shape = data.shape();
-
-    let normalizer = |v: &f32| {
-        (v - vmin) / (vmax - vmin)
-    };
-
-    let norm_data = if vmax == vmin {
-        data.clone()
-    } else {
-        data.map(normalizer)
-    };
-
-    let data_flat: Array1<f32> = norm_data.into_shape(data.shape()[0] * data.shape()[1]).unwrap();
-
-    let rgb: Vec<u8> = colormap.transform(data_flat.iter().map(|value| *value as f64)).iter().flat_map(|c| {
-        [
-            (c.r * 255.0) as u8,
-            (c.g * 255.0) as u8,
-            (c.b * 255.0) as u8,
-        ]
-    }).collect();
-
-    // let rgb: Vec<u8> = data_flat.iter().flat_map(|value| {
-    //     let c = colormap.transform_single(*value as f64);
-    // }).collect();
-
-    ColorImage::from_rgb([shape[0], shape[1]], &rgb)
-}
-
-pub fn background_thread(sender: Sender<AcqMessage>) {
-    // FIXME: kill switch for this thread
-    loop {
-        let mut client = ClientBuilder::new("ws://localhost:8444")
-            .unwrap()
+fn receiver_thread(channel: Sender<MessagePart>, stop_event: Arc<AtomicBool>) {
+    'outer: loop {
+        let mut client = match ClientBuilder::new("ws://localhost:8444")
+            .unwrap() // FIXME: parse error in case of bad address; handle once it's user-controlled
             .connect_insecure()
-            .unwrap();
-
-        let mut bg_state = BackgroundState::new();
-        // let viridis = ListedColorMap::viridis();
-
-        loop {
-            // FIXME: error type instead of option so we can reconnect on the right errors
-            let msg = AcqMessage::from_socket(&mut client);
-            if let Some(msg) = msg {
-                trace!("received message: {msg:?}");
-                // in case of error, the other thread is dead, so we don't really care...
-                if let Some(data) = bg_state.integrate_message(msg.clone()) {
-                    let img = render_to_rgb(data.get_latest(), data.get_bbox());
-                    sender.send(AcqMessage::UpdatedData(data.get_id().to_string(), img, data.get_bbox().to_owned())).unwrap();
+        {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Could not connect: {e}; trying to reconnect...");
+                if stop_event.load(Ordering::Relaxed) {
+                    break;
                 }
-                sender.send(msg).unwrap();
+                std::thread::sleep(Duration::from_millis(1000));
+                continue;
+            }
+        };
+
+        'inner: loop {
+            if stop_event.load(Ordering::Relaxed) {
+                break 'outer;
+            }
+
+            match MessagePart::from_socket(&mut client) {
+                Ok(part) => {
+                    debug!("Got a message: {part:?}");
+                    channel.send(part).unwrap();
+                }
+                Err(crate::messages::CommError::Close) => {
+                    error!("Connection closed, reconnecting...");
+                    break 'inner;
+                }
+                Err(crate::messages::CommError::NoMessagesAvailable) => {
+                    error!("NoMessagesAvailable, reconnecting...");
+                    // FIXME: sometimes this means the connection is done...
+                    // continue;
+                    break 'inner;
+                }
+                Err(e) => {
+                    error!("Got an error while receiving ({e:?}), reconnecting...");
+                    break 'inner;
+                }
             }
         }
     }
+    info!("stopped receiver thread...");
+}
+
+pub fn background_thread(sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>) {
+    'outer: loop {
+        let (part_sender, part_receiver) = unbounded::<MessagePart>();
+
+        let recv_stop_event = Arc::new(AtomicBool::new(false));
+
+        std::thread::Builder::new()
+            .name("receiver".to_string())
+            .spawn(move || {
+                receiver_thread(part_sender, recv_stop_event);
+            })
+            .unwrap();
+
+        let mut bg_state = BackgroundState::new(part_receiver);
+
+        loop {
+            if stop_event.load(Ordering::Relaxed) {
+                break 'outer;
+            }
+
+            let start = Instant::now();
+
+            bg_state.recv_some_messages();
+
+            let num_pending = bg_state.pending_messages.len();
+            // FIXME: reconnect on errors here?
+            let process_results = bg_state.process_pending().unwrap();
+
+            for data in process_results.processed {
+                let img = render_to_rgb(data.get_latest(), data.get_bbox());
+                sender
+                    .send(AcqMessage::UpdatedData {
+                        id: data.get_id().to_string(),
+                        img,
+                        bbox: data.get_bbox().to_owned(),
+                    })
+                    .unwrap();
+            }
+
+            sender
+                .send(AcqMessage::Stats(ProcessingStats {
+                    num_pending,
+                    finished: process_results.to_remove.len(),
+                }))
+                .unwrap();
+
+            for id in process_results.to_remove {
+                bg_state.acquisitions.remove(&id);
+            }
+
+            let elapsed = start.elapsed();
+            let limit = Duration::from_millis(5);
+
+            if elapsed < limit {
+                std::thread::sleep(limit - elapsed);
+            }
+        }
+    }
+
+    info!("stopped background thread...");
 }

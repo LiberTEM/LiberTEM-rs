@@ -1,4 +1,4 @@
 pub mod app;
-pub mod messages;
-pub mod conn;
 pub mod background;
+pub mod conn;
+pub mod messages;

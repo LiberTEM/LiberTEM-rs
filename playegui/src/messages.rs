@@ -1,11 +1,9 @@
-use std::net::TcpStream;
+use std::{fmt::Debug, net::TcpStream};
 
-use egui::{TextureHandle, ColorImage, plot::Polygon, Vec2};
-use log::error;
-use ndarray::Array2;
+use egui::ColorImage;
 use serde::Deserialize;
 use serde_json::Value;
-use websocket::{sync::Client, OwnedMessage, Message};
+use websocket::{sync::Client, Message, OwnedMessage, WebSocketError};
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct AcquisitionStarted {
@@ -40,127 +38,146 @@ pub struct AcquisitionResult {
 }
 
 #[derive(Clone, Debug)]
-pub struct BBox 
-{
+pub struct BBox {
     pub ymin: u16,
     pub ymax: u16,
     pub xmin: u16,
     pub xmax: u16,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ProcessingStats {
+    pub num_pending: usize,
+    pub finished: usize,
+}
+
 #[derive(Clone)]
 pub enum AcqMessage {
     AcquisitionStarted(AcquisitionStarted),
     AcquisitionEnded(AcquisitionEnded),
-    AcquisitionResult(AcquisitionResult, Vec<u8>),
-    UpdatedData(String, ColorImage, BBox),
+    Stats(ProcessingStats),
+    UpdatedData {
+        id: String,
+        img: ColorImage,
+        bbox: BBox,
+    },
 }
 
-impl core::fmt::Debug for AcqMessage {
+#[derive(Clone)]
+pub enum MessagePart {
+    AcquisitionStarted(AcquisitionStarted),
+    AcquisitionEnded(AcquisitionEnded),
+    AcquisitionResultHeader(AcquisitionResult),
+    AcquisitionBinaryPart(Vec<u8>),
+}
+
+impl Debug for MessagePart {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AcquisitionStarted(arg0) => {
                 f.debug_tuple("AcquisitionStarted").field(arg0).finish()
             }
             Self::AcquisitionEnded(arg0) => f.debug_tuple("AcquisitionEnded").field(arg0).finish(),
-            Self::AcquisitionResult(..) => f.write_str("AcquisitionResult { .. }"),
-            Self::UpdatedData(arg0, arg1, arg2) => f.debug_tuple("UpdatedData").field(arg0).field(arg2).finish(),
+            Self::AcquisitionResultHeader(arg0) => f
+                .debug_tuple("AcquisitionResultHeader")
+                .field(arg0)
+                .finish(),
+            Self::AcquisitionBinaryPart(_arg0) => f.write_str("AcquisitionBinaryPart { .. } "),
         }
     }
 }
 
-fn get_text_msg(client: &mut Client<TcpStream>) -> Option<String> {
-    let message = client.recv_message();
-    let message = &match message {
-        Ok(websocket::OwnedMessage::Text(msg)) => msg,
-        Ok(websocket::OwnedMessage::Ping(msg)) => {
-            client.send_message(&Message::pong(msg)).unwrap();
-            return None;
-        },
-        Ok(m) => {
-            error!("can't handle message here: {m:?}");
-            return None;
+impl Debug for AcqMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AcquisitionStarted(arg0) => {
+                f.debug_tuple("AcquisitionStarted").field(arg0).finish()
+            }
+            Self::AcquisitionEnded(arg0) => f.debug_tuple("AcquisitionEnded").field(arg0).finish(),
+            Self::UpdatedData { id, bbox, img: _ } => f
+                .debug_struct("UpdatedData")
+                .field("id", id)
+                .field("bbox", bbox)
+                .finish(),
+            Self::Stats(s) => f.debug_tuple("Stats").field(s).finish(),
         }
-        Err(e) => {
-            error!("error receiving message: {e:?}");
-            return None;
-        }
-    };
-
-    Some(message.to_string())
+    }
 }
 
-fn get_binary_msg(client: &mut Client<TcpStream>) -> Option<Vec<u8>> {
-    let message = client.recv_message();
-    let message = &match message {
-        Ok(websocket::OwnedMessage::Binary(msg)) => msg,
-        Ok(websocket::OwnedMessage::Ping(msg)) => {
-            client.send_message(&Message::pong(msg)).unwrap();
-            return None;
-        },
-        Ok(m) => {
-            error!("can't handle message here: {m:?}");
-            return None;
-        }
-        Err(e) => {
-            error!("error receiving message: {e:?}");
-            return None;
-        }
-    };
+#[derive(Debug)]
+pub enum CommError {
+    /// An unexpected message was received which we don't know how to handle in this state
+    UnknownMessageError(Option<websocket::OwnedMessage>),
 
-    Some(message.to_owned())
+    /// An error occured while deserializing json data
+    SerializationError(serde_json::Error),
+
+    /// The JSON contents were not as expected
+    FormatError,
+
+    /// Some websocket error happened while trying to receive or send messages
+    WebsocketError(WebSocketError),
+
+    /// There are currently no messages available on the socket
+    NoMessagesAvailable,
+
+    /// The websocket connection has closed
+    Close,
 }
 
-impl AcqMessage {
-    pub fn from_socket(client: &mut Client<TcpStream>) -> Option<Self> {
-        let message = &get_text_msg(client)?;
-        let obj: Value = match serde_json::from_str(message) {
-            Ok(obj) => obj,
-            Err(_e) => return None,
+impl From<WebSocketError> for CommError {
+    fn from(err: WebSocketError) -> Self {
+        match err {
+            WebSocketError::NoDataAvailable => CommError::NoMessagesAvailable,
+            other => CommError::WebsocketError(other),
+        }
+    }
+}
+
+impl From<serde_json::Error> for CommError {
+    fn from(err: serde_json::Error) -> Self {
+        CommError::SerializationError(err)
+    }
+}
+
+/// Get a message and already handle ping/pong websocket stuff
+fn get_message(client: &mut Client<TcpStream>) -> Result<OwnedMessage, CommError> {
+    let message = client.recv_message()?;
+
+    if let websocket::OwnedMessage::Ping(msg) = &message {
+        client.send_message(&Message::pong(&msg[..]))?;
+        Err(CommError::NoMessagesAvailable)
+    } else {
+        Ok(message)
+    }
+}
+
+impl MessagePart {
+    pub fn from_socket(client: &mut Client<TcpStream>) -> Result<Self, CommError> {
+        let ws_message = get_message(client)?;
+        let message = match ws_message {
+            OwnedMessage::Text(msg) => msg,
+            OwnedMessage::Binary(msg) => return Ok(Self::AcquisitionBinaryPart(msg)),
+            OwnedMessage::Close(_) => return Err(CommError::Close),
+            OwnedMessage::Ping(_) | OwnedMessage::Pong(_) => {
+                return Err(CommError::UnknownMessageError(Some(ws_message)))
+            }
         };
-        let obj = obj.as_object()?;
-        let event = obj.get("event")?;
-        let event = event.as_str()?;
+
+        let obj: Value = serde_json::from_str(&message)?;
+        let event = obj
+            .as_object()
+            .and_then(|obj| obj.get("event"))
+            .and_then(|event| event.as_str())
+            .ok_or(CommError::FormatError)?;
 
         match event {
-            "ACQUISITION_STARTED" => {
-                let msg: Result<AcquisitionStarted, _> = serde_json::from_str(message);
-                match msg {
-                    Ok(msg) => Some(Self::AcquisitionStarted(msg)),
-                    Err(err) => {
-                        error!("deserialization failed: {:?}", err);
-                        None
-                    }
-                }
-            }
-            "ACQUISITION_ENDED" => {
-                let msg: Result<AcquisitionEnded, _> = serde_json::from_str(message);
-                match msg {
-                    Ok(msg) => Some(Self::AcquisitionEnded(msg)),
-                    Err(err) => {
-                        error!("deserialization failed: {:?}", err);
-                        None
-                    }
-                }
-            }
-            "RESULT" => {
-                let msg: Result<AcquisitionResult, _> = serde_json::from_str(message);
-                match msg {
-                    Ok(msg) => {
-                        // receive compound binary message:
-                        let data = get_binary_msg(client)?;
-                        Some(Self::AcquisitionResult(msg, data))
-                    }
-                    Err(err) => {
-                        error!("deserialization failed: {:?}", err);
-                        None
-                    }
-                }
-            }
-            _ => {
-                error!("unknown event type: {}", event);
-                None
-            }
+            "ACQUISITION_STARTED" => Ok(Self::AcquisitionStarted(serde_json::from_str(&message)?)),
+            "ACQUISITION_ENDED" => Ok(Self::AcquisitionEnded(serde_json::from_str(&message)?)),
+            "RESULT" => Ok(Self::AcquisitionResultHeader(serde_json::from_str(
+                &message,
+            )?)),
+            _ => Err(CommError::UnknownMessageError(None)),
         }
     }
 }
