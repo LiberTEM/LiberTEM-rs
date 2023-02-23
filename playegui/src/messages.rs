@@ -27,14 +27,21 @@ pub enum ResultEncoding {
     BSLZ4,
 }
 
+
 #[derive(Deserialize, Debug, Clone)]
-pub struct AcquisitionResult {
+pub struct ChannelResult {
     pub bbox: (u16, u16, u16, u16),
     pub shape: (u16, u16),
     pub delta_shape: (u16, u16),
     pub dtype: ResultDType,
     pub encoding: ResultEncoding,
+    pub name: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct AcquisitionResult {
     pub id: String,
+    pub channels: Vec<ChannelResult>,
 }
 
 #[derive(Clone, Debug)]

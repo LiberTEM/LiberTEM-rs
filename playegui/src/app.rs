@@ -37,6 +37,14 @@ impl AggregateStats {
         }
     }
 
+    fn with_updated_ts(self) -> Self {
+        AggregateStats {
+            ts: Instant::now(),
+            num_pending: self.num_pending,
+            finished: self.finished,
+        }
+    }
+
     fn aggregate(&mut self, stats: &ProcessingStats) {
         self.num_pending = stats.num_pending;
         self.finished += stats.finished;
@@ -202,7 +210,7 @@ impl TemplateApp {
             Some((_older, newer)) => {
                 if newer.ts.elapsed() > Duration::from_secs_f32(delta_t) {
                     // drop older and replace newer:
-                    self.previous_stats = Some((newer.clone(), self.stats.clone()));
+                    self.previous_stats = Some((newer.clone(), self.stats.clone().with_updated_ts()));
                 }
             }
         }
@@ -256,7 +264,7 @@ impl eframe::App for TemplateApp {
                     let delta_f = (newer.finished - older.finished) as f32;
                     let delta_t = (newer.ts - older.ts).as_secs_f32();
                     let rate = delta_f / delta_t;
-                    ui.label(format!("Avg. update rate: {:.3}/s", rate));
+                    ui.label(format!("Update rate: {:.3}/s", rate));
                 }
 
                 // ui.horizontal(|ui| {
@@ -286,7 +294,7 @@ impl eframe::App for TemplateApp {
                 .y_grid_spacer(Box::new(|_grid_input| Vec::new()))
                 .data_aspect(1.0);
 
-            // maybe load textures
+            // maybe load textures (if they aren't already):
             let aq = std::mem::take(&mut self.acquisitions);
             self.acquisitions = aq
                 .into_iter()

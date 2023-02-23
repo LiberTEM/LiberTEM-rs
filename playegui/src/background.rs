@@ -135,17 +135,20 @@ impl BackgroundState {
                 MessagePart::AcquisitionResultHeader(result_header) => {
                     // FIXME: if we have more than one acquisition, how do we handle that?
                     // should we have separate headers?
-                    let num_expected = 1;
+                    let num_expected = result_header.channels.len();
                     if self.pending_messages.len() < num_expected {
                         self.pending_messages.push_front(front_clone);
                         break;
                     }
-                    let msg = self.pending_messages.pop_front().unwrap();
-                    if let MessagePart::AcquisitionBinaryPart(bin) = msg {
-                        self.merge_result(&bin, &result_header);
-                        ids.push(result_header.id.clone());
-                    } else {
-                        return Err(ParseError::UnexpectedMessage(msg));
+                    for (_, chan) in (0..num_expected).zip(result_header.channels.iter()) {
+                        // won't panic: we checked length before
+                        let msg = self.pending_messages.pop_front().unwrap();
+                        if let MessagePart::AcquisitionBinaryPart(bin) = msg {
+                            self.merge_results(&bin, &result_header);
+                            ids.push(result_header.id.clone());
+                        } else {
+                            return Err(ParseError::UnexpectedMessage(msg));
+                        }
                     }
                 }
             }
@@ -160,7 +163,7 @@ impl BackgroundState {
         })
     }
 
-    fn merge_result(&mut self, data: &[u8], result: &AcquisitionResult) {
+    fn merge_results(&mut self, data: &[u8], result: &AcquisitionResult) {
         let key = result.id.clone();
         let mut delta_full = Array2::zeros([result.shape.0 as usize, result.shape.1 as usize]);
 
