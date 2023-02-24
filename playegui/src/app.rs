@@ -13,9 +13,9 @@ use crossbeam::channel::{unbounded, Receiver, Sender};
 use eframe::epaint::ahash::HashSet;
 use egui::{
     plot::{Corner, HLine, Legend, MarkerShape, Plot, PlotImage, PlotPoint, Points, Polygon},
-    vec2, Color32, ColorImage, TextureHandle, TextureOptions,
+    vec2, ColorImage, TextureHandle, TextureOptions,
 };
-use log::{debug, trace};
+use log::{trace};
 
 use crate::{
     background::background_thread,
@@ -92,38 +92,14 @@ impl Default for RingParams {
 // #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
     ring_params: RingParams,
-
-    data_source: Option<Receiver<AcqMessage>>,
-
-    control_channel: Option<Sender<ControlMessage>>,
-
+    data_source: Receiver<AcqMessage>,
+    control_channel: Sender<ControlMessage>,
     acquisitions: HashMap<ResultId, (ImageOrTexture, BBox)>,
-
     acquisition_history: Vec<ResultId>,
-
     stop_event: Arc<AtomicBool>,
-
-    bg_thread: Option<JoinHandle<()>>,
-
+    bg_thread: Option<JoinHandle<()>>,  // Option<> so we can `take` it out when joining
     stats: AggregateStats,
-
     previous_stats: Option<(AggregateStats, AggregateStats)>,
-}
-
-impl Default for TemplateApp {
-    fn default() -> Self {
-        Self {
-            ring_params: Default::default(),
-            data_source: Default::default(),
-            acquisitions: HashMap::new(),
-            acquisition_history: Vec::new(),
-            stop_event: Arc::new(AtomicBool::new(false)),
-            stats: AggregateStats::new(),
-            previous_stats: None,
-            bg_thread: None,
-            control_channel: None,
-        }
-    }
 }
 
 fn circle_points(cx: f64, cy: f64, r: f64) -> Vec<[f64; 2]> {
@@ -144,7 +120,7 @@ fn circle_points(cx: f64, cy: f64, r: f64) -> Vec<[f64; 2]> {
 
 impl TemplateApp {
     /// Called once before the first frame.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
@@ -166,14 +142,14 @@ impl TemplateApp {
 
         Self {
             ring_params: Default::default(),
-            data_source: Some(data_source),
+            data_source,
             acquisitions: HashMap::new(),
             acquisition_history: Vec::new(),
             stop_event,
             stats: AggregateStats::new(),
             previous_stats: None,
             bg_thread: Some(join_handle),
-            control_channel: Some(control_channel),
+            control_channel,
         }
     }
 
@@ -198,64 +174,72 @@ impl TemplateApp {
 
 impl TemplateApp {
     /// Applies one or more messages.
+    /// l
+
+    fn apply_acq_message(&mut self, msg: AcqMessage) -> Option<ProcessingStats> {
+        match msg {
+            AcqMessage::AcquisitionStarted(_started) => {}
+            AcqMessage::AcquisitionEnded(_ended) => {
+                // meh
+                //self.acquisitions.remove(&ended.id);
+                trace!(
+                    "before: {} {}",
+                    self.acquisition_history.len(),
+                    self.acquisitions.len()
+                );
+                let len = self.acquisition_history.len();
+                let max_size = 2;
+                if len > max_size {
+                    self.acquisition_history
+                        .drain(..len - max_size)
+                        .for_each(|k| {
+                            trace!("removing {k:?}");
+                            self.acquisitions.remove(&k);
+                        });
+                }
+                trace!(
+                    "after: {} {}",
+                    self.acquisition_history.len(),
+                    self.acquisitions.len()
+                );
+            }
+            AcqMessage::Stats(stats) => {
+                return Some(stats);
+            }
+            AcqMessage::UpdatedData {
+                id,
+                img,
+                bbox,
+                udf_name,
+                channel_name,
+            } => {
+                trace!("inserting id {id}");
+                let key = ResultId {
+                    acquisition: id,
+                    udf_name,
+                    channel_name,
+                };
+                if self
+                    .acquisitions
+                    .insert(key.clone(), (ImageOrTexture::Image(img), bbox))
+                    .is_none()
+                {
+                    self.acquisition_history.push(key);
+                }
+            }
+        }
+
+        None
+    }
+
     fn apply_acq_messages(&mut self) {
         let mut new_stats: Vec<ProcessingStats> = Vec::new();
 
-        if let Some(receiver) = &self.data_source {
-            while !receiver.is_empty() {
-                if let Ok(msg) = receiver.try_recv() {
-                    trace!("{msg:?}");
-                    match msg {
-                        AcqMessage::AcquisitionStarted(_started) => {}
-                        AcqMessage::AcquisitionEnded(_ended) => {
-                            // meh
-                            //self.acquisitions.remove(&ended.id);
-                            trace!(
-                                "before: {} {}",
-                                self.acquisition_history.len(),
-                                self.acquisitions.len()
-                            );
-                            let len = self.acquisition_history.len();
-                            let max_size = 2;
-                            if len > max_size {
-                                self.acquisition_history
-                                    .drain(..len - max_size)
-                                    .for_each(|k| {
-                                        trace!("removing {k:?}");
-                                        self.acquisitions.remove(&k);
-                                    });
-                            }
-                            trace!(
-                                "after: {} {}",
-                                self.acquisition_history.len(),
-                                self.acquisitions.len()
-                            );
-                        }
-                        AcqMessage::Stats(stats) => {
-                            new_stats.push(stats);
-                        }
-                        AcqMessage::UpdatedData {
-                            id,
-                            img,
-                            bbox,
-                            udf_name,
-                            channel_name,
-                        } => {
-                            trace!("inserting id {id}");
-                            let key = ResultId {
-                                acquisition: id,
-                                udf_name,
-                                channel_name,
-                            };
-                            if self
-                                .acquisitions
-                                .insert(key.clone(), (ImageOrTexture::Image(img), bbox))
-                                .is_none()
-                            {
-                                self.acquisition_history.push(key);
-                            }
-                        }
-                    }
+        while !self.data_source.is_empty() {
+            if let Ok(msg) = self.data_source.try_recv() {
+                trace!("{msg:?}");
+                if let Some(stats) = self.apply_acq_message(msg) {
+                    new_stats.push(stats);
                 }
             }
         }
@@ -323,23 +307,20 @@ impl eframe::App for TemplateApp {
             });
         });
 
-        let send_ring_params =
-            |ring_params: &RingParams, channel: &Option<Sender<ControlMessage>>| {
-                if let Some(channel) = &channel {
-                    channel
-                        .send(ControlMessage::UpdateParams {
-                            params: UpdateParams {
-                                parameters: UpdateParamsInner {
-                                    cx: ring_params.cx,
-                                    cy: ring_params.cy,
-                                    ri: ring_params.ri,
-                                    ro: ring_params.ro,
-                                },
-                            },
-                        })
-                        .unwrap();
-                }
-            };
+        let send_ring_params = |ring_params: &RingParams, channel: &Sender<ControlMessage>| {
+            channel
+                .send(ControlMessage::UpdateParams {
+                    params: UpdateParams {
+                        parameters: UpdateParamsInner {
+                            cx: ring_params.cx,
+                            cy: ring_params.cy,
+                            ri: ring_params.ri,
+                            ro: ring_params.ro,
+                        },
+                    },
+                })
+                .unwrap();
+        };
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
             ui.heading("Side Panel");
@@ -452,7 +433,7 @@ impl eframe::App for TemplateApp {
                         }
                     }
                 });
-                
+
                 let plot_cx = (self.ring_params.cx / 516.0 + 1.0) as f64;
                 let plot_cy = 1.0 - (self.ring_params.cy / 516.0) as f64;
 
@@ -460,7 +441,6 @@ impl eframe::App for TemplateApp {
                     .filled(true)
                     .radius(3.0)
                     .shape(MarkerShape::Square);
-
 
                 let polygon: Polygon = Polygon::new(circle_points(
                     plot_cx,
@@ -485,13 +465,13 @@ impl eframe::App for TemplateApp {
     }
 
     /// Called by the frame work to save state before shutdown.
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         // eframe::set_value(storage, eframe::APP_KEY, self);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.stop_event.store(true, Relaxed);
-        if let Some(bg_thread) = self.bg_thread.take() {
+        if let Some(_bg_thread) = self.bg_thread.take() {
             // bg_thread.join().unwrap();
             // FIXME: need to debug this
         }
