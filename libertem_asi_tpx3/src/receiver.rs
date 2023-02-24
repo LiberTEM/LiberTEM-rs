@@ -169,6 +169,10 @@ fn wait_for_acquisition(
                     shm,
                 ) {
                     Ok(_) => {}
+                    // need to bubble up stream errors without sending them to the main thread:
+                    Err(e @ AcquisitionError::StreamError { .. }) => {
+                        return Err(e);
+                    }
                     Err(e) => {
                         let msg = format!("Error while an acquisition was running: {e:?}");
                         from_thread_s
