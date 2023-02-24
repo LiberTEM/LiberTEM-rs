@@ -210,7 +210,7 @@ impl TemplateApp {
                         AcqMessage::AcquisitionEnded(_ended) => {
                             // meh
                             //self.acquisitions.remove(&ended.id);
-                            debug!(
+                            trace!(
                                 "before: {} {}",
                                 self.acquisition_history.len(),
                                 self.acquisitions.len()
@@ -225,7 +225,7 @@ impl TemplateApp {
                                         self.acquisitions.remove(&k);
                                     });
                             }
-                            debug!(
+                            trace!(
                                 "after: {} {}",
                                 self.acquisition_history.len(),
                                 self.acquisitions.len()
@@ -452,13 +452,15 @@ impl eframe::App for TemplateApp {
                         }
                     }
                 });
-                let marker = Points::new(vec![[1.5, 0.5]])
+                
+                let plot_cx = (self.ring_params.cx / 516.0 + 1.0) as f64;
+                let plot_cy = 1.0 - (self.ring_params.cy / 516.0) as f64;
+
+                let marker = Points::new(vec![[plot_cx, plot_cy]])
                     .filled(true)
                     .radius(3.0)
                     .shape(MarkerShape::Square);
 
-                let plot_cx = (self.ring_params.cx / 516.0 + 1.0) as f64;
-                let plot_cy = (self.ring_params.cy / 516.0) as f64;
 
                 let polygon: Polygon = Polygon::new(circle_points(
                     plot_cx,

@@ -9,13 +9,13 @@ use std::{
 
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use egui::ColorImage;
-use log::{debug, error, info};
-use ndarray::{s, Array2, ArrayViewMut2};
-use websocket::{ClientBuilder, Message};
+use log::{error, info};
+use ndarray::{s, Array2, ArrayViewMut2, Zip};
+use rayon::prelude::{ParallelBridge, ParallelIterator};
 
-use crate::messages::{
+use crate::{messages::{
     AcqMessage, BBox, ChannelDeltaResult, MessagePart, ProcessingStats, ControlMessage,
-};
+}, receiver::receiver_thread};
 
 pub fn decompress_into<T>(
     out_size: [usize; 2],
@@ -161,6 +161,7 @@ impl BackgroundState {
             let front_clone = front_msg.clone();
 
             match front_msg {
+                MessagePart::Empty => {},
                 MessagePart::AcquisitionStarted(_) => {}
                 MessagePart::AcquisitionEnded(ended) => {
                     ended_ids.push(ended.id);
@@ -290,8 +291,8 @@ fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
 
     let flat_shape = data.shape()[0] * data.shape()[1];
     let data_flat = data.to_shape(flat_shape).unwrap();
-    let iter_flat = data_flat.indexed_iter();
-
+    let iter_flat = (0..).zip(data_flat.iter());
+    
     let mapped: Vec<u8> = if *vmax == *vmin {
         iter_flat.flat_map(to_rgba).collect()
     } else {
@@ -302,66 +303,6 @@ fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
     };
 
     ColorImage::from_rgba_unmultiplied([shape[0], shape[1]], &mapped)
-}
-
-fn receiver_thread(control_channel: Receiver<ControlMessage>, result_channel: Sender<MessagePart>, stop_event: Arc<AtomicBool>) {
-    'outer: loop {
-        let mut client = match ClientBuilder::new("ws://localhost:8444")
-            .unwrap() // FIXME: parse error in case of bad address; handle once it's user-controlled
-            .connect_insecure()
-        {
-            Ok(client) => client,
-            Err(e) => {
-                error!("Could not connect: {e}; trying to reconnect...");
-                if stop_event.load(Ordering::Relaxed) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(1000));
-                continue;
-            }
-        };
-
-        'inner: loop {
-            if stop_event.load(Ordering::Relaxed) {
-                break 'outer;
-            }
-
-            match control_channel.try_recv() {
-                Ok(ControlMessage::UpdateParams { params }) => {
-                    let msg = serde_json::to_string(&params).unwrap();
-
-                    if client.send_message(&Message::text(msg)).is_err() {
-                        error!("could not send parameter update, reconnecting...");
-                        break 'outer;
-                    }
-                }
-                Err(TryRecvError::Disconnected) => break 'outer,
-                Err(TryRecvError::Empty) => {},
-            }
-
-            match MessagePart::from_socket(&mut client) {
-                Ok(part) => {
-                    debug!("Got a message: {part:?}");
-                    result_channel.send(part).unwrap();
-                }
-                Err(crate::messages::CommError::Close) => {
-                    error!("Connection closed, reconnecting...");
-                    break 'inner;
-                }
-                Err(crate::messages::CommError::NoMessagesAvailable) => {
-                    // FIXME: sometimes this means the connection is done...
-                    error!("NoMessagesAvailable, reconnecting...");
-                    break 'inner;
-                    // continue;
-                }
-                Err(e) => {
-                    error!("Got an error while receiving ({e:?}), reconnecting...");
-                    break 'inner;
-                }
-            }
-        }
-    }
-    info!("stopped receiver thread...");
 }
 
 pub fn background_thread(control_channel: Receiver<ControlMessage>, acq_message_sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>) {

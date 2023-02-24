@@ -3,7 +3,6 @@ use std::{fmt::Debug, net::TcpStream};
 use egui::ColorImage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use websocket::{sync::Client, Message, OwnedMessage, WebSocketError};
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct AcquisitionStarted {
@@ -26,7 +25,6 @@ pub enum ResultEncoding {
     #[serde(rename = "bslz4")]
     BSLZ4,
 }
-
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct ChannelDeltaResult {
@@ -58,7 +56,6 @@ pub struct UpdateParams {
     pub parameters: UpdateParamsInner,
 }
 
-
 #[derive(Clone, Debug)]
 pub struct BBox {
     pub ymin: u16,
@@ -89,6 +86,7 @@ pub enum AcqMessage {
 
 #[derive(Clone)]
 pub enum MessagePart {
+    Empty,
     AcquisitionStarted(AcquisitionStarted),
     AcquisitionEnded(AcquisitionEnded),
     AcquisitionResultHeader(AcquisitionResult),
@@ -99,6 +97,9 @@ pub enum MessagePart {
 impl Debug for MessagePart {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Empty => {
+                f.debug_tuple("Empty").finish()
+            }
             Self::AcquisitionStarted(arg0) => {
                 f.debug_tuple("AcquisitionStarted").field(arg0).finish()
             }
@@ -108,10 +109,7 @@ impl Debug for MessagePart {
                 .field(arg0)
                 .finish(),
             Self::AcquisitionBinaryPart(_arg0) => f.write_str("AcquisitionBinaryPart { .. } "),
-            Self::UpdateParams(inner) => f
-                .debug_tuple("UpdateParams")
-                .field(inner)
-                .finish(),
+            Self::UpdateParams(inner) => f.debug_tuple("UpdateParams").field(inner).finish(),
         }
     }
 }
@@ -123,7 +121,13 @@ impl Debug for AcqMessage {
                 f.debug_tuple("AcquisitionStarted").field(arg0).finish()
             }
             Self::AcquisitionEnded(arg0) => f.debug_tuple("AcquisitionEnded").field(arg0).finish(),
-            Self::UpdatedData { id, bbox, img: _, udf_name, channel_name } => f
+            Self::UpdatedData {
+                id,
+                bbox,
+                img: _,
+                udf_name,
+                channel_name,
+            } => f
                 .debug_struct("UpdatedData")
                 .field("id", id)
                 .field("bbox", bbox)
@@ -138,7 +142,10 @@ impl Debug for AcqMessage {
 #[derive(Debug)]
 pub enum CommError {
     /// An unexpected message was received which we don't know how to handle in this state
-    UnknownMessageError(Option<websocket::OwnedMessage>),
+    UnknownMessageError,
+
+    ///
+    UnknownEventError { event: String },
 
     /// An error occured while deserializing json data
     SerializationError(serde_json::Error),
@@ -147,7 +154,7 @@ pub enum CommError {
     FormatError,
 
     /// Some websocket error happened while trying to receive or send messages
-    WebsocketError(WebSocketError),
+    WebsocketError(tungstenite::Error),
 
     /// There are currently no messages available on the socket
     NoMessagesAvailable,
@@ -156,10 +163,20 @@ pub enum CommError {
     Close,
 }
 
-impl From<WebSocketError> for CommError {
-    fn from(err: WebSocketError) -> Self {
+impl From<tungstenite::Error> for CommError {
+    fn from(err: tungstenite::Error) -> Self {
         match err {
-            WebSocketError::NoDataAvailable => CommError::NoMessagesAvailable,
+            // tungstenite::Error::ConnectionClosed => todo!(),
+            // tungstenite::Error::AlreadyClosed => todo!(),
+            // tungstenite::Error::Io(_) => todo!(),
+            // tungstenite::Error::Tls(_) => todo!(),
+            // tungstenite::Error::Capacity(_) => todo!(),
+            // tungstenite::Error::Protocol(_) => todo!(),
+            // tungstenite::Error::SendQueueFull(_) => todo!(),
+            // tungstenite::Error::Utf8 => todo!(),
+            // tungstenite::Error::Url(_) => todo!(),
+            // tungstenite::Error::Http(_) => todo!(),
+            // tungstenite::Error::HttpFormat(_) => todo!(),
             other => CommError::WebsocketError(other),
         }
     }
@@ -171,30 +188,12 @@ impl From<serde_json::Error> for CommError {
     }
 }
 
-/// Get a message and already handle ping/pong websocket stuff
-fn get_message(client: &mut Client<TcpStream>) -> Result<OwnedMessage, CommError> {
-    let message = client.recv_message()?;
-
-    if let websocket::OwnedMessage::Ping(msg) = &message {
-        client.send_message(&Message::pong(&msg[..]))?;
-        Err(CommError::NoMessagesAvailable)
-    } else {
-        Ok(message)
-    }
-}
-
 impl MessagePart {
-    pub fn from_socket(client: &mut Client<TcpStream>) -> Result<Self, CommError> {
-        let ws_message = get_message(client)?;
-        let message = match ws_message {
-            OwnedMessage::Text(msg) => msg,
-            OwnedMessage::Binary(msg) => return Ok(Self::AcquisitionBinaryPart(msg)),
-            OwnedMessage::Close(_) => return Err(CommError::Close),
-            OwnedMessage::Ping(_) | OwnedMessage::Pong(_) => {
-                return Err(CommError::UnknownMessageError(Some(ws_message)))
-            }
-        };
+    pub fn from_binary(data: Vec<u8>) -> Self  {
+        Self::AcquisitionBinaryPart(data)
+    }
 
+    pub fn from_text(message: String) -> Result<Self, CommError> {
         let obj: Value = serde_json::from_str(&message)?;
         let event = obj
             .as_object()
@@ -211,16 +210,15 @@ impl MessagePart {
             "UPDATE_PARAMS" => {
                 let params: UpdateParams = serde_json::from_str(&message)?;
                 Ok(Self::UpdateParams(params.parameters))
-            },
-            _ => Err(CommError::UnknownMessageError(None)),
+            }
+            event => Err(CommError::UnknownEventError { event: event.to_string() } ),
         }
     }
 }
-
 
 /// Messages sent from the UI thread to the background processing thread,
 /// ultimately being sent over the websocket connection:
 #[derive(Clone, Debug)]
 pub enum ControlMessage {
-    UpdateParams { params: UpdateParams }  // yuck: nesting...
+    UpdateParams { params: UpdateParams }, // yuck: nesting...
 }
