@@ -3,7 +3,7 @@ use std::{
     f64::consts::PI,
     sync::{
         atomic::{AtomicBool, Ordering::Relaxed},
-        Arc,
+        Arc, Mutex,
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -15,7 +15,8 @@ use egui::{
     plot::{Corner, HLine, Legend, MarkerShape, Plot, PlotImage, PlotPoint, Points, Polygon},
     vec2, ColorImage, TextureHandle, TextureOptions,
 };
-use log::{trace};
+use log::trace;
+use ndarray::Array2;
 
 use crate::{
     background::background_thread,
@@ -23,6 +24,13 @@ use crate::{
         AcqMessage, BBox, ControlMessage, ProcessingStats, UpdateParams, UpdateParamsInner,
     },
 };
+
+#[derive(Debug)]
+pub enum ConnectionStatus {
+    Connecting,
+    Connected,
+    Error,
+}
 
 /// Images need to be uploaded and become textures, textures can be used
 /// directly
@@ -94,12 +102,13 @@ pub struct TemplateApp {
     ring_params: RingParams,
     data_source: Receiver<AcqMessage>,
     control_channel: Sender<ControlMessage>,
-    acquisitions: HashMap<ResultId, (ImageOrTexture, BBox)>,
+    acquisitions: HashMap<ResultId, (ImageOrTexture, BBox, Array2<f32>)>,
     acquisition_history: Vec<ResultId>,
     stop_event: Arc<AtomicBool>,
-    bg_thread: Option<JoinHandle<()>>,  // Option<> so we can `take` it out when joining
+    bg_thread: Option<JoinHandle<()>>, // Option<> so we can `take` it out when joining
     stats: AggregateStats,
     previous_stats: Option<(AggregateStats, AggregateStats)>,
+    conn_status: Arc<Mutex<ConnectionStatus>>,
 }
 
 fn circle_points(cx: f64, cy: f64, r: f64) -> Vec<[f64; 2]> {
@@ -138,7 +147,10 @@ impl TemplateApp {
         //     return loaded;
         // }
 
-        let (join_handle, data_source, control_channel) = Self::connect(Arc::clone(&stop_event));
+        let conn_status = Arc::new(Mutex::new(ConnectionStatus::Connecting));
+
+        let (join_handle, data_source, control_channel) =
+            Self::connect(Arc::clone(&stop_event), Arc::clone(&conn_status));
 
         Self {
             ring_params: Default::default(),
@@ -150,11 +162,13 @@ impl TemplateApp {
             previous_stats: None,
             bg_thread: Some(join_handle),
             control_channel,
+            conn_status,
         }
     }
 
     pub fn connect(
         stop_event: Arc<AtomicBool>,
+        status: Arc<Mutex<ConnectionStatus>>,
     ) -> (JoinHandle<()>, Receiver<AcqMessage>, Sender<ControlMessage>) {
         // start background thread
         let (s, data_source) = unbounded::<AcqMessage>();
@@ -164,7 +178,7 @@ impl TemplateApp {
         let join_handle = std::thread::Builder::new()
             .name("background".to_string())
             .spawn(move || {
-                background_thread(rc, s, stop_event);
+                background_thread(rc, s, stop_event, status);
             })
             .unwrap();
 
@@ -212,6 +226,7 @@ impl TemplateApp {
                 bbox,
                 udf_name,
                 channel_name,
+                data,
             } => {
                 trace!("inserting id {id}");
                 let key = ResultId {
@@ -221,7 +236,7 @@ impl TemplateApp {
                 };
                 if self
                     .acquisitions
-                    .insert(key.clone(), (ImageOrTexture::Image(img), bbox))
+                    .insert(key.clone(), (ImageOrTexture::Image(img), bbox, data))
                     .is_none()
                 {
                     self.acquisition_history.push(key);
@@ -346,6 +361,7 @@ impl eframe::App for TemplateApp {
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.label(format!("Connection: {:?}", self.conn_status.lock().unwrap()));
                 ui.label(format!("Pending messages: {:?}", self.stats.num_pending));
                 ui.label(format!("Finished Acquisitions: {:?}", self.stats.finished));
 
@@ -387,7 +403,7 @@ impl eframe::App for TemplateApp {
             let aq = std::mem::take(&mut self.acquisitions);
             self.acquisitions = aq
                 .into_iter()
-                .map(|(id, (img_or_texture, bbox))| {
+                .map(|(id, (img_or_texture, bbox, data))| {
                     let tex = match img_or_texture {
                         ImageOrTexture::Image(img) => {
                             let tex_options: TextureOptions = TextureOptions {
@@ -398,7 +414,7 @@ impl eframe::App for TemplateApp {
                         }
                         ImageOrTexture::Texture(t) => t,
                     };
-                    (id, (ImageOrTexture::Texture(tex), bbox))
+                    (id, (ImageOrTexture::Texture(tex), bbox, data))
                 })
                 .collect();
 
@@ -413,7 +429,7 @@ impl eframe::App for TemplateApp {
                         })
                         .unwrap();
                     if let Some(item) = self.acquisitions.get(id) {
-                        let (img_or_texture, bbox) = item;
+                        let (img_or_texture, bbox, data) = item;
                         if let ImageOrTexture::Texture(texture_id) = img_or_texture {
                             let pos =
                                 PlotPoint::new(idx as f32 + texture_id.aspect_ratio() / 2.0, 0.5);
