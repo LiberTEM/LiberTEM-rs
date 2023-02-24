@@ -296,17 +296,17 @@ class WSServer:
             await self.broadcast(result.compressed_data)
 
     async def acquisition_loop(self):
-        min_delta = 0.01
+        min_delta = 0.05
         while True:
-            pending_acq = await sync_to_async(self.conn.wait_for_acquisition, timeout=10)
-            if pending_acq is None:
-                continue
-            acq_id = await self.handle_pending_acquisition(pending_acq)
-            print(f"acquisition starting with id={acq_id}")
-            t0 = time.perf_counter()
-            previous_results = None
-            partial_results = None
             try:
+                pending_acq = await sync_to_async(self.conn.wait_for_acquisition, timeout=10)
+                if pending_acq is None:
+                    continue
+                acq_id = await self.handle_pending_acquisition(pending_acq)
+                print(f"acquisition starting with id={acq_id}")
+                t0 = time.perf_counter()
+                previous_results = None
+                partial_results = None
                 aq = self.ctx.prepare_from_pending(
                     pending_acq,
                     conn=self.conn,
