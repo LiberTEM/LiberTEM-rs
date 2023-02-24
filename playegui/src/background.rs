@@ -11,10 +11,10 @@ use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use egui::ColorImage;
 use log::{debug, error, info};
 use ndarray::{s, Array2, ArrayViewMut2};
-use websocket::ClientBuilder;
+use websocket::{ClientBuilder, Message};
 
 use crate::messages::{
-    AcqMessage, BBox, ChannelDeltaResult, MessagePart, ProcessingStats,
+    AcqMessage, BBox, ChannelDeltaResult, MessagePart, ProcessingStats, ControlMessage,
 };
 
 pub fn decompress_into<T>(
@@ -187,6 +187,7 @@ impl BackgroundState {
                         }
                     }
                 }
+                MessagePart::UpdateParams(_) => {}, // TODO: send to UI thread
             }
         }
 
@@ -303,7 +304,7 @@ fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
     ColorImage::from_rgba_unmultiplied([shape[0], shape[1]], &mapped)
 }
 
-fn receiver_thread(channel: Sender<MessagePart>, stop_event: Arc<AtomicBool>) {
+fn receiver_thread(control_channel: Receiver<ControlMessage>, result_channel: Sender<MessagePart>, stop_event: Arc<AtomicBool>) {
     'outer: loop {
         let mut client = match ClientBuilder::new("ws://localhost:8444")
             .unwrap() // FIXME: parse error in case of bad address; handle once it's user-controlled
@@ -325,10 +326,23 @@ fn receiver_thread(channel: Sender<MessagePart>, stop_event: Arc<AtomicBool>) {
                 break 'outer;
             }
 
+            match control_channel.try_recv() {
+                Ok(ControlMessage::UpdateParams { params }) => {
+                    let msg = serde_json::to_string(&params).unwrap();
+
+                    if client.send_message(&Message::text(msg)).is_err() {
+                        error!("could not send parameter update, reconnecting...");
+                        break 'outer;
+                    }
+                }
+                Err(TryRecvError::Disconnected) => break 'outer,
+                Err(TryRecvError::Empty) => {},
+            }
+
             match MessagePart::from_socket(&mut client) {
                 Ok(part) => {
                     debug!("Got a message: {part:?}");
-                    channel.send(part).unwrap();
+                    result_channel.send(part).unwrap();
                 }
                 Err(crate::messages::CommError::Close) => {
                     error!("Connection closed, reconnecting...");
@@ -336,9 +350,9 @@ fn receiver_thread(channel: Sender<MessagePart>, stop_event: Arc<AtomicBool>) {
                 }
                 Err(crate::messages::CommError::NoMessagesAvailable) => {
                     // FIXME: sometimes this means the connection is done...
-                    // error!("NoMessagesAvailable, reconnecting...");
-                    // break 'inner;
-                    continue;
+                    error!("NoMessagesAvailable, reconnecting...");
+                    break 'inner;
+                    // continue;
                 }
                 Err(e) => {
                     error!("Got an error while receiving ({e:?}), reconnecting...");
@@ -350,17 +364,19 @@ fn receiver_thread(channel: Sender<MessagePart>, stop_event: Arc<AtomicBool>) {
     info!("stopped receiver thread...");
 }
 
-pub fn background_thread(sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>) {
+pub fn background_thread(control_channel: Receiver<ControlMessage>, acq_message_sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>) {
     'outer: loop {
         let (part_sender, part_receiver) = unbounded::<MessagePart>();
 
+        // some stuff that needs to be moved to the bg thread:
         let recv_stop_event = Arc::new(AtomicBool::new(false));
         let recv_stop_event_bg = Arc::clone(&recv_stop_event);
+        let recv_control_channel = control_channel.clone();
 
         std::thread::Builder::new()
             .name("receiver".to_string())
             .spawn(move || {
-                receiver_thread(part_sender, recv_stop_event_bg);
+                receiver_thread(recv_control_channel, part_sender, recv_stop_event_bg);
             })
             .unwrap();
 
@@ -384,7 +400,7 @@ pub fn background_thread(sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>
             for data in process_results.processed {
                 for ((_, _), channel_result) in &data.channel_results {
                     let img = render_to_rgb(channel_result.get_latest(), channel_result.get_bbox());
-                    sender
+                    acq_message_sender
                         .send(AcqMessage::UpdatedData {
                             id: data.id.to_string(),
                             img,
@@ -396,7 +412,7 @@ pub fn background_thread(sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>
                 }
             }
 
-            sender
+            acq_message_sender
                 .send(AcqMessage::Stats(ProcessingStats {
                     num_pending,
                     finished: process_results.ended_ids.len(),
@@ -405,7 +421,7 @@ pub fn background_thread(sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>
 
             for id in process_results.ended_ids {
                 bg_state.acquisitions.remove(&id);
-                sender
+                acq_message_sender
                     .send(AcqMessage::AcquisitionEnded(id.clone()))
                     .unwrap();
             }
@@ -413,9 +429,9 @@ pub fn background_thread(sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>
             let elapsed = start.elapsed();
             let limit = Duration::from_millis(5);
 
-            if elapsed < limit {
-                std::thread::sleep(limit - elapsed);
-            }
+            // if elapsed < limit {
+            //     std::thread::sleep(limit - elapsed);
+            // }
         }
     }
 
