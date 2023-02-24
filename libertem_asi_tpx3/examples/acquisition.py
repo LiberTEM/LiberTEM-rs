@@ -207,8 +207,9 @@ class AsiDetectorConnection(DetectorConnection):
         pass  # TODO: what to do?
 
     def close(self):
-        self._conn.close()
-        self._conn = None
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     def reconnect(self):
         if self._conn is not None:
