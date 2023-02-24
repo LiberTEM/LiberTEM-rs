@@ -32,20 +32,24 @@ pub fn decompress_into<T>(
 }
 
 #[derive(Debug, Clone)]
-pub struct AcquisitionData {
+pub struct ChannelResult {
     latest: Array2<f32>,
     deltas: Vec<Array2<f32>>,
     bbox: BBox,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcquisitionData {
+    channels: Vec<ChannelResult>,
     id: String,
 }
 
-impl AcquisitionData {
+impl ChannelResult {
     pub fn new(delta: Array2<f32>, bbox: BBox, id: &str) -> Self {
         Self {
             latest: delta.clone(),
             bbox,
             deltas: vec![delta],
-            id: id.to_string(),
         }
     }
 
@@ -55,10 +59,6 @@ impl AcquisitionData {
 
     pub fn get_latest(&self) -> &Array2<f32> {
         &self.latest
-    }
-
-    pub fn get_id(&self) -> &str {
-        &self.id
     }
 
     pub fn add_delta(&mut self, delta: &Array2<f32>) {
@@ -140,7 +140,7 @@ impl BackgroundState {
                         self.pending_messages.push_front(front_clone);
                         break;
                     }
-                    for (_, chan) in (0..num_expected).zip(result_header.channels.iter()) {
+                    for (idx, chan) in (0..num_expected).zip(result_header.channels.iter()) {
                         // won't panic: we checked length before
                         let msg = self.pending_messages.pop_front().unwrap();
                         if let MessagePart::AcquisitionBinaryPart(bin) = msg {
