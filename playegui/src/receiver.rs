@@ -1,4 +1,4 @@
-use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
+use std::{sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, time::Duration};
 
 use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use futures_util::{StreamExt, SinkExt};
@@ -7,7 +7,7 @@ use tokio_tungstenite::connect_async;
 use tungstenite::Message;
 use url::Url;
 
-use crate::messages::{CommError, MessagePart, ControlMessage};
+use crate::{messages::{CommError, MessagePart, ControlMessage}, app::ConnectionStatus};
 
 fn message_part_from_msg(
     msg: Result<Message, tungstenite::Error>,
@@ -32,10 +32,16 @@ fn message_part_from_msg(
     }
 }
 
+fn set_status(status: &mut Arc<Mutex<ConnectionStatus>>, new_status: ConnectionStatus) {
+    let mut s = status.lock().unwrap();
+    *s = new_status;
+}
+
 pub(crate) fn receiver_thread(
     control_channel: Receiver<ControlMessage>,
     result_channel: Sender<MessagePart>,
     stop_event: Arc<AtomicBool>,
+    mut status: Arc<Mutex<ConnectionStatus>>,
 ) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -46,6 +52,7 @@ pub(crate) fn receiver_thread(
                     Ok(s) => s,
                     Err(e) => {
                         error!("Could not connect: {e}; trying to reconnect...");
+                        set_status(&mut status, ConnectionStatus::Error);
                         if stop_event.load(Ordering::Relaxed) {
                             break 'outer;
                         }
@@ -53,6 +60,8 @@ pub(crate) fn receiver_thread(
                         continue;
                     }
                 };
+            info!("Connected.");
+            set_status(&mut status, ConnectionStatus::Connected);
 
             let (mut ws_write, mut ws_read) = socket.split();
 

@@ -1,6 +1,7 @@
 use std::{fmt::Debug, net::TcpStream};
 
 use egui::ColorImage;
+use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -80,6 +81,7 @@ pub enum AcqMessage {
         udf_name: String,
         channel_name: String,
         img: ColorImage,
+        data: Array2<f32>,
         bbox: BBox,
     },
 }
@@ -127,6 +129,7 @@ impl Debug for AcqMessage {
                 img: _,
                 udf_name,
                 channel_name,
+                data: _,
             } => f
                 .debug_struct("UpdatedData")
                 .field("id", id)

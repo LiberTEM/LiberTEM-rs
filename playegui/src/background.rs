@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -11,11 +11,15 @@ use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use egui::ColorImage;
 use log::{error, info};
 use ndarray::{s, Array2, ArrayViewMut2, Zip};
-use rayon::prelude::{ParallelBridge, ParallelIterator};
+use rayon::prelude::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
-use crate::{messages::{
-    AcqMessage, BBox, ChannelDeltaResult, MessagePart, ProcessingStats, ControlMessage,
-}, receiver::receiver_thread};
+use crate::{
+    app::ConnectionStatus,
+    messages::{
+        AcqMessage, BBox, ChannelDeltaResult, ControlMessage, MessagePart, ProcessingStats,
+    },
+    receiver::receiver_thread,
+};
 
 pub fn decompress_into<T>(
     out_size: [usize; 2],
@@ -59,24 +63,28 @@ impl AcquisitionData {
         }
     }
 
-    pub fn add_results(&mut self, udf_name: &str, channel_name: &str, delta: &Array2<f32>, bbox: &BBox) -> &ChannelResult {
+    pub fn add_results(
+        &mut self,
+        udf_name: &str,
+        channel_name: &str,
+        delta: &Array2<f32>,
+        bbox: &BBox,
+    ) -> &ChannelResult {
         let key = (udf_name.to_string(), channel_name.to_string());
-        self.channel_results.entry(key).and_modify(|e| {
-            e.add_delta(delta);
-            e.update_bbox(bbox);
-        }).or_insert_with(move || {
-            ChannelResult::new(delta.clone(), bbox.clone(), channel_name, udf_name)
-        })
+        self.channel_results
+            .entry(key)
+            .and_modify(|e| {
+                e.add_delta(delta);
+                e.update_bbox(bbox);
+            })
+            .or_insert_with(move || {
+                ChannelResult::new(delta.clone(), bbox.clone(), channel_name, udf_name)
+            })
     }
 }
 
 impl ChannelResult {
-    pub fn new(
-        delta: Array2<f32>,
-        bbox: BBox,
-        channel_name: &str,
-        udf_name: &str,
-    ) -> Self {
+    pub fn new(delta: Array2<f32>, bbox: BBox, channel_name: &str, udf_name: &str) -> Self {
         Self {
             latest: delta.clone(),
             bbox,
@@ -161,7 +169,7 @@ impl BackgroundState {
             let front_clone = front_msg.clone();
 
             match front_msg {
-                MessagePart::Empty => {},
+                MessagePart::Empty => {}
                 MessagePart::AcquisitionStarted(_) => {}
                 MessagePart::AcquisitionEnded(ended) => {
                     ended_ids.push(ended.id);
@@ -188,7 +196,7 @@ impl BackgroundState {
                         }
                     }
                 }
-                MessagePart::UpdateParams(_) => {}, // TODO: send to UI thread
+                MessagePart::UpdateParams(_) => {} // TODO: send to UI thread
             }
         }
 
@@ -201,7 +209,12 @@ impl BackgroundState {
         })
     }
 
-    fn merge_results(&mut self, data: &[u8], acquisition_id: &str, channel_result: &ChannelDeltaResult) {
+    fn merge_results(
+        &mut self,
+        data: &[u8],
+        acquisition_id: &str,
+        channel_result: &ChannelDeltaResult,
+    ) {
         let mut delta_full = Array2::zeros([
             channel_result.full_shape.0 as usize,
             channel_result.full_shape.1 as usize,
@@ -237,11 +250,21 @@ impl BackgroundState {
         self.acquisitions
             .entry(acquisition_id.to_string())
             .and_modify(|acq_data| {
-                acq_data.add_results(&channel_result.udf_name, &channel_result.channel_name, &delta_full, &bbox);
+                acq_data.add_results(
+                    &channel_result.udf_name,
+                    &channel_result.channel_name,
+                    &delta_full,
+                    &bbox,
+                );
             })
             .or_insert_with(move || {
                 let mut acq_data = AcquisitionData::new(acquisition_id.to_string());
-                acq_data.add_results(&channel_result.udf_name, &channel_result.channel_name, &delta_full, &bbox);
+                acq_data.add_results(
+                    &channel_result.udf_name,
+                    &channel_result.channel_name,
+                    &delta_full,
+                    &bbox,
+                );
                 acq_data
             });
     }
@@ -292,7 +315,7 @@ fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
     let flat_shape = data.shape()[0] * data.shape()[1];
     let data_flat = data.to_shape(flat_shape).unwrap();
     let iter_flat = (0..).zip(data_flat.iter());
-    
+
     let mapped: Vec<u8> = if *vmax == *vmin {
         iter_flat.flat_map(to_rgba).collect()
     } else {
@@ -305,7 +328,12 @@ fn render_to_rgb(data: &Array2<f32>, bbox: &BBox) -> ColorImage {
     ColorImage::from_rgba_unmultiplied([shape[0], shape[1]], &mapped)
 }
 
-pub fn background_thread(control_channel: Receiver<ControlMessage>, acq_message_sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>) {
+pub fn background_thread(
+    control_channel: Receiver<ControlMessage>,
+    acq_message_sender: Sender<AcqMessage>,
+    stop_event: Arc<AtomicBool>,
+    status: Arc<Mutex<ConnectionStatus>>,
+) {
     'outer: loop {
         let (part_sender, part_receiver) = unbounded::<MessagePart>();
 
@@ -317,7 +345,7 @@ pub fn background_thread(control_channel: Receiver<ControlMessage>, acq_message_
         std::thread::Builder::new()
             .name("receiver".to_string())
             .spawn(move || {
-                receiver_thread(recv_control_channel, part_sender, recv_stop_event_bg);
+                receiver_thread(recv_control_channel, part_sender, recv_stop_event_bg, status);
             })
             .unwrap();
 
@@ -338,7 +366,7 @@ pub fn background_thread(control_channel: Receiver<ControlMessage>, acq_message_
             let process_results = bg_state.process_pending().unwrap();
 
             // for each result and each channel, send an `UpdatedData`
-            for data in process_results.processed {
+            process_results.processed.par_iter().for_each(|data| {
                 for ((_, _), channel_result) in &data.channel_results {
                     let img = render_to_rgb(channel_result.get_latest(), channel_result.get_bbox());
                     acq_message_sender
@@ -348,10 +376,11 @@ pub fn background_thread(control_channel: Receiver<ControlMessage>, acq_message_
                             udf_name: channel_result.udf_name.to_string(),
                             channel_name: channel_result.channel_name.to_string(),
                             bbox: channel_result.get_bbox().to_owned(),
+                            data: channel_result.get_latest().clone(),
                         })
                         .unwrap();
                 }
-            }
+            });
 
             acq_message_sender
                 .send(AcqMessage::Stats(ProcessingStats {
