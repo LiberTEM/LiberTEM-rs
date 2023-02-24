@@ -1,7 +1,7 @@
 use std::{fmt::Debug, net::TcpStream};
 
 use egui::ColorImage;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use websocket::{sync::Client, Message, OwnedMessage, WebSocketError};
 
@@ -45,6 +45,20 @@ pub struct AcquisitionResult {
     pub channels: Vec<ChannelDeltaResult>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpdateParamsInner {
+    pub cx: f32,
+    pub cy: f32,
+    pub ri: f32,
+    pub ro: f32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpdateParams {
+    pub parameters: UpdateParamsInner,
+}
+
+
 #[derive(Clone, Debug)]
 pub struct BBox {
     pub ymin: u16,
@@ -78,6 +92,7 @@ pub enum MessagePart {
     AcquisitionStarted(AcquisitionStarted),
     AcquisitionEnded(AcquisitionEnded),
     AcquisitionResultHeader(AcquisitionResult),
+    UpdateParams(UpdateParamsInner),
     AcquisitionBinaryPart(Vec<u8>),
 }
 
@@ -93,6 +108,10 @@ impl Debug for MessagePart {
                 .field(arg0)
                 .finish(),
             Self::AcquisitionBinaryPart(_arg0) => f.write_str("AcquisitionBinaryPart { .. } "),
+            Self::UpdateParams(inner) => f
+                .debug_tuple("UpdateParams")
+                .field(inner)
+                .finish(),
         }
     }
 }
@@ -189,7 +208,19 @@ impl MessagePart {
             "RESULT" => Ok(Self::AcquisitionResultHeader(serde_json::from_str(
                 &message,
             )?)),
+            "UPDATE_PARAMS" => {
+                let params: UpdateParams = serde_json::from_str(&message)?;
+                Ok(Self::UpdateParams(params.parameters))
+            },
             _ => Err(CommError::UnknownMessageError(None)),
         }
     }
+}
+
+
+/// Messages sent from the UI thread to the background processing thread,
+/// ultimately being sent over the websocket connection:
+#[derive(Clone, Debug)]
+pub enum ControlMessage {
+    UpdateParams { params: UpdateParams }  // yuck: nesting...
 }

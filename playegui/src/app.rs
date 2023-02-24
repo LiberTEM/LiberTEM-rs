@@ -1,22 +1,31 @@
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicBool, Arc},
+    f64::consts::PI,
+    sync::{
+        atomic::{AtomicBool, Ordering::Relaxed},
+        Arc,
+    },
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use crossbeam::channel::{unbounded, Receiver};
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use eframe::epaint::ahash::HashSet;
 use egui::{
-    plot::{Corner, HLine, Legend, Plot, PlotImage, PlotPoint},
-    vec2, ColorImage, TextureHandle, TextureOptions,
+    plot::{Corner, HLine, Legend, MarkerShape, Plot, PlotImage, PlotPoint, Points, Polygon},
+    vec2, Color32, ColorImage, TextureHandle, TextureOptions,
 };
-use log::{trace, debug};
+use log::{debug, trace};
 
 use crate::{
     background::background_thread,
-    messages::{AcqMessage, BBox, ProcessingStats},
+    messages::{
+        AcqMessage, BBox, ControlMessage, ProcessingStats, UpdateParams, UpdateParamsInner,
+    },
 };
 
+/// Images need to be uploaded and become textures, textures can be used
+/// directly
 enum ImageOrTexture {
     Image(ColorImage),
     Texture(TextureHandle),
@@ -59,49 +68,78 @@ struct ResultId {
     channel_name: String,
 }
 
+#[derive(Debug, Clone)]
+struct RingParams {
+    pub cx: f32,
+    pub cy: f32,
+    pub ri: f32,
+    pub ro: f32,
+}
+
+impl Default for RingParams {
+    fn default() -> Self {
+        Self {
+            cx: 260.0,
+            cy: 250.0,
+            ri: 140.0,
+            ro: 250.0,
+        }
+    }
+}
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
+// #[derive(serde::Deserialize, serde::Serialize)]
+// #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
-    // Example stuff:
-    label: String,
+    ring_params: RingParams,
 
-    // this how you opt-out of serialization of a member
-    #[serde(skip)]
-    value: f32,
-
-    #[serde(skip)]
     data_source: Option<Receiver<AcqMessage>>,
 
-    #[serde(skip)]
+    control_channel: Option<Sender<ControlMessage>>,
+
     acquisitions: HashMap<ResultId, (ImageOrTexture, BBox)>,
 
-    #[serde(skip)]
     acquisition_history: Vec<ResultId>,
 
-    #[serde(skip)]
     stop_event: Arc<AtomicBool>,
 
-    #[serde(skip)]
+    bg_thread: Option<JoinHandle<()>>,
+
     stats: AggregateStats,
 
-    #[serde(skip)]
     previous_stats: Option<(AggregateStats, AggregateStats)>,
 }
 
 impl Default for TemplateApp {
     fn default() -> Self {
         Self {
-            label: Default::default(),
-            value: Default::default(),
+            ring_params: Default::default(),
             data_source: Default::default(),
             acquisitions: HashMap::new(),
             acquisition_history: Vec::new(),
             stop_event: Arc::new(AtomicBool::new(false)),
             stats: AggregateStats::new(),
             previous_stats: None,
+            bg_thread: None,
+            control_channel: None,
         }
     }
+}
+
+fn circle_points(cx: f64, cy: f64, r: f64) -> Vec<[f64; 2]> {
+    const N: usize = 100;
+
+    // sample from 0 to 2PI in N steps:
+    (0..N)
+        .map(|step| {
+            let step = step as f64;
+            let step_ratio = step / (N as f64);
+            let rad = 2.0 * PI * step_ratio;
+            let x = cx + r * rad.cos();
+            let y = cy + r * rad.sin();
+            [x, y]
+        })
+        .collect()
 }
 
 impl TemplateApp {
@@ -114,38 +152,47 @@ impl TemplateApp {
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
-        if let Some(storage) = cc.storage {
-            let mut loaded: TemplateApp =
-                eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-            loaded.data_source = Some(Self::connect(Arc::clone(&stop_event)));
-            return loaded;
-        }
+        // if let Some(storage) = cc.storage {
+        //     let mut loaded: TemplateApp =
+        //         eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+        //     let (join_handle, data_source, control_channel) = Self::connect(Arc::clone(&stop_event));
+        //     loaded.data_source = Some(data_source);
+        //     loaded.bg_thread = Some(join_handle);
+        //     loaded.control_channel = Some(control_channel);
+        //     return loaded;
+        // }
+
+        let (join_handle, data_source, control_channel) = Self::connect(Arc::clone(&stop_event));
 
         Self {
-            // Example stuff:
-            label: "Hello World!".to_owned(),
-            value: 2.7,
-            data_source: Some(Self::connect(Arc::clone(&stop_event))),
+            ring_params: Default::default(),
+            data_source: Some(data_source),
             acquisitions: HashMap::new(),
             acquisition_history: Vec::new(),
             stop_event,
             stats: AggregateStats::new(),
             previous_stats: None,
+            bg_thread: Some(join_handle),
+            control_channel: Some(control_channel),
         }
     }
 
-    pub fn connect(stop_event: Arc<AtomicBool>) -> Receiver<AcqMessage> {
+    pub fn connect(
+        stop_event: Arc<AtomicBool>,
+    ) -> (JoinHandle<()>, Receiver<AcqMessage>, Sender<ControlMessage>) {
         // start background thread
         let (s, data_source) = unbounded::<AcqMessage>();
 
-        std::thread::Builder::new()
+        let (control_channel, rc) = unbounded::<ControlMessage>();
+
+        let join_handle = std::thread::Builder::new()
             .name("background".to_string())
             .spawn(move || {
-                background_thread(s, stop_event);
+                background_thread(rc, s, stop_event);
             })
             .unwrap();
 
-        data_source
+        (join_handle, data_source, control_channel)
     }
 }
 
@@ -257,7 +304,7 @@ impl eframe::App for TemplateApp {
         self.apply_acq_messages();
         ctx.request_repaint(); // "continuous mode"
 
-        let Self { label, value, .. } = self;
+        let Self { ring_params, .. } = self;
 
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
@@ -276,17 +323,45 @@ impl eframe::App for TemplateApp {
             });
         });
 
+        let send_ring_params =
+            |ring_params: &RingParams, channel: &Option<Sender<ControlMessage>>| {
+                if let Some(channel) = &channel {
+                    channel
+                        .send(ControlMessage::UpdateParams {
+                            params: UpdateParams {
+                                parameters: UpdateParamsInner {
+                                    cx: ring_params.cx,
+                                    cy: ring_params.cy,
+                                    ri: ring_params.ri,
+                                    ro: ring_params.ro,
+                                },
+                            },
+                        })
+                        .unwrap();
+                }
+            };
+
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
             ui.heading("Side Panel");
 
-            ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(label);
-            });
+            let ri = egui::Slider::new(&mut ring_params.ri, 0.0..=516.0).text("ri");
+            if ui.add(ri).changed() {
+                send_ring_params(ring_params, &self.control_channel);
+            }
 
-            ui.add(egui::Slider::new(value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                *value += 1.0;
+            let ro = egui::Slider::new(&mut ring_params.ro, 0.0..=516.0).text("ro");
+            if ui.add(ro).changed() {
+                send_ring_params(ring_params, &self.control_channel);
+            }
+
+            let cx = egui::Slider::new(&mut ring_params.cx, 0.0..=516.0).text("cx");
+            if ui.add(cx).changed() {
+                send_ring_params(ring_params, &self.control_channel);
+            }
+
+            let cy = egui::Slider::new(&mut ring_params.cy, 0.0..=516.0).text("cy");
+            if ui.add(cy).changed() {
+                send_ring_params(ring_params, &self.control_channel);
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
@@ -349,53 +424,74 @@ impl eframe::App for TemplateApp {
             let channel_list = self.list_channels();
 
             plot.show(ui, |plot_ui| {
-                self.acquisition_history
-                    .iter()
-                    .for_each(|id| {
-                        let idx = channel_list
-                            .iter()
-                            .position(|(udf, channel)| {
-                                id.udf_name == *udf && id.channel_name == *channel
-                            })
-                            .unwrap();
-                        if let Some(item) = self.acquisitions.get(id) {
-                            let (img_or_texture, bbox) = item;
-                            if let ImageOrTexture::Texture(texture_id) = img_or_texture {
-                                let pos = PlotPoint::new(idx as f32 + texture_id.aspect_ratio() / 2.0, 0.5);
-                                let image = PlotImage::new(
-                                    texture_id,
-                                    pos,
-                                    vec2(texture_id.aspect_ratio(), 1.0),
+                self.acquisition_history.iter().for_each(|id| {
+                    let idx = channel_list
+                        .iter()
+                        .position(|(udf, channel)| {
+                            id.udf_name == *udf && id.channel_name == *channel
+                        })
+                        .unwrap();
+                    if let Some(item) = self.acquisitions.get(id) {
+                        let (img_or_texture, bbox) = item;
+                        if let ImageOrTexture::Texture(texture_id) = img_or_texture {
+                            let pos =
+                                PlotPoint::new(idx as f32 + texture_id.aspect_ratio() / 2.0, 0.5);
+                            let image = PlotImage::new(
+                                texture_id,
+                                pos,
+                                vec2(texture_id.aspect_ratio(), 1.0),
+                            );
+                            let img = image; // .name(format!("Acquisition {id:?}"));
+                            plot_ui.image(img);
+                            if false {
+                                plot_ui.hline(
+                                    HLine::new(1.0 - (bbox.ymax as f32 / texture_id.size_vec2().y))
+                                        .name("Scan"),
                                 );
-                                let img = image; // .name(format!("Acquisition {id:?}"));
-                                plot_ui.image(img);
-                                if false {
-                                    plot_ui.hline(
-                                        HLine::new(1.0 - (bbox.ymax as f32 / texture_id.size_vec2().y))
-                                            .name("Scan"),
-                                    );
-                                }
                             }
                         }
-                    });
+                    }
+                });
+                let marker = Points::new(vec![[1.5, 0.5]])
+                    .filled(true)
+                    .radius(3.0)
+                    .shape(MarkerShape::Square);
+
+                let plot_cx = (self.ring_params.cx / 516.0 + 1.0) as f64;
+                let plot_cy = (self.ring_params.cy / 516.0) as f64;
+
+                let polygon: Polygon = Polygon::new(circle_points(
+                    plot_cx,
+                    plot_cy,
+                    self.ring_params.ri as f64 / 516.0,
+                ))
+                .fill_alpha(0.0);
+                plot_ui.polygon(polygon);
+
+                let polygon: Polygon = Polygon::new(circle_points(
+                    plot_cx,
+                    plot_cy,
+                    self.ring_params.ro as f64 / 516.0,
+                ))
+                .fill_alpha(0.0);
+                plot_ui.polygon(polygon);
+
+                plot_ui.points(marker);
             })
             .response
         });
-
-        if false {
-            egui::Window::new("Window").show(ctx, |ui| {
-                ui.label("Windows can be moved by dragging them.");
-                ui.label("They are automatically sized based on contents.");
-                ui.label("You can turn on resizing and scrolling if you like.");
-                ui.label("You would normally choose either panels OR windows.");
-            });
-        }
     }
 
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, eframe::APP_KEY, self);
+        // eframe::set_value(storage, eframe::APP_KEY, self);
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {}
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.stop_event.store(true, Relaxed);
+        if let Some(bg_thread) = self.bg_thread.take() {
+            // bg_thread.join().unwrap();
+            // FIXME: need to debug this
+        }
+    }
 }
