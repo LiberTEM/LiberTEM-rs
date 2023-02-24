@@ -3,6 +3,7 @@ import json
 import asyncio
 import typing
 import copy
+from collections import OrderedDict
 
 import numba
 import numpy as np
@@ -21,7 +22,7 @@ from libertem_live.udf.monitor import (
 )
 from acquisition import AsiAcquisition, AsiDetectorConnection
 
-from libertem.udf.base import UDFResults
+from libertem.udf.base import UDFResults, UDF
 from libertem.common.async_utils import sync_to_async
 
 if typing.TYPE_CHECKING:
@@ -29,16 +30,26 @@ if typing.TYPE_CHECKING:
 
 
 class EncodedResult:
-    def __init__(self, compressed_data, bbox, full_shape, delta_shape, dtype, idx):
+    def __init__(
+            self,
+            compressed_data: memoryview,
+            bbox: typing.Tuple[int, int, int, int],
+            full_shape: typing.Tuple[int, int],
+            delta_shape: typing.Tuple[int, int],
+            dtype: str,
+            channel_name: str,
+            udf_name: str,
+        ):
         self.compressed_data = compressed_data
         self.bbox = bbox
         self.full_shape = full_shape
         self.delta_shape = delta_shape
         self.dtype = dtype
-        self.idx = idx
+        self.channel_name = channel_name
+        self.udf_name = udf_name
 
     def is_empty(self):
-        return self.compressed_data is None
+        return len(self.compressed_data) == 0
 
 
 @numba.njit(cache=True)
@@ -69,12 +80,12 @@ class WSServer:
     def __init__(self):
         self.connect()
         self.ws_connected = set()
-        self.udfs = [
-            # SumSigUDF(),
+        self.udfs = OrderedDict({
+            "brightfield": SumSigUDF(),
             # SumUDF()
-            # SignalMonitorUDF(),
-            PartitionMonitorUDF(),
-        ]
+            # "monitor": SignalMonitorUDF(),
+            "monitor_partition": PartitionMonitorUDF(),
+        })
 
     async def __call__(self, websocket: WebSocketServerProtocol):
         await self.send_state_dump(websocket)
@@ -101,36 +112,53 @@ class WSServer:
             self.unregister_client(websocket)
 
     async def handle_message(self, msg, websocket):
-        pass  # TODO: commands from the client
+        try:
+            msg = json.loads(msg)
+            if msg['event'] == 'UPDATE_PARAMS':
+                pass  # ... etc.
+                # TODO: broadcast to all clients
+                # TODO: also broadcast these parameters at the beginning!
+                self.broadcast(json.dumps({'event': 'UPDATE_PARAMS'}))
+        except Exception as e:
+            print(e)
 
     async def broadcast(self, msg):
         websockets.broadcast(self.ws_connected, msg)
 
     async def make_deltas(self, partial_results: UDFResults, previous_results: typing.Optional[UDFResults]) -> np.ndarray:
         deltas = []
+        udf_names = list(self.udfs.keys())
         for idx in range(len(partial_results.buffers)):
-            data = partial_results.buffers[idx]['intensity'].data
-            if previous_results is None:
-                data_previous = np.zeros_like(data)
-            else:
-                data_previous = previous_results.buffers[idx]['intensity'].data
+            udf_name = udf_names[idx]
+            for channel_name in partial_results.buffers[idx].keys():
+                data = partial_results.buffers[idx][channel_name].data
+                if previous_results is None:
+                    data_previous = np.zeros_like(data)
+                else:
+                    data_previous = previous_results.buffers[idx][channel_name].data
 
-            delta = data - data_previous
-            deltas.append(delta)
+                delta = data - data_previous
+                deltas.append({
+                    'delta': delta,
+                    'udf_name': udf_name,
+                    'channel_name': channel_name,
+                })
         return deltas
 
-    async def encode_result(self, delta: np.ndarray, channel_idx: int) -> bytes:
+    async def encode_result(self, delta: np.ndarray, udf_name: str, channel_name: str) -> EncodedResult:
         nonzero_mask = ~np.isclose(0, delta)
 
         if np.count_nonzero(nonzero_mask) == 0:
             print(f"zero-delta update, skipping")
             # skip this update if it is all-zero
             return EncodedResult(
-                None,
-                None,
-                None,
-                None,
-                channel_idx,
+                compressed_data=memoryview(b""),
+                bbox=(0, 0, 0, 0),
+                full_shape=delta.shape,
+                delta_shape=(0, 0),
+                dtype=delta.dtype,
+                channel_name=channel_name,
+                udf_name=udf_name,
             )
 
         bbox = get_bbox(delta)
@@ -143,11 +171,13 @@ class WSServer:
         compressed = await sync_to_async(lambda: bitshuffle.compress_lz4(np.copy(delta_for_blit)))
 
         return EncodedResult(
-            memoryview(compressed),
-            bbox,
-            delta_for_blit.shape,
-            delta_for_blit.dtype,
-            channel_idx,
+            compressed_data=memoryview(compressed),
+            bbox=bbox,
+            full_shape=delta.shape,
+            delta_shape=delta_for_blit.shape,
+            dtype=delta_for_blit.dtype,
+            channel_name=channel_name,
+            udf_name=udf_name,
         )
 
     async def handle_pending_acquisition(self, pending) -> str:
@@ -179,9 +209,15 @@ class WSServer:
     ):
         deltas = await self.make_deltas(partial_results, previous_results)
 
-        delta_results = []
+        delta_results: typing.List[EncodedResult] = []
         for delta in deltas:
-            delta_results.append(await self.encode_result(delta))
+            delta_results.append(
+                await self.encode_result(
+                    delta['delta'],
+                    delta['udf_name'], 
+                    delta['channel_name']
+                )
+            )
         await self.broadcast(json.dumps({
             "event": "RESULT",
             "id": acq_id,
@@ -192,15 +228,14 @@ class WSServer:
                     "delta_shape": result.delta_shape,
                     "dtype": str(result.dtype),
                     "encoding": "bslz4",
-                    "channel_idx": result.idx,
-                    "name": "TODO",
+                    "channel_name": result.channel_name,
+                    "udf_name": result.udf_name,
                 }
                 for result in delta_results
-                if not result.is_empty()
             ],
         }))
-        for (result_bytes, bbox, shape, dtype) in delta_results:
-            await self.broadcast(result_bytes)
+        for result in delta_results:
+            await self.broadcast(result.compressed_data)
 
     async def serve(self):
         min_delta = 0.01
@@ -223,7 +258,8 @@ class WSServer:
                     )
                     last_update = 0
                     try:
-                        async for partial_results in self.ctx.run_udf_iter(dataset=aq, udf=self.udfs, sync=False):
+                        udfs_only = list(self.udfs.values())
+                        async for partial_results in self.ctx.run_udf_iter(dataset=aq, udf=udfs_only, sync=False):
                             if time.time() - last_update > min_delta:
                                 await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
                                 previous_results = copy.deepcopy(partial_results)
