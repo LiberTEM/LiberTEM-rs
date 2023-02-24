@@ -16,7 +16,7 @@ use crate::{
 };
 
 use ipc_test::SharedSlabAllocator;
-use log::{info, trace};
+use log::{info, trace, warn};
 use pyo3::{
     exceptions::{self, PyRuntimeError},
     prelude::*,
@@ -258,9 +258,9 @@ impl ASITpx3Connection {
                     trace!("got ResultMsg::AcquisitionStart");
                     return Ok(Some(header));
                 }
-                msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {
-                    let err = format!("unexpected message: {msg:?}");
-                    return Err(PyRuntimeError::new_err(err));
+                msg @ Some(ResultMsg::FrameStack { .. }) | msg @ Some(ResultMsg::End { .. }) => {
+                    warn!("discarding unexpected message {msg:?}");
+                    continue;
                 }
                 Some(ResultMsg::ScanStart { header: _ }) => {
                     todo!("what do we do here?");
