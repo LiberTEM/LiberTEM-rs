@@ -5,11 +5,12 @@ use std::{
 };
 
 use crossbeam::channel::{unbounded, Receiver};
+use eframe::epaint::ahash::HashSet;
 use egui::{
     plot::{Corner, HLine, Legend, Plot, PlotImage, PlotPoint},
     vec2, ColorImage, TextureHandle, TextureOptions,
 };
-use log::trace;
+use log::{trace, debug};
 
 use crate::{
     background::background_thread,
@@ -51,6 +52,13 @@ impl AggregateStats {
     }
 }
 
+#[derive(Hash, Debug, Clone, Eq, PartialEq)]
+struct ResultId {
+    acquisition: String,
+    udf_name: String,
+    channel_name: String,
+}
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
@@ -66,10 +74,10 @@ pub struct TemplateApp {
     data_source: Option<Receiver<AcqMessage>>,
 
     #[serde(skip)]
-    acquisitions: HashMap<String, (ImageOrTexture, BBox)>,
+    acquisitions: HashMap<ResultId, (ImageOrTexture, BBox)>,
 
     #[serde(skip)]
-    acquisition_history: Vec<String>,
+    acquisition_history: Vec<ResultId>,
 
     #[serde(skip)]
     stop_event: Arc<AtomicBool>,
@@ -155,7 +163,7 @@ impl TemplateApp {
                         AcqMessage::AcquisitionEnded(_ended) => {
                             // meh
                             //self.acquisitions.remove(&ended.id);
-                            trace!(
+                            debug!(
                                 "before: {} {}",
                                 self.acquisition_history.len(),
                                 self.acquisitions.len()
@@ -166,11 +174,11 @@ impl TemplateApp {
                                 self.acquisition_history
                                     .drain(..len - max_size)
                                     .for_each(|k| {
-                                        trace!("removing {k}");
+                                        trace!("removing {k:?}");
                                         self.acquisitions.remove(&k);
                                     });
                             }
-                            trace!(
+                            debug!(
                                 "after: {} {}",
                                 self.acquisition_history.len(),
                                 self.acquisitions.len()
@@ -179,14 +187,25 @@ impl TemplateApp {
                         AcqMessage::Stats(stats) => {
                             new_stats.push(stats);
                         }
-                        AcqMessage::UpdatedData { id, img, bbox } => {
+                        AcqMessage::UpdatedData {
+                            id,
+                            img,
+                            bbox,
+                            udf_name,
+                            channel_name,
+                        } => {
                             trace!("inserting id {id}");
+                            let key = ResultId {
+                                acquisition: id,
+                                udf_name,
+                                channel_name,
+                            };
                             if self
                                 .acquisitions
-                                .insert(id.clone(), (ImageOrTexture::Image(img), bbox))
+                                .insert(key.clone(), (ImageOrTexture::Image(img), bbox))
                                 .is_none()
                             {
-                                self.acquisition_history.push(id);
+                                self.acquisition_history.push(key);
                             }
                         }
                     }
@@ -210,10 +229,24 @@ impl TemplateApp {
             Some((_older, newer)) => {
                 if newer.ts.elapsed() > Duration::from_secs_f32(delta_t) {
                     // drop older and replace newer:
-                    self.previous_stats = Some((newer.clone(), self.stats.clone().with_updated_ts()));
+                    self.previous_stats =
+                        Some((newer.clone(), self.stats.clone().with_updated_ts()));
                 }
             }
         }
+    }
+
+    /// Make a list of unique (udf, channel) pairs for ordering the plots
+    fn list_channels(&self) -> Vec<(String, String)> {
+        let pairs = self
+            .acquisition_history
+            .iter()
+            .map(|result_id| (result_id.udf_name.clone(), result_id.channel_name.clone()))
+            .collect::<HashSet<_>>();
+        let mut pairs = Vec::from_iter(pairs.into_iter());
+        pairs.sort();
+
+        pairs
     }
 }
 
@@ -305,7 +338,7 @@ impl eframe::App for TemplateApp {
                                 magnification: egui::TextureFilter::Nearest,
                                 minification: egui::TextureFilter::Linear,
                             };
-                            ui.ctx().load_texture(&id, img, tex_options)
+                            ui.ctx().load_texture(format!("{id:?}"), img, tex_options)
                         }
                         ImageOrTexture::Texture(t) => t,
                     };
@@ -313,64 +346,38 @@ impl eframe::App for TemplateApp {
                 })
                 .collect();
 
-            plot.show(ui, |plot_ui| {
-                // plot_ui.hline(HLine::new(9.0).name("Lines horizontal"));
-                // plot_ui.hline(HLine::new(-9.0).name("Lines horizontal"));
-                // plot_ui.vline(VLine::new(9.0).name("Lines vertical"));
-                // plot_ui.vline(VLine::new(-9.0).name("Lines vertical"));
-                //plot_ui.image(image.name("Image"));
+            let channel_list = self.list_channels();
 
+            plot.show(ui, |plot_ui| {
                 self.acquisition_history
                     .iter()
-                    .rev()
-                    .take(2)
-                    .rev()
                     .for_each(|id| {
+                        let idx = channel_list
+                            .iter()
+                            .position(|(udf, channel)| {
+                                id.udf_name == *udf && id.channel_name == *channel
+                            })
+                            .unwrap();
                         if let Some(item) = self.acquisitions.get(id) {
                             let (img_or_texture, bbox) = item;
                             if let ImageOrTexture::Texture(texture_id) = img_or_texture {
-                                // let texture_id = img_or_texture.as_ref().unwrap();
-                                let pos = PlotPoint::new(texture_id.aspect_ratio() / 2.0, 0.5);
+                                let pos = PlotPoint::new(idx as f32 + texture_id.aspect_ratio() / 2.0, 0.5);
                                 let image = PlotImage::new(
                                     texture_id,
                                     pos,
                                     vec2(texture_id.aspect_ratio(), 1.0),
                                 );
-                                let img = image.name(format!("Acquisition {id}"));
+                                let img = image; // .name(format!("Acquisition {id:?}"));
                                 plot_ui.image(img);
-
-                                // println!("{:?}", bbox);
-                                plot_ui.hline(
-                                    HLine::new(1.0 - (bbox.ymax as f32 / texture_id.size_vec2().y))
-                                        .name("Scan"),
-                                );
+                                if false {
+                                    plot_ui.hline(
+                                        HLine::new(1.0 - (bbox.ymax as f32 / texture_id.size_vec2().y))
+                                            .name("Scan"),
+                                    );
+                                }
                             }
                         }
                     });
-
-                // if let Some(last) = self.acquisitions.iter().last() {
-                //     let (id, (_, texture)) = last;
-                //     let texture_id = texture.as_ref().unwrap();
-                //     let pos = PlotPoint::new(texture_id.aspect_ratio() / 2.0, 0.5);
-                //     let image = PlotImage::new(
-                //         texture_id,
-                //         pos,
-                //         vec2(texture_id.aspect_ratio(), 1.0),
-                //     );
-                //     let img = image.name(format!("Acquisition {id}"));
-                //     plot_ui.image(img);
-                // }
-
-                // self.acquisitions.iter().for_each(|(id, (_, texture))| {
-                //     let texture_id = texture.as_ref().unwrap();
-                //     let image = PlotImage::new(
-                //         texture_id,
-                //         PlotPoint::new((5.0 * texture_id.aspect_ratio()) / 2.0, 2.5),
-                //         vec2(texture_id.aspect_ratio(), 1.0),
-                //     );
-                //     let img = image.name(id);
-                //     plot_ui.image(img);
-                // });
             })
             .response
         });

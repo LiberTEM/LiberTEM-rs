@@ -13,7 +13,9 @@ use log::{debug, error, info};
 use ndarray::{s, Array2, ArrayViewMut2};
 use websocket::ClientBuilder;
 
-use crate::messages::{AcqMessage, AcquisitionResult, BBox, MessagePart, ProcessingStats};
+use crate::messages::{
+    AcqMessage, BBox, ChannelDeltaResult, MessagePart, ProcessingStats,
+};
 
 pub fn decompress_into<T>(
     out_size: [usize; 2],
@@ -31,25 +33,56 @@ pub fn decompress_into<T>(
     }
 }
 
+/// The results for a single channel of a reconstruction belonging
+/// to some acquisition and some UDF.
 #[derive(Debug, Clone)]
 pub struct ChannelResult {
     latest: Array2<f32>,
     deltas: Vec<Array2<f32>>,
     bbox: BBox,
+    channel_name: String,
+    udf_name: String,
 }
 
+///
 #[derive(Debug, Clone)]
 pub struct AcquisitionData {
-    channels: Vec<ChannelResult>,
+    channel_results: HashMap<(String, String), ChannelResult>,
     id: String,
 }
 
+impl AcquisitionData {
+    fn new(id: String) -> Self {
+        Self {
+            id,
+            channel_results: Default::default(),
+        }
+    }
+
+    pub fn add_results(&mut self, udf_name: &str, channel_name: &str, delta: &Array2<f32>, bbox: &BBox) -> &ChannelResult {
+        let key = (udf_name.to_string(), channel_name.to_string());
+        self.channel_results.entry(key).and_modify(|e| {
+            e.add_delta(delta);
+            e.update_bbox(bbox);
+        }).or_insert_with(move || {
+            ChannelResult::new(delta.clone(), bbox.clone(), channel_name, udf_name)
+        })
+    }
+}
+
 impl ChannelResult {
-    pub fn new(delta: Array2<f32>, bbox: BBox, id: &str) -> Self {
+    pub fn new(
+        delta: Array2<f32>,
+        bbox: BBox,
+        channel_name: &str,
+        udf_name: &str,
+    ) -> Self {
         Self {
             latest: delta.clone(),
             bbox,
             deltas: vec![delta],
+            channel_name: channel_name.to_string(),
+            udf_name: udf_name.to_string(),
         }
     }
 
@@ -91,7 +124,9 @@ struct BackgroundState {
 
 struct ProcessResults<'a> {
     processed: Vec<&'a AcquisitionData>,
-    to_remove: Vec<String>,
+
+    /// IDs of acquisitions that have ended
+    ended_ids: Vec<String>,
 }
 
 impl BackgroundState {
@@ -104,11 +139,12 @@ impl BackgroundState {
     }
 
     /// Take one or more messages from the pending list and integrate
-    /// the parts into the full results. Returns a vec of acquisition
-    /// ids that were changed.
+    /// the parts into the full results. Returns a `ProcessResults`
+    /// that contains acquisition data and a list of acquisitions
+    /// that have ended.
     fn process_pending(&mut self) -> Result<ProcessResults, ParseError> {
         let mut ids: Vec<String> = Vec::new();
-        let mut remove_ids: Vec<String> = Vec::new();
+        let mut ended_ids: Vec<String> = Vec::new();
         let start_time = Instant::now();
 
         loop {
@@ -127,25 +163,25 @@ impl BackgroundState {
             match front_msg {
                 MessagePart::AcquisitionStarted(_) => {}
                 MessagePart::AcquisitionEnded(ended) => {
-                    remove_ids.push(ended.id);
+                    ended_ids.push(ended.id);
                 }
                 MessagePart::AcquisitionBinaryPart(_) => {
                     return Err(ParseError::UnexpectedMessage(front_msg.clone()))
                 }
                 MessagePart::AcquisitionResultHeader(result_header) => {
-                    // FIXME: if we have more than one acquisition, how do we handle that?
-                    // should we have separate headers?
                     let num_expected = result_header.channels.len();
                     if self.pending_messages.len() < num_expected {
                         self.pending_messages.push_front(front_clone);
                         break;
                     }
-                    for (idx, chan) in (0..num_expected).zip(result_header.channels.iter()) {
+                    for chan in result_header.channels.iter() {
                         // won't panic: we checked length before
                         let msg = self.pending_messages.pop_front().unwrap();
                         if let MessagePart::AcquisitionBinaryPart(bin) = msg {
-                            self.merge_results(&bin, &result_header);
-                            ids.push(result_header.id.clone());
+                            if !bin.is_empty() {
+                                self.merge_results(&bin, &result_header.id, chan);
+                                ids.push(result_header.id.clone());
+                            }
                         } else {
                             return Err(ParseError::UnexpectedMessage(msg));
                         }
@@ -159,15 +195,17 @@ impl BackgroundState {
                 .iter()
                 .map(|id| self.acquisitions.get(id).unwrap())
                 .collect(),
-            to_remove: remove_ids,
+            ended_ids,
         })
     }
 
-    fn merge_results(&mut self, data: &[u8], result: &AcquisitionResult) {
-        let key = result.id.clone();
-        let mut delta_full = Array2::zeros([result.shape.0 as usize, result.shape.1 as usize]);
+    fn merge_results(&mut self, data: &[u8], acquisition_id: &str, channel_result: &ChannelDeltaResult) {
+        let mut delta_full = Array2::zeros([
+            channel_result.full_shape.0 as usize,
+            channel_result.full_shape.1 as usize,
+        ]);
 
-        let (ymin, ymax, xmin, xmax) = result.bbox;
+        let (ymin, ymax, xmin, xmax) = channel_result.bbox;
 
         let bbox = BBox {
             ymin,
@@ -195,12 +233,15 @@ impl BackgroundState {
         dest.assign(&delta_blit);
 
         self.acquisitions
-            .entry(key.to_string())
+            .entry(acquisition_id.to_string())
             .and_modify(|acq_data| {
-                acq_data.add_delta(&delta_full);
-                acq_data.update_bbox(&bbox);
+                acq_data.add_results(&channel_result.udf_name, &channel_result.channel_name, &delta_full, &bbox);
             })
-            .or_insert_with(move || AcquisitionData::new(delta_full, bbox, &key));
+            .or_insert_with(move || {
+                let mut acq_data = AcquisitionData::new(acquisition_id.to_string());
+                acq_data.add_results(&channel_result.udf_name, &channel_result.channel_name, &delta_full, &bbox);
+                acq_data
+            });
     }
 
     /// Try to receive some messages, without a set deadline etc.
@@ -294,10 +335,10 @@ fn receiver_thread(channel: Sender<MessagePart>, stop_event: Arc<AtomicBool>) {
                     break 'inner;
                 }
                 Err(crate::messages::CommError::NoMessagesAvailable) => {
-                    error!("NoMessagesAvailable, reconnecting...");
                     // FIXME: sometimes this means the connection is done...
-                    // continue;
-                    break 'inner;
+                    // error!("NoMessagesAvailable, reconnecting...");
+                    // break 'inner;
+                    continue;
                 }
                 Err(e) => {
                     error!("Got an error while receiving ({e:?}), reconnecting...");
@@ -314,11 +355,12 @@ pub fn background_thread(sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>
         let (part_sender, part_receiver) = unbounded::<MessagePart>();
 
         let recv_stop_event = Arc::new(AtomicBool::new(false));
+        let recv_stop_event_bg = Arc::clone(&recv_stop_event);
 
         std::thread::Builder::new()
             .name("receiver".to_string())
             .spawn(move || {
-                receiver_thread(part_sender, recv_stop_event);
+                receiver_thread(part_sender, recv_stop_event_bg);
             })
             .unwrap();
 
@@ -326,6 +368,7 @@ pub fn background_thread(sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>
 
         loop {
             if stop_event.load(Ordering::Relaxed) {
+                recv_stop_event.store(true, Ordering::Relaxed);
                 break 'outer;
             }
 
@@ -337,26 +380,34 @@ pub fn background_thread(sender: Sender<AcqMessage>, stop_event: Arc<AtomicBool>
             // FIXME: reconnect on errors here?
             let process_results = bg_state.process_pending().unwrap();
 
+            // for each result and each channel, send an `UpdatedData`
             for data in process_results.processed {
-                let img = render_to_rgb(data.get_latest(), data.get_bbox());
-                sender
-                    .send(AcqMessage::UpdatedData {
-                        id: data.get_id().to_string(),
-                        img,
-                        bbox: data.get_bbox().to_owned(),
-                    })
-                    .unwrap();
+                for ((_, _), channel_result) in &data.channel_results {
+                    let img = render_to_rgb(channel_result.get_latest(), channel_result.get_bbox());
+                    sender
+                        .send(AcqMessage::UpdatedData {
+                            id: data.id.to_string(),
+                            img,
+                            udf_name: channel_result.udf_name.to_string(),
+                            channel_name: channel_result.channel_name.to_string(),
+                            bbox: channel_result.get_bbox().to_owned(),
+                        })
+                        .unwrap();
+                }
             }
 
             sender
                 .send(AcqMessage::Stats(ProcessingStats {
                     num_pending,
-                    finished: process_results.to_remove.len(),
+                    finished: process_results.ended_ids.len(),
                 }))
                 .unwrap();
 
-            for id in process_results.to_remove {
+            for id in process_results.ended_ids {
                 bg_state.acquisitions.remove(&id);
+                sender
+                    .send(AcqMessage::AcquisitionEnded(id.clone()))
+                    .unwrap();
             }
 
             let elapsed = start.elapsed();

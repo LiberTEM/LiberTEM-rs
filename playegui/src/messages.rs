@@ -35,8 +35,8 @@ pub struct ChannelDeltaResult {
     pub delta_shape: (u16, u16),
     pub dtype: ResultDType,
     pub encoding: ResultEncoding,
-    pub channel_idx: usize,
-    pub name: String,
+    pub channel_name: String,
+    pub udf_name: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -62,10 +62,12 @@ pub struct ProcessingStats {
 #[derive(Clone)]
 pub enum AcqMessage {
     AcquisitionStarted(AcquisitionStarted),
-    AcquisitionEnded(AcquisitionEnded),
+    AcquisitionEnded(String),
     Stats(ProcessingStats),
     UpdatedData {
         id: String,
+        udf_name: String,
+        channel_name: String,
         img: ColorImage,
         bbox: BBox,
     },
@@ -102,10 +104,12 @@ impl Debug for AcqMessage {
                 f.debug_tuple("AcquisitionStarted").field(arg0).finish()
             }
             Self::AcquisitionEnded(arg0) => f.debug_tuple("AcquisitionEnded").field(arg0).finish(),
-            Self::UpdatedData { id, bbox, img: _ } => f
+            Self::UpdatedData { id, bbox, img: _, udf_name, channel_name } => f
                 .debug_struct("UpdatedData")
                 .field("id", id)
                 .field("bbox", bbox)
+                .field("udf_name", udf_name)
+                .field("channel_name", channel_name)
                 .finish(),
             Self::Stats(s) => f.debug_tuple("Stats").field(s).finish(),
         }
