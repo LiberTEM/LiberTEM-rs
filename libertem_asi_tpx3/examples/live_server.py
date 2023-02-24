@@ -295,46 +295,53 @@ class WSServer:
         for result in delta_results:
             await self.broadcast(result.compressed_data)
 
-    async def serve(self):
+    async def acquisition_loop(self):
         min_delta = 0.01
-        async with websockets.serve(self, "localhost", 8444):
-            while True:
-                pending_acq = await sync_to_async(self.conn.wait_for_acquisition, timeout=10)
-                if pending_acq is None:
-                    continue
-                acq_id = await self.handle_pending_acquisition(pending_acq)
-                print(f"acquisition starting with id={acq_id}")
-                t0 = time.perf_counter()
-                previous_results = None
-                partial_results = None
+        while True:
+            pending_acq = await sync_to_async(self.conn.wait_for_acquisition, timeout=10)
+            if pending_acq is None:
+                continue
+            acq_id = await self.handle_pending_acquisition(pending_acq)
+            print(f"acquisition starting with id={acq_id}")
+            t0 = time.perf_counter()
+            previous_results = None
+            partial_results = None
+            try:
+                aq = self.ctx.prepare_from_pending(
+                    pending_acq,
+                    conn=self.conn,
+                    pending_aq=pending_acq,
+                    frames_per_partition=4*8192,
+                )
+                last_update = 0
                 try:
-                    aq = self.ctx.prepare_from_pending(
-                        pending_acq,
-                        conn=self.conn,
-                        pending_aq=pending_acq,
-                        frames_per_partition=4*8192,
-                    )
-                    last_update = 0
-                    try:
-                        udfs_only = list(self.udfs.values())
-                        async for partial_results in self.ctx.run_udf_iter(dataset=aq, udf=udfs_only, sync=False):
-                            if time.time() - last_update > min_delta:
-                                await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
-                                previous_results = copy.deepcopy(partial_results)
-                                last_update = time.time()
-                        await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        self.ctx.close()
-                        self.conn.close()
-                        self.connect()
-                    previous_results = copy.deepcopy(partial_results)
-                finally:
-                    await self.handle_acquisition_end(pending_acq, acq_id)
-                previous_results = None
-                t1 = time.perf_counter()
-                print(f"acquisition done with id={acq_id}; took {t1-t0:.3f}s")
+                    udfs_only = list(self.udfs.values())
+                    async for partial_results in self.ctx.run_udf_iter(dataset=aq, udf=udfs_only, sync=False):
+                        if time.time() - last_update > min_delta:
+                            await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
+                            previous_results = copy.deepcopy(partial_results)
+                            last_update = time.time()
+                    await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    self.ctx.close()
+                    self.conn.close()
+                    self.connect()
+                previous_results = copy.deepcopy(partial_results)
+            finally:
+                await self.handle_acquisition_end(pending_acq, acq_id)
+            previous_results = None
+            t1 = time.perf_counter()
+            print(f"acquisition done with id={acq_id}; took {t1-t0:.3f}s")
+
+    async def serve(self):
+        async with websockets.serve(self, "localhost", 8444):
+            try:
+                await self.acquisition_loop()
+            finally:
+                self.conn.close()
+                self.ctx.close()
 
     def connect(self):
         conn = AsiDetectorConnection(
