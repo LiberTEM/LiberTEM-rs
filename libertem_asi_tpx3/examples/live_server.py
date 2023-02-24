@@ -9,13 +9,16 @@ import numpy as np
 import uuid
 import websockets
 from websockets.legacy.server import WebSocketServerProtocol
+from websockets.legacy.client import WebSocketClientProtocol
 import bitshuffle
 
 from libertem.udf.sum import SumUDF
 from libertem.udf.sumsigudf import SumSigUDF
 from libertem.executor.pipelined import PipelinedExecutor
 from libertem_live.api import LiveContext
-from libertem_live.udf.monitor import SignalMonitorUDF
+from libertem_live.udf.monitor import (
+    SignalMonitorUDF, PartitionMonitorUDF
+)
 from acquisition import AsiAcquisition, AsiDetectorConnection
 
 from libertem.udf.base import UDFResults
@@ -25,6 +28,17 @@ if typing.TYPE_CHECKING:
     from libertem.common.executor import JobExecutor
 
 
+class EncodedResult:
+    def __init__(self, compressed_data, bbox, full_shape, delta_shape, dtype, idx):
+        self.compressed_data = compressed_data
+        self.bbox = bbox
+        self.full_shape = full_shape
+        self.delta_shape = delta_shape
+        self.dtype = dtype
+        self.idx = idx
+
+    def is_empty(self):
+        return self.compressed_data is None
 
 
 @numba.njit(cache=True)
@@ -56,9 +70,10 @@ class WSServer:
         self.connect()
         self.ws_connected = set()
         self.udfs = [
-            SumSigUDF(),
+            # SumSigUDF(),
             # SumUDF()
             # SignalMonitorUDF(),
+            PartitionMonitorUDF(),
         ]
 
     async def __call__(self, websocket: WebSocketServerProtocol):
@@ -74,11 +89,14 @@ class WSServer:
     def unregister_client(self, websocket):
         self.ws_connected.remove(websocket)
 
-    async def client_loop(self, websocket):
+    async def client_loop(self, websocket: WebSocketClientProtocol):
         try:
             self.register_client(websocket)
-            async for msg in websocket:
-                await self.handle_message(msg, websocket)
+            try:
+                async for msg in websocket:
+                    await self.handle_message(msg, websocket)
+            except websockets.exceptions.ConnectionClosedError:
+                await websocket.close()
         finally:
             self.unregister_client(websocket)
 
@@ -88,25 +106,32 @@ class WSServer:
     async def broadcast(self, msg):
         websockets.broadcast(self.ws_connected, msg)
 
-    async def make_delta(self, partial_results: UDFResults, previous_results: typing.Optional[UDFResults]) -> np.ndarray:
-        data = partial_results.buffers[0]['intensity'].data
-        if previous_results is None:
-            data_previous = np.zeros_like(data)
-        else:
-            data_previous = previous_results.buffers[0]['intensity'].data
+    async def make_deltas(self, partial_results: UDFResults, previous_results: typing.Optional[UDFResults]) -> np.ndarray:
+        deltas = []
+        for idx in range(len(partial_results.buffers)):
+            data = partial_results.buffers[idx]['intensity'].data
+            if previous_results is None:
+                data_previous = np.zeros_like(data)
+            else:
+                data_previous = previous_results.buffers[idx]['intensity'].data
 
-        delta = data - data_previous
-        return delta
+            delta = data - data_previous
+            deltas.append(delta)
+        return deltas
 
-    async def encode_result(self, delta: np.ndarray) -> bytes:
+    async def encode_result(self, delta: np.ndarray, channel_idx: int) -> bytes:
         nonzero_mask = ~np.isclose(0, delta)
 
         if np.count_nonzero(nonzero_mask) == 0:
             print(f"zero-delta update, skipping")
             # skip this update if it is all-zero
-            # TODO: might want to extract delta building into its own function
-            # then we can decide outside if we want to run the encoding function or not
-            return b"", None  # FIXME: return some structured stuff instead
+            return EncodedResult(
+                None,
+                None,
+                None,
+                None,
+                channel_idx,
+            )
 
         bbox = get_bbox(delta)
         ymin, ymax, xmin, xmax = bbox
@@ -117,7 +142,13 @@ class WSServer:
         # compressed = await sync_to_async(lambda: lz4.frame.compress(np.copy(delta_for_blit)))
         compressed = await sync_to_async(lambda: bitshuffle.compress_lz4(np.copy(delta_for_blit)))
 
-        return memoryview(compressed), bbox, delta_for_blit.shape, delta_for_blit.dtype
+        return EncodedResult(
+            memoryview(compressed),
+            bbox,
+            delta_for_blit.shape,
+            delta_for_blit.dtype,
+            channel_idx,
+        )
 
     async def handle_pending_acquisition(self, pending) -> str:
         acq_id = str(uuid.uuid4())
@@ -146,24 +177,30 @@ class WSServer:
         acq_id: str,
         previous_results: typing.Optional[UDFResults]
     ):
-        delta = await self.make_delta(partial_results, previous_results)
-        nonzero_mask = ~np.isclose(0, delta)
-        if np.count_nonzero(nonzero_mask) == 0:
-            return  # skip this zero-content update
+        deltas = await self.make_deltas(partial_results, previous_results)
 
-        result_bytes, bbox, shape, dtype = await self.encode_result(delta)
+        delta_results = []
+        for delta in deltas:
+            delta_results.append(await self.encode_result(delta))
         await self.broadcast(json.dumps({
             "event": "RESULT",
-            "bbox": bbox,
-            "shape": delta.shape,  # shape of the full delta array, i.e. shape of the result
-            "delta_shape": shape,
-            "dtype": str(delta.dtype),
-            "encoding": "bslz4",
             "id": acq_id,
-            # FIXME: "metadata" for this result, like number of buffers, ...
+            "channels": [
+                {
+                    "bbox": result.bbox,
+                    "full_shape": result.full_shape,
+                    "delta_shape": result.delta_shape,
+                    "dtype": str(result.dtype),
+                    "encoding": "bslz4",
+                    "channel_idx": result.idx,
+                    "name": "TODO",
+                }
+                for result in delta_results
+                if not result.is_empty()
+            ],
         }))
-        # FIXME: might need more than one message!
-        await self.broadcast(result_bytes)
+        for (result_bytes, bbox, shape, dtype) in delta_results:
+            await self.broadcast(result_bytes)
 
     async def serve(self):
         min_delta = 0.01
@@ -176,6 +213,7 @@ class WSServer:
                 print(f"acquisition starting with id={acq_id}")
                 t0 = time.perf_counter()
                 previous_results = None
+                partial_results = None
                 try:
                     aq = self.ctx.prepare_from_pending(
                         pending_acq,
