@@ -13,8 +13,10 @@ from websockets.legacy.server import WebSocketServerProtocol
 from websockets.legacy.client import WebSocketClientProtocol
 import bitshuffle
 
+from libertem import masks
 from libertem.udf.sum import SumUDF
 from libertem.udf.sumsigudf import SumSigUDF
+from libertem.udf.masks import ApplyMasksUDF
 from libertem.executor.pipelined import PipelinedExecutor
 from libertem_live.api import LiveContext
 from libertem_live.udf.monitor import (
@@ -76,13 +78,59 @@ def get_bbox(arr) -> typing.Tuple[int, ...]:
     return int(ymin), int(ymax), int(xmin), int(xmax)
 
 
+class SingleMaskUDF(ApplyMasksUDF):
+    def get_result_buffers(self):
+        dtype = np.result_type(self.meta.input_dtype, self.get_mask_dtype())
+        return {
+            'intensity': self.buffer(
+                kind='nav', extra_shape=(1,), dtype=dtype, where='device', use='internal',
+            ),
+            'intensity_nav': self.buffer(
+                kind='nav', extra_shape=(), dtype=dtype, where='device', use='result',
+            ),
+        }
+
+    def get_results(self):
+        # bummer: we can't reshape the data, as the extra_shape from the buffer
+        # will override our desired shape. so we have to use two result buffers
+        # instead:
+        return {
+            'intensity_nav': self.results.intensity.reshape(self.meta.dataset_shape.nav),
+        }
+
+
 class WSServer:
     def __init__(self):
         self.connect()
         self.ws_connected = set()
-        self.udfs = OrderedDict({
-            "brightfield": SumSigUDF(),
-            # SumUDF()
+        self.parameters = {
+            'cx': 516/2.0,
+            'cy': 512/2.0,
+            'ri': 200.0,
+            'ro': 530.0,
+        }
+        self.udfs = self.get_udfs()
+
+    def get_udfs(self):
+        cx = self.parameters['cx']
+        cy = self.parameters['cy']
+        ri = self.parameters['ri']
+        ro = self.parameters['ro']
+
+        def _ring():
+            return masks.ring(
+                centerX=cx,
+                centerY=cy,
+                imageSizeX=516,
+                imageSizeY=516,
+                radius=ro,
+                radius_inner=ri)
+
+        mask_udf = SingleMaskUDF(mask_factories=[_ring])
+        return OrderedDict({
+            # "brightfield": SumSigUDF(),
+            "annular": mask_udf,
+            # "sum": SumUDF(),
             # "monitor": SignalMonitorUDF(),
             "monitor_partition": PartitionMonitorUDF(),
         })
@@ -91,8 +139,11 @@ class WSServer:
         await self.send_state_dump(websocket)
         await self.client_loop(websocket)
 
-    async def send_state_dump(self, websocket):
-        pass
+    async def send_state_dump(self, websocket: WebSocketClientProtocol):
+        await websocket.send(json.dumps({
+            'event': 'UPDATE_PARAMS',
+            'parameters': self.parameters,
+        }))
 
     def register_client(self, websocket):
         self.ws_connected.add(websocket)
@@ -104,6 +155,7 @@ class WSServer:
         try:
             self.register_client(websocket)
             try:
+                await self.send_state_dump(websocket)
                 async for msg in websocket:
                     await self.handle_message(msg, websocket)
             except websockets.exceptions.ConnectionClosedError:
@@ -114,11 +166,13 @@ class WSServer:
     async def handle_message(self, msg, websocket):
         try:
             msg = json.loads(msg)
-            if msg['event'] == 'UPDATE_PARAMS':
-                pass  # ... etc.
-                # TODO: broadcast to all clients
-                # TODO: also broadcast these parameters at the beginning!
-                self.broadcast(json.dumps({'event': 'UPDATE_PARAMS'}))
+            # FIXME: hack to not require the 'event' "tag":
+            if 'event' not in msg or msg['event'] == 'UPDATE_PARAMS':
+                print(f"parameter update: {msg}")
+                self.parameters = msg['parameters']
+                self.udfs = self.get_udfs()
+                # broadcast to all clients:
+                self.broadcast(json.dumps(msg))
         except Exception as e:
             print(e)
 
@@ -146,6 +200,10 @@ class WSServer:
         return deltas
 
     async def encode_result(self, delta: np.ndarray, udf_name: str, channel_name: str) -> EncodedResult:
+        """
+        Slice `delta` to its non-zero region and compress that. Returns the information
+        needed to reconstruct the the full result.
+        """
         nonzero_mask = ~np.isclose(0, delta)
 
         if np.count_nonzero(nonzero_mask) == 0:
