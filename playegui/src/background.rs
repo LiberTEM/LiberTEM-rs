@@ -10,8 +10,8 @@ use std::{
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use egui::ColorImage;
 use log::{error, info};
-use ndarray::{s, Array2, ArrayViewMut2, Zip};
-use rayon::prelude::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use ndarray::{s, Array2, ArrayViewMut2};
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     app::ConnectionStatus,
@@ -42,7 +42,7 @@ pub fn decompress_into<T>(
 #[derive(Debug, Clone)]
 pub struct ChannelResult {
     latest: Array2<f32>,
-    deltas: Vec<Array2<f32>>,
+    // deltas: Vec<Array2<f32>>,
     bbox: BBox,
     channel_name: String,
     udf_name: String,
@@ -86,9 +86,9 @@ impl AcquisitionData {
 impl ChannelResult {
     pub fn new(delta: Array2<f32>, bbox: BBox, channel_name: &str, udf_name: &str) -> Self {
         Self {
-            latest: delta.clone(),
+            latest: delta,
             bbox,
-            deltas: vec![delta],
+            //deltas: vec![delta],
             channel_name: channel_name.to_string(),
             udf_name: udf_name.to_string(),
         }
@@ -104,7 +104,7 @@ impl ChannelResult {
 
     pub fn add_delta(&mut self, delta: &Array2<f32>) {
         self.latest = &self.latest + delta;
-        self.deltas.push(delta.clone())
+        // self.deltas.push(delta.clone())
     }
 
     pub fn update_bbox(&mut self, bbox: &BBox) {
@@ -156,7 +156,7 @@ impl BackgroundState {
         let start_time = Instant::now();
 
         loop {
-            if start_time.elapsed() > Duration::from_millis(1000) {
+            if start_time.elapsed() > Duration::from_millis(16) {
                 break;
             }
 
@@ -334,13 +334,14 @@ pub fn background_thread(
     stop_event: Arc<AtomicBool>,
     status: Arc<Mutex<ConnectionStatus>>,
 ) {
+    let recv_stop_event = Arc::new(AtomicBool::new(false));
+
     'outer: loop {
         let (part_sender, part_receiver) = unbounded::<MessagePart>();
 
         // some stuff that needs to be moved to the bg thread:
-        let recv_stop_event = Arc::new(AtomicBool::new(false));
         let recv_stop_event_bg = Arc::clone(&recv_stop_event);
-        let recv_control_channel = control_channel.clone();
+        let recv_control_channel = control_channel;
 
         std::thread::Builder::new()
             .name("receiver".to_string())
@@ -353,7 +354,6 @@ pub fn background_thread(
 
         loop {
             if stop_event.load(Ordering::Relaxed) {
-                recv_stop_event.store(true, Ordering::Relaxed);
                 break 'outer;
             }
 
@@ -397,13 +397,14 @@ pub fn background_thread(
             }
 
             let elapsed = start.elapsed();
-            let limit = Duration::from_millis(5);
+            let limit = Duration::from_millis(16);
 
-            // if elapsed < limit {
-            //     std::thread::sleep(limit - elapsed);
-            // }
+            if elapsed < limit {
+                std::thread::sleep(limit - elapsed);
+            }
         }
     }
 
+    recv_stop_event.store(true, Ordering::Relaxed);
     info!("stopped background thread...");
 }
