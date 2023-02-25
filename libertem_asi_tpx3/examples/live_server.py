@@ -172,7 +172,8 @@ class WSServer:
                 self.parameters = msg['parameters']
                 self.udfs = self.get_udfs()
                 # broadcast to all clients:
-                self.broadcast(json.dumps(msg))
+                msg['event'] = 'UPDATE_PARAMS'
+                await self.broadcast(json.dumps(msg))
         except Exception as e:
             print(e)
 
