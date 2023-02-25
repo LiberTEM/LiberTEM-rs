@@ -346,7 +346,12 @@ pub fn background_thread(
         std::thread::Builder::new()
             .name("receiver".to_string())
             .spawn(move || {
-                receiver_thread(recv_control_channel, part_sender, recv_stop_event_bg, status);
+                receiver_thread(
+                    recv_control_channel,
+                    part_sender,
+                    recv_stop_event_bg,
+                    status,
+                );
             })
             .unwrap();
 
