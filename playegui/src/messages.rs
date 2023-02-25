@@ -99,9 +99,7 @@ pub enum MessagePart {
 impl Debug for MessagePart {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Empty => {
-                f.debug_tuple("Empty").finish()
-            }
+            Self::Empty => f.debug_tuple("Empty").finish(),
             Self::AcquisitionStarted(arg0) => {
                 f.debug_tuple("AcquisitionStarted").field(arg0).finish()
             }
@@ -179,7 +177,7 @@ impl From<serde_json::Error> for CommError {
 }
 
 impl MessagePart {
-    pub fn from_binary(data: Vec<u8>) -> Self  {
+    pub fn from_binary(data: Vec<u8>) -> Self {
         Self::AcquisitionBinaryPart(data)
     }
 
@@ -201,7 +199,9 @@ impl MessagePart {
                 let params: UpdateParams = serde_json::from_str(&message)?;
                 Ok(Self::UpdateParams(params.parameters))
             }
-            event => Err(CommError::UnknownEventError { event: event.to_string() } ),
+            event => Err(CommError::UnknownEventError {
+                event: event.to_string(),
+            }),
         }
     }
 }
