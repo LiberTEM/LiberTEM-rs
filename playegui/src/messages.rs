@@ -1,4 +1,4 @@
-use std::{fmt::Debug, net::TcpStream};
+use std::fmt::Debug;
 
 use egui::ColorImage;
 use ndarray::Array2;
@@ -168,20 +168,7 @@ pub enum CommError {
 
 impl From<tungstenite::Error> for CommError {
     fn from(err: tungstenite::Error) -> Self {
-        match err {
-            // tungstenite::Error::ConnectionClosed => todo!(),
-            // tungstenite::Error::AlreadyClosed => todo!(),
-            // tungstenite::Error::Io(_) => todo!(),
-            // tungstenite::Error::Tls(_) => todo!(),
-            // tungstenite::Error::Capacity(_) => todo!(),
-            // tungstenite::Error::Protocol(_) => todo!(),
-            // tungstenite::Error::SendQueueFull(_) => todo!(),
-            // tungstenite::Error::Utf8 => todo!(),
-            // tungstenite::Error::Url(_) => todo!(),
-            // tungstenite::Error::Http(_) => todo!(),
-            // tungstenite::Error::HttpFormat(_) => todo!(),
-            other => CommError::WebsocketError(other),
-        }
+        CommError::WebsocketError(err)
     }
 }
 

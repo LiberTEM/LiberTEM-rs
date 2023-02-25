@@ -13,7 +13,7 @@ use crossbeam::channel::{unbounded, Receiver, Sender};
 use eframe::epaint::ahash::HashSet;
 use egui::{
     plot::{Corner, HLine, Legend, MarkerShape, Plot, PlotImage, PlotPoint, Points, Polygon},
-    vec2, ColorImage, TextureHandle, TextureOptions,
+    vec2, ColorImage, TextureHandle, TextureOptions, Ui,
 };
 use log::trace;
 use ndarray::Array2;
@@ -294,6 +294,27 @@ impl TemplateApp {
 
         pairs
     }
+
+    fn load_textures(&mut self, ui: &mut Ui) {
+        // maybe load textures (if they aren't already):
+        let aq = std::mem::take(&mut self.acquisitions);
+        self.acquisitions = aq
+            .into_iter()
+            .map(|(id, (img_or_texture, bbox, data))| {
+                let tex = match img_or_texture {
+                    ImageOrTexture::Image(img) => {
+                        let tex_options: TextureOptions = TextureOptions {
+                            magnification: egui::TextureFilter::Nearest,
+                            minification: egui::TextureFilter::Linear,
+                        };
+                        ui.ctx().load_texture(format!("{id:?}"), img, tex_options)
+                    }
+                    ImageOrTexture::Texture(t) => t,
+                };
+                (id, (ImageOrTexture::Texture(tex), bbox, data))
+            })
+            .collect();
+    }
 }
 
 impl eframe::App for TemplateApp {
@@ -338,14 +359,14 @@ impl eframe::App for TemplateApp {
         };
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
-            ui.heading("Side Panel");
+            ui.heading("Parameters");
 
-            let ri = egui::Slider::new(&mut ring_params.ri, 0.0..=516.0).text("ri");
+            let ri = egui::Slider::new(&mut ring_params.ri, 0.0..=516.0 / 2.0).text("ri");
             if ui.add(ri).changed() {
                 send_ring_params(ring_params, &self.control_channel);
             }
 
-            let ro = egui::Slider::new(&mut ring_params.ro, 0.0..=516.0).text("ro");
+            let ro = egui::Slider::new(&mut ring_params.ro, 0.0..=516.0 / 2.0).text("ro");
             if ui.add(ro).changed() {
                 send_ring_params(ring_params, &self.control_channel);
             }
@@ -361,7 +382,10 @@ impl eframe::App for TemplateApp {
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.label(format!("Connection: {:?}", self.conn_status.lock().unwrap()));
+                ui.label(format!(
+                    "Connection: {:?}",
+                    self.conn_status.lock().unwrap()
+                ));
                 ui.label(format!("Pending messages: {:?}", self.stats.num_pending));
                 ui.label(format!("Finished Acquisitions: {:?}", self.stats.finished));
 
@@ -399,25 +423,7 @@ impl eframe::App for TemplateApp {
                 .y_grid_spacer(Box::new(|_grid_input| Vec::new()))
                 .data_aspect(1.0);
 
-            // maybe load textures (if they aren't already):
-            let aq = std::mem::take(&mut self.acquisitions);
-            self.acquisitions = aq
-                .into_iter()
-                .map(|(id, (img_or_texture, bbox, data))| {
-                    let tex = match img_or_texture {
-                        ImageOrTexture::Image(img) => {
-                            let tex_options: TextureOptions = TextureOptions {
-                                magnification: egui::TextureFilter::Nearest,
-                                minification: egui::TextureFilter::Linear,
-                            };
-                            ui.ctx().load_texture(format!("{id:?}"), img, tex_options)
-                        }
-                        ImageOrTexture::Texture(t) => t,
-                    };
-                    (id, (ImageOrTexture::Texture(tex), bbox, data))
-                })
-                .collect();
-
+            self.load_textures(ui);
             let channel_list = self.list_channels();
 
             plot.show(ui, |plot_ui| {
@@ -429,7 +435,7 @@ impl eframe::App for TemplateApp {
                         })
                         .unwrap();
                     if let Some(item) = self.acquisitions.get(id) {
-                        let (img_or_texture, bbox, data) = item;
+                        let (img_or_texture, bbox, _data) = item;
                         if let ImageOrTexture::Texture(texture_id) = img_or_texture {
                             let pos =
                                 PlotPoint::new(idx as f32 + texture_id.aspect_ratio() / 2.0, 0.5);
