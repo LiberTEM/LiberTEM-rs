@@ -299,10 +299,10 @@ class WSServer:
     async def acquisition_loop(self):
         min_delta = 0.05
         while True:
+            pending_acq = await sync_to_async(self.conn.wait_for_acquisition, timeout=10)
+            if pending_acq is None:
+                continue
             try:
-                pending_acq = await sync_to_async(self.conn.wait_for_acquisition, timeout=10)
-                if pending_acq is None:
-                    continue
                 acq_id = await self.handle_pending_acquisition(pending_acq)
                 print(f"acquisition starting with id={acq_id}")
                 t0 = time.perf_counter()
