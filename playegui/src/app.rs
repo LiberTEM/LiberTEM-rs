@@ -364,8 +364,6 @@ impl eframe::App for TemplateApp {
         };
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
-            self.logo.show_max_size(ui, vec2(250.0, 200.0));
-
             ui.heading("Parameters");
 
             let ri = egui::Slider::new(&mut ring_params.ri, 0.0..=516.0 / 2.0).text("ri");
@@ -389,6 +387,8 @@ impl eframe::App for TemplateApp {
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                self.logo.show_max_size(ui, vec2(250.0, 200.0));
+
                 ui.label(format!(
                     "Connection: {:?}",
                     self.conn_status.lock().unwrap()
@@ -402,6 +402,7 @@ impl eframe::App for TemplateApp {
                     let rate = delta_f / delta_t;
                     ui.label(format!("Update rate: {:.3}/s", rate));
                 }
+
 
                 // ui.horizontal(|ui| {
                 //     ui.spacing_mut().item_spacing.x = 0.0;
