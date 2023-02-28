@@ -15,6 +15,7 @@ use egui::{
     plot::{Corner, HLine, Legend, MarkerShape, Plot, PlotImage, PlotPoint, Points, Polygon},
     vec2, ColorImage, TextureHandle, TextureOptions, Ui,
 };
+use egui_extras::RetainedImage;
 use log::trace;
 use ndarray::Array2;
 
@@ -90,7 +91,7 @@ impl Default for RingParams {
             cx: 260.0,
             cy: 250.0,
             ri: 140.0,
-            ro: 250.0,
+            ro: 200.0,
         }
     }
 }
@@ -109,6 +110,7 @@ pub struct TemplateApp {
     stats: AggregateStats,
     previous_stats: Option<(AggregateStats, AggregateStats)>,
     conn_status: Arc<Mutex<ConnectionStatus>>,
+    logo: RetainedImage,
 }
 
 fn circle_points(cx: f64, cy: f64, r: f64) -> Vec<[f64; 2]> {
@@ -152,6 +154,9 @@ impl TemplateApp {
         let (join_handle, data_source, control_channel) =
             Self::connect(Arc::clone(&stop_event), Arc::clone(&conn_status));
 
+        let image_bytes = include_bytes!("./logo.png");
+        let logo = RetainedImage::from_image_bytes("LiberTEM logo", image_bytes).unwrap();
+
         Self {
             ring_params: Default::default(),
             data_source,
@@ -163,6 +168,7 @@ impl TemplateApp {
             bg_thread: Some(join_handle),
             control_channel,
             conn_status,
+            logo,
         }
     }
 
@@ -188,7 +194,6 @@ impl TemplateApp {
 
 impl TemplateApp {
     /// Applies one or more messages.
-    /// l
 
     fn apply_acq_message(&mut self, msg: AcqMessage) -> Option<ProcessingStats> {
         match msg {
@@ -359,6 +364,8 @@ impl eframe::App for TemplateApp {
         };
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
+            self.logo.show_max_size(ui, vec2(250.0, 200.0));
+
             ui.heading("Parameters");
 
             let ri = egui::Slider::new(&mut ring_params.ri, 0.0..=516.0 / 2.0).text("ri");
