@@ -1,13 +1,13 @@
 use std::{
-    backtrace::Backtrace,
     path::Path,
     slice::{from_raw_parts, from_raw_parts_mut},
     sync::atomic::{AtomicU8, Ordering},
+    thread::JoinHandle,
+    time::Duration,
 };
 
-use log::trace;
-
 use anyhow::Result;
+use crossbeam::channel::{bounded, Sender};
 use raw_sync::locks::{LockImpl, LockInit, Mutex};
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +35,7 @@ pub struct SlotForWriting {
 
 // Safety: if you have a `SlotForWriting`, you have exclusive access
 // for writing into the slot this "token" points at
-unsafe impl Send for SlotForWriting {}
+// unsafe impl Send for SlotForWriting {}
 
 pub struct SlotIdx {
     pub ptr: *mut u8,
@@ -89,7 +89,9 @@ pub struct SharedSlabAllocator {
     /// total size including overheads
     total_size: usize,
 
-    shm: Shm, // FIXME: abstract this away
+    shm: Shm,
+
+    bg_thread: Option<(JoinHandle<()>, Sender<()>)>,
 }
 
 ///
@@ -171,8 +173,8 @@ impl SharedSlabAllocator {
         let ptr = shm.as_mut_ptr();
         let free_list_ptr = unsafe { ptr.offset(Self::MUTEX_SIZE.try_into().unwrap()) };
 
-        if init_structures {
-            let (_lock, used_size) = unsafe { Mutex::new(ptr, free_list_ptr).unwrap() };
+        let (_lock, bg_thread) = if init_structures {
+            let (lock, used_size) = unsafe { Mutex::new(ptr, free_list_ptr).unwrap() };
 
             if used_size > Self::MUTEX_SIZE {
                 panic!("Mutex size larger than expected!");
@@ -183,19 +185,57 @@ impl SharedSlabAllocator {
             for i in 0..slab_info.num_slots {
                 free_list.push(i);
             }
+
+            // XXX on Windows, a Mutex is no longer usable if the last handle is
+            // dropped, as opposed to POSIX, where it's enough to initialize
+            // some memory region, where we can attach later. So here we do a
+            // stupid hack and keep it alive in a background thread:
+            let (init_chan_s, init_chan_r) = bounded::<()>(0);
+            let (cleanup_chan_s, cleanup_chan_r) = bounded::<()>(0);
+
+            // crimes to ship the pointers to the bg thread:
+            struct B { 
+                mutex_ptr: *mut u8,
+                data_ptr: *mut u8,
+            }
+            unsafe impl Send for B {}
+            let b: B = B {
+                mutex_ptr: ptr,
+                data_ptr: free_list_ptr,
+            };
+            let j = std::thread::spawn(move || {
+                let b = b;
+                let _mtx = unsafe {
+                    Mutex::from_existing(b.mutex_ptr, b.data_ptr)
+                };
+                // we are done initializing...
+                init_chan_s.send(()).unwrap();
+                // so we just keep the mutex open and wait until we are cleaned up:
+                cleanup_chan_r.recv().unwrap();
+            });
+
+            // wait for initialization of the thread:
+            init_chan_r
+                .recv_timeout(Duration::from_millis(100))
+                .expect("background thread did not initialize");
+
+            (lock, Some((j, cleanup_chan_s)))
         } else {
-            let (_lock, used_size) = unsafe { Mutex::from_existing(ptr, free_list_ptr).unwrap() };
+            let (lock, used_size) = unsafe { Mutex::from_existing(ptr, free_list_ptr).unwrap() };
 
             if used_size > Self::MUTEX_SIZE {
                 panic!("Mutex size larger than expected!");
             }
-        }
+
+            (lock, None)
+        };
 
         Ok(Self {
             num_slots: slab_info.num_slots,
             slot_size: slab_info.slot_size,
             shm,
             total_size: slab_info.total_size,
+            bg_thread,
         })
     }
 
@@ -241,6 +281,7 @@ impl SharedSlabAllocator {
     /// a consumer.
     pub fn get_mut(&mut self) -> Option<SlotForWriting> {
         let slot_idx: usize = self.pop_free_slot_idx()?;
+
         Some(SlotForWriting {
             ptr: self.get_mut_ptr_for_slot(slot_idx),
             slot_idx,
@@ -372,6 +413,12 @@ impl SharedSlabAllocator {
 impl Drop for SharedSlabAllocator {
     fn drop(&mut self) {
         // trace!("SharedSlabAllocator::drop:\n{}", Backtrace::force_capture());
+
+        // clean up our hack:
+        if let Some((join, channel)) = self.bg_thread.take() {
+            channel.send(()).unwrap();
+            join.join().unwrap();
+        }
     }
 }
 
