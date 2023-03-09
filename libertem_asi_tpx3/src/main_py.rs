@@ -298,9 +298,11 @@ impl ASITpx3Connection {
         slf.start_passive_impl()
     }
 
-    fn close(mut slf: PyRefMut<Self>) {
-        slf.stats.log_stats();
-        slf.close_impl();
+    // FIXME: results in "Already Borrowed" if called while another thread is running in `self`,
+    // for example `wait_for_arm`, which calls `allow_threads`...
+    fn close(&mut self) {
+        self.stats.log_stats();
+        self.close_impl();
     }
 
     fn get_next_stack(&mut self, py: Python, max_size: u32) -> PyResult<Option<ChunkStackHandle>> {
