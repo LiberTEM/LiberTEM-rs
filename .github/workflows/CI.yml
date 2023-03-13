@@ -20,13 +20,13 @@ jobs:
         manylinux: auto
         command: build
         container: ghcr.io/libertem/manylinux2014_x86_64:latest
-        args: --release --sdist -o dist --find-interpreter
+        args: --release --sdist -o target/dist --find-interpreter
         sccache: 'true'
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
         name: wheels
-        path: ${{ matrix.crate }}/dist
+        path: ${{ matrix.crate }}/target/dist
 
   windows:
     runs-on: windows-latest
