@@ -61,13 +61,15 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     strategy:
       matrix:
         crate: [libertem_dectris, libertem_asi_tpx3]
         target: [x86_64, aarch64]
     steps:
-    # - name: Set LIBCLANG_PATH
-    #   run: echo "LIBCLANG_PATH=$(brew --prefix llvm@15)/lib" >> $env:GITHUB_ENV
+    - name: Set LIBCLANG_PATH
+      run: echo "LIBCLANG_PATH=$(brew --prefix llvm@15)/lib" >> $env:GITHUB_ENV
     - uses: actions/checkout@v3
       with:
         submodules: recursive
