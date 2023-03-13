@@ -26,7 +26,7 @@ jobs:
       uses: actions/upload-artifact@v2
       with:
         name: wheels
-        path: target/wheels/
+        path: ${{ matrix.crate }}/dist
 
   windows:
     runs-on: windows-latest
@@ -57,7 +57,7 @@ jobs:
       uses: actions/upload-artifact@v2
       with:
         name: wheels
-        path: target/wheels/
+        path: ${{ matrix.crate }}/dist
 
   macos:
     runs-on: macos-latest
@@ -84,7 +84,7 @@ jobs:
       uses: actions/upload-artifact@v2
       with:
         name: wheels
-        path: target/wheels/
+        path: ${{ matrix.crate }}/dist
 
   release:
     name: Release
