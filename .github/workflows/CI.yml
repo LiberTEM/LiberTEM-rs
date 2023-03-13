@@ -26,7 +26,7 @@ jobs:
       uses: actions/upload-artifact@v2
       with:
         name: wheels
-        path: target/dist
+        path: target/wheels/
 
   windows:
     runs-on: windows-latest
@@ -57,7 +57,7 @@ jobs:
       uses: actions/upload-artifact@v2
       with:
         name: wheels
-        path: dist
+        path: target/wheels/
 
   macos:
     runs-on: macos-latest
@@ -84,7 +84,7 @@ jobs:
       uses: actions/upload-artifact@v2
       with:
         name: wheels
-        path: dist
+        path: target/wheels/
 
   release:
     name: Release
