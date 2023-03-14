@@ -135,6 +135,7 @@ enum AcquisitionError {
     ZmqError { err: zmq::Error },
     BufferFull,
     StateError { msg: String },
+    ConfigurationError { msg: String },
 }
 
 impl Display for AcquisitionError {
@@ -166,6 +167,9 @@ impl Display for AcquisitionError {
             }
             AcquisitionError::StateError { msg } => {
                 write!(f, "state error: {msg}")
+            }
+            AcquisitionError::ConfigurationError { msg } => {
+                write!(f, "configuration error: {msg}")
             }
         }
     }
@@ -213,6 +217,12 @@ fn passive_acquisition(
                 }
             };
             debug!("dheader: {dheader:?}");
+
+            if dheader.header_detail == "none" {
+                return Err(AcquisitionError::ConfigurationError {
+                    msg: "header_detail must be 'basic' or 'all', is 'none'".to_string(),
+                });
+            }
 
             // second message: the header itself
             recv_part(&mut msg, socket, control_channel)?;

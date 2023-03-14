@@ -86,6 +86,8 @@ finally:
 - Add `env_logger`: set environment variable `LIBERTEM_DECTRIS_LOG_LEVEL` to e.g. `'INFO'` to enable logging
 - Improved error handling: raise an exception instead of panicing on serialization errors
 - Ignore messages with mismatching series ID
+- Add explicit checks for the correct `header_detail` levels
+- Move code into monorepo
 
 ### v0.2.2
 
