@@ -2,37 +2,41 @@ use std::{
     fs::remove_file,
     io::Write,
     num::Wrapping,
-    os::unix::net::{UnixListener, UnixStream},
     path::Path,
     thread,
-    time::Duration,
+    time::Duration, net::{TcpListener, TcpStream},
 };
 
 use clap::Parser;
 use ipc_test::SharedSlabAllocator;
-use sendfd::SendWithFd;
 
 const ITEMSIZE: usize = std::mem::size_of::<u16>();
 const SLOT_SIZE_ITEMS: usize = 512 * 512;
 const SLOT_SIZE_BYTES: usize = SLOT_SIZE_ITEMS * ITEMSIZE;
 
-#[cfg(feature = "disabled")]
-fn handle_connection(mut stream: UnixStream, num_slots: usize, send_num_items: usize, huge: bool) {
+fn handle_connection(
+    mut stream: TcpStream,
+    num_slots: usize,
+    send_num_items: usize,
+    huge: bool,
+    shm_path: &Path,
+) {
     println!("handling consumer");
-    let mut ssa = SharedSlabAllocator::new(num_slots, SLOT_SIZE_BYTES, huge).unwrap();
+    let mut ssa = SharedSlabAllocator::new(
+        num_slots, SLOT_SIZE_BYTES, huge, shm_path,
+    ).unwrap();
     println!(
         "created shm area of total size {} MiB",
         (ssa.num_slots_total() * ssa.get_slot_size()) / 1024 / 1024
     );
     let handle = ssa.get_handle();
-    let fds = [handle.fd];
-    let info = bincode::serialize(&handle.info).expect("serialize shm info");
+    let info = bincode::serialize(&handle).expect("serialize shm handle");
 
     stream
         .write_all(&info.len().to_be_bytes())
         .expect("send shm info size");
     stream
-        .send_with_fd(&info, &fds)
+        .write_all(&info)
         .expect("send shm info with fds");
 
     let mut items_sent: usize = 0;
@@ -98,7 +102,7 @@ fn main() {
         remove_file(path).expect("remove existing socket");
     }
 
-    let listener = UnixListener::bind(args.socket_path).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:9123").unwrap();
 
     // Stolen from the example on `UnixListener`:
     // accept connections and process them, spawning a new thread for each one
@@ -107,9 +111,10 @@ fn main() {
             Ok(stream) => {
                 /* connection succeeded */
 
-                #[cfg(feature = "disabled")]
+                let path = path.to_owned();
+
                 thread::spawn(move || {
-                    handle_connection(stream, args.slots, args.num_items, !args.disable_huge)
+                    handle_connection(stream, args.slots, args.num_items, !args.disable_huge, &path)
                 });
             }
             Err(err) => {
