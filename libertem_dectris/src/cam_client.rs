@@ -8,7 +8,6 @@ use pyo3::{
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::{
-    bs,
     common::PixelType,
     exceptions::{ConnectionError, DecompressError},
     frame_stack::FrameStackHandle,
@@ -45,7 +44,7 @@ impl CamClient {
 
             let image_data = handle.get_slice_for_frame(idx, &slot);
 
-            match bs::decompress_lz4_into(&image_data[12..], out_ptr, out_size, None) {
+            match bs_sys::decompress_lz4_into(&image_data[12..], out_ptr, out_size, None) {
                 Ok(()) => {}
                 Err(e) => {
                     let msg = format!("decompression failed: {e:?}");
@@ -189,7 +188,6 @@ mod tests {
     use zerocopy::AsBytes;
 
     use crate::{
-        bs,
         cam_client::CamClient,
         frame_stack::{FrameStackForWriting, FrameStackHandle},
     };
@@ -229,7 +227,7 @@ mod tests {
 
         // some predictable test data:
         let in_: Vec<u16> = (0..256).map(|i| i % 16).collect();
-        let compressed_data = bs::compress_lz4(&in_, None).unwrap();
+        let compressed_data = bs_sys::compress_lz4(&in_, None).unwrap();
 
         // compressed dectris data stream has an (unknown)
         // header in front of the compressed data, which we just cut off,
@@ -264,7 +262,7 @@ mod tests {
             assert_eq!(fs_handle, new_handle);
         });
 
-        let client = CamClient::new(&socket_as_path.to_str().unwrap()).unwrap();
+        let client = CamClient::new(socket_as_path.to_str().unwrap()).unwrap();
 
         let slot_r: ipc_test::Slot = shm.get(fs_handle.slot.slot_idx);
         let slice = slot_r.as_slice();
@@ -341,7 +339,7 @@ mod tests {
             assert_eq!(fs_handle, new_handle);
         });
 
-        let client = CamClient::new(&socket_as_path.to_str().unwrap()).unwrap();
+        let client = CamClient::new(socket_as_path.to_str().unwrap()).unwrap();
 
         let slot_r: ipc_test::Slot = shm.get(fs_handle.slot.slot_idx);
         let slice = slot_r.as_slice();
