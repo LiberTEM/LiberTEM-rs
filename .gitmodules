@@ -1,6 +1,3 @@
-[submodule "libertem_dectris/vendor/bitshuffle"]
-	path = libertem_dectris/vendor/bitshuffle
-	url = https://github.com/kiyo-masui/bitshuffle.git
 [submodule "bs-sys/vendor/bitshuffle"]
 	path = bs-sys/vendor/bitshuffle
 	url = https://github.com/kiyo-masui/bitshuffle.git

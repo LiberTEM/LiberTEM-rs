@@ -1,4 +1,3 @@
-pub mod bs;
 pub mod cam_client;
 pub mod common;
 pub mod dectris_py;
