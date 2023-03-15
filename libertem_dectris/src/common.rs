@@ -11,8 +11,9 @@ use zmq::{Context, Message, Socket, SocketEvent};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[pyclass]
-pub struct DSeriesOnly {
+pub struct DSeriesAndType {
     pub series: u64,
+    pub htype: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
