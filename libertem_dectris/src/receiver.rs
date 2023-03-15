@@ -7,12 +7,12 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
-use log::{debug, info, warn};
+use log::{debug, info, warn, error};
 use zmq::{Message, Socket};
 
 use crate::{
     common::{
-        setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DSeriesOnly, DetectorConfig,
+        setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DSeriesAndType, DetectorConfig,
     },
     frame_stack::{FrameStackForWriting, FrameStackHandle},
 };
@@ -386,11 +386,11 @@ fn drain_if_mismatch(
     control_channel: &Receiver<ControlMsg>,
 ) -> Result<(), AcquisitionError> {
     loop {
-        let series_res: Result<DSeriesOnly, _> = serde_json::from_str(msg.as_str().unwrap());
+        let series_res: Result<DSeriesAndType, _> = serde_json::from_str(msg.as_str().unwrap());
 
         if let Ok(recvd_series) = series_res {
             // everything is ok, we can go ahead:
-            if recvd_series.series == series {
+            if recvd_series.series == series && recvd_series.htype == "dheader-1.0" {
                 return Ok(());
             }
         }
@@ -424,94 +424,110 @@ fn background_thread(
     frame_stack_size: usize,
     mut shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
-    let ctx = zmq::Context::new();
-    let socket = ctx.socket(zmq::PULL).unwrap();
-    socket.set_rcvtimeo(1000).unwrap();
-    socket.connect(&uri).unwrap();
-    socket.set_rcvhwm(4 * 1024).unwrap();
+    'outer: loop {
+        let ctx = zmq::Context::new();
+        let socket = ctx.socket(zmq::PULL).unwrap();
+        socket.set_rcvtimeo(1000).unwrap();
+        socket.connect(&uri).unwrap();
+        socket.set_rcvhwm(4 * 1024).unwrap();
 
-    setup_monitor(ctx, "DectrisReceiver".to_string(), &socket);
+        setup_monitor(ctx, "DectrisReceiver".to_string(), &socket);
 
-    loop {
-        // control: main threads tells us to quit
-        let control = to_thread_r.recv_timeout(Duration::from_millis(100));
-        match control {
-            Ok(ControlMsg::StartAcquisitionPassive) => {
-                match passive_acquisition(
-                    to_thread_r,
-                    from_thread_s,
-                    &socket,
-                    frame_stack_size,
-                    &mut shm,
-                ) {
-                    Ok(_) => {}
-                    Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
-                        return Ok(());
-                    }
-                    e => {
-                        return e;
-                    }
-                }
-            }
-            Ok(ControlMsg::StartAcquisition { series }) => {
-                let mut msg: Message = Message::new();
-                recv_part(&mut msg, &socket, to_thread_r)?;
-
-                drain_if_mismatch(&mut msg, &socket, series, to_thread_r)?;
-
-                let dheader_res: Result<DHeader, _> = serde_json::from_str(msg.as_str().unwrap());
-                let dheader: DHeader = match dheader_res {
-                    Ok(header) => header,
-                    Err(err) => {
-                        from_thread_s
-                            .send(ResultMsg::SerdeError {
-                                msg: err.to_string(),
-                                recvd_msg: msg
-                                    .as_str()
-                                    .map_or_else(|| "".to_string(), |m| m.to_string()),
-                            })
-                            .unwrap();
-                        log::error!(
-                            "background_thread: serialization error: {}",
-                            err.to_string()
-                        );
-                        break;
-                    }
-                };
-                debug!("dheader: {dheader:?}");
-
-                // second message: the header itself
-                recv_part(&mut msg, &socket, to_thread_r)?;
-                let detector_config: DetectorConfig =
-                    serde_json::from_str(msg.as_str().unwrap()).unwrap();
-
-                match acquisition(
-                    detector_config,
-                    to_thread_r,
-                    from_thread_s,
-                    &socket,
-                    series,
-                    frame_stack_size,
-                    &mut shm,
-                ) {
-                    Ok(_) => {}
-                    Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
-                        return Ok(());
-                    }
-                    e => {
-                        return e;
+        loop {
+            // control: main threads tells us to quit
+            let control = to_thread_r.recv_timeout(Duration::from_millis(100));
+            match control {
+                Ok(ControlMsg::StartAcquisitionPassive) => {
+                    match passive_acquisition(
+                        to_thread_r,
+                        from_thread_s,
+                        &socket,
+                        frame_stack_size,
+                        &mut shm,
+                    ) {
+                        Ok(_) => {}
+                        Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            let msg = format!("passive_acquisition error: {}", e);
+                            from_thread_s
+                                .send(ResultMsg::Error {
+                                    msg,
+                                })
+                                .unwrap();
+                            error!("background_thread: error: {}; re-connecting", e);
+                            continue 'outer;
+                        }
                     }
                 }
+                Ok(ControlMsg::StartAcquisition { series }) => {
+                    let mut msg: Message = Message::new();
+                    recv_part(&mut msg, &socket, to_thread_r)?;
+
+                    drain_if_mismatch(&mut msg, &socket, series, to_thread_r)?;
+
+                    let dheader_res: Result<DHeader, _> = serde_json::from_str(msg.as_str().unwrap());
+                    let dheader: DHeader = match dheader_res {
+                        Ok(header) => header,
+                        Err(err) => {
+                            from_thread_s
+                                .send(ResultMsg::SerdeError {
+                                    msg: err.to_string(),
+                                    recvd_msg: msg
+                                        .as_str()
+                                        .map_or_else(|| "".to_string(), |m| m.to_string()),
+                                })
+                                .unwrap();
+                            log::error!(
+                                "background_thread: serialization error: {}",
+                                err.to_string()
+                            );
+                            break;
+                        }
+                    };
+                    debug!("dheader: {dheader:?}");
+
+                    // second message: the header itself
+                    recv_part(&mut msg, &socket, to_thread_r)?;
+                    let detector_config: DetectorConfig =
+                        serde_json::from_str(msg.as_str().unwrap()).unwrap();
+
+                    match acquisition(
+                        detector_config,
+                        to_thread_r,
+                        from_thread_s,
+                        &socket,
+                        series,
+                        frame_stack_size,
+                        &mut shm,
+                    ) {
+                        Ok(_) => {}
+                        Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            let msg = format!("acquisition error: {}", e);
+                            from_thread_s
+                                .send(ResultMsg::Error {
+                                    msg,
+                                })
+                                .unwrap();
+                            error!("background_thread: error: {}; re-connecting", e);
+                            continue 'outer;
+                        }
+                    }
+                }
+                Ok(ControlMsg::StopThread) => {
+                    debug!("background_thread: got a StopThread message");
+                    break 'outer;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    debug!("background_thread: control channel has disconnected");
+                    break 'outer;
+                }
+                Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do
             }
-            Ok(ControlMsg::StopThread) => {
-                debug!("background_thread: got a StopThread message");
-                break;
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                debug!("background_thread: control channel has disconnected");
-                break;
-            }
-            Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do
         }
     }
     debug!("background_thread: is done");
