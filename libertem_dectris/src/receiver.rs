@@ -7,12 +7,13 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
 use zmq::{Message, Socket};
 
 use crate::{
     common::{
-        setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesEnd, DSeriesAndType, DetectorConfig,
+        setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesAndType, DSeriesEnd,
+        DetectorConfig,
     },
     frame_stack::{FrameStackForWriting, FrameStackHandle},
 };
@@ -451,11 +452,7 @@ fn background_thread(
                         }
                         Err(e) => {
                             let msg = format!("passive_acquisition error: {}", e);
-                            from_thread_s
-                                .send(ResultMsg::Error {
-                                    msg,
-                                })
-                                .unwrap();
+                            from_thread_s.send(ResultMsg::Error { msg }).unwrap();
                             error!("background_thread: error: {}; re-connecting", e);
                             continue 'outer;
                         }
@@ -467,7 +464,8 @@ fn background_thread(
 
                     drain_if_mismatch(&mut msg, &socket, series, to_thread_r)?;
 
-                    let dheader_res: Result<DHeader, _> = serde_json::from_str(msg.as_str().unwrap());
+                    let dheader_res: Result<DHeader, _> =
+                        serde_json::from_str(msg.as_str().unwrap());
                     let dheader: DHeader = match dheader_res {
                         Ok(header) => header,
                         Err(err) => {
@@ -508,11 +506,7 @@ fn background_thread(
                         }
                         Err(e) => {
                             let msg = format!("acquisition error: {}", e);
-                            from_thread_s
-                                .send(ResultMsg::Error {
-                                    msg,
-                                })
-                                .unwrap();
+                            from_thread_s.send(ResultMsg::Error { msg }).unwrap();
                             error!("background_thread: error: {}; re-connecting", e);
                             continue 'outer;
                         }

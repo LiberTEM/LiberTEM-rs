@@ -403,7 +403,6 @@ impl eframe::App for TemplateApp {
                     ui.label(format!("Update rate: {:.3}/s", rate));
                 }
 
-
                 // ui.horizontal(|ui| {
                 //     ui.spacing_mut().item_spacing.x = 0.0;
                 //     ui.label("powered by ");
