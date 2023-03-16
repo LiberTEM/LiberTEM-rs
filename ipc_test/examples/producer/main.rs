@@ -1,10 +1,11 @@
 use std::{
     fs::remove_file,
     io::Write,
+    net::{TcpListener, TcpStream},
     num::Wrapping,
     path::Path,
     thread,
-    time::Duration, net::{TcpListener, TcpStream},
+    time::Duration,
 };
 
 use clap::Parser;
@@ -22,9 +23,7 @@ fn handle_connection(
     shm_path: &Path,
 ) {
     println!("handling consumer");
-    let mut ssa = SharedSlabAllocator::new(
-        num_slots, SLOT_SIZE_BYTES, huge, shm_path,
-    ).unwrap();
+    let mut ssa = SharedSlabAllocator::new(num_slots, SLOT_SIZE_BYTES, huge, shm_path).unwrap();
     println!(
         "created shm area of total size {} MiB",
         (ssa.num_slots_total() * ssa.get_slot_size()) / 1024 / 1024
@@ -35,9 +34,7 @@ fn handle_connection(
     stream
         .write_all(&info.len().to_be_bytes())
         .expect("send shm info size");
-    stream
-        .write_all(&info)
-        .expect("send shm info with fds");
+    stream.write_all(&info).expect("send shm info with fds");
 
     let mut items_sent: usize = 0;
 
@@ -114,7 +111,13 @@ fn main() {
                 let path = path.to_owned();
 
                 thread::spawn(move || {
-                    handle_connection(stream, args.slots, args.num_items, !args.disable_huge, &path)
+                    handle_connection(
+                        stream,
+                        args.slots,
+                        args.num_items,
+                        !args.disable_huge,
+                        &path,
+                    )
                 });
             }
             Err(err) => {

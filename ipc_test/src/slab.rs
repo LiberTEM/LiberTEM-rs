@@ -194,7 +194,7 @@ impl SharedSlabAllocator {
             let (cleanup_chan_s, cleanup_chan_r) = bounded::<()>(0);
 
             // crimes to ship the pointers to the bg thread:
-            struct B { 
+            struct B {
                 mutex_ptr: *mut u8,
                 data_ptr: *mut u8,
             }
@@ -205,9 +205,7 @@ impl SharedSlabAllocator {
             };
             let j = std::thread::spawn(move || {
                 let b = b;
-                let _mtx = unsafe {
-                    Mutex::from_existing(b.mutex_ptr, b.data_ptr)
-                };
+                let _mtx = unsafe { Mutex::from_existing(b.mutex_ptr, b.data_ptr) };
                 // we are done initializing...
                 init_chan_s.send(()).unwrap();
                 // so we just keep the mutex open and wait until we are cleaned up:

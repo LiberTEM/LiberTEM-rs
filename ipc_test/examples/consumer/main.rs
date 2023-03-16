@@ -1,11 +1,12 @@
 use std::{
     io::Read,
+    net::TcpStream,
     num::Wrapping,
-    time::{Duration, Instant}, net::TcpStream,
+    time::{Duration, Instant},
 };
 
 use clap::Parser;
-use ipc_test::{SharedSlabAllocator, SlotInfo, SHMHandle};
+use ipc_test::{SHMHandle, SharedSlabAllocator, SlotInfo};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -38,7 +39,8 @@ fn main() {
         .read_exact(bytes.as_mut_slice())
         .expect("read initial message with fds");
 
-    let shm_handle: SHMHandle = bincode::deserialize(&bytes[..]).expect("deserialize SHMInfo object");
+    let shm_handle: SHMHandle =
+        bincode::deserialize(&bytes[..]).expect("deserialize SHMInfo object");
 
     let mut ssa = SharedSlabAllocator::connect(&shm_handle.os_handle).unwrap();
 
