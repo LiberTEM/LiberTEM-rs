@@ -314,7 +314,7 @@ class WSServer:
                     pending_acq,
                     conn=self.conn,
                     pending_aq=pending_acq,
-                    frames_per_partition=4*8192,
+                    frames_per_partition=512,
                     nav_shape=(side, side),
                 )
                 last_update = 0

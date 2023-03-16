@@ -3,7 +3,9 @@ import click
 import perf_utils
 import libertem_dectris
 from libertem_live.detectors.dectris.DEigerClient import DEigerClient
-from libertem_live.detectors.dectris import DectrisAcquisition
+from libertem_live.detectors.dectris.acquisition import (
+    DectrisAcquisition, DectrisDetectorConnection
+)
 from libertem_live.api import LiveContext
 from libertem.udf.sumsigudf import SumSigUDF
 
@@ -15,16 +17,24 @@ from libertem.udf.sumsigudf import SumSigUDF
 def main(width: int, height: int, perf: bool):
 
     ctx = LiveContext()
-
-    aq = DectrisAcquisition(
+    conn = DectrisDetectorConnection(
         api_host='localhost',
         api_port=8910,
         data_host='localhost',
         data_port=9999,
+        frame_stack_size=32,
+        num_slots=2000,
+        bytes_per_frame=512*512,
+        huge_pages=True,
+    )
+    aq = DectrisAcquisition(
+        conn=conn,
         nav_shape=(height, width),
-        trigger_mode='exte',
         trigger=lambda x: None,
         frames_per_partition=1024,
+        controller=conn.get_active_controller(
+            trigger_mode='exte',
+        )
     ) 
     aq = aq.initialize(ctx.executor)
     print("warmup")
@@ -51,6 +61,7 @@ def main(width: int, height: int, perf: bool):
         print(t1-t0)
         print(f"{aq.shape.nav.size/(t1-t0)}")
     ctx.close()
+    conn.close()
     print("done")
 
 

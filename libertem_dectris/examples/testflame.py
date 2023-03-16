@@ -1,31 +1,50 @@
 import time
+import click
 import perf_utils
 import libertem_dectris
 from libertem_live.detectors.dectris.DEigerClient import DEigerClient
 
-if __name__ == "__main__":
-    ec = DEigerClient("localhost", 8910)
-    frames = libertem_dectris.FrameChunkedIterator(uri="tcp://127.0.0.1:9999")
+@click.command()
+@click.argument('nimages', type=int)
+def main(nimages: int):
+    ec = DEigerClient('localhost', 8910)
 
-    frames.start()
-
-    nimages = 256 * 256
     ec.setDetectorConfig('ntrigger', 1)
     ec.setDetectorConfig('nimages', 1)
     ec.setDetectorConfig('trigger_mode', 'exte')
     ec.setDetectorConfig('ntrigger', nimages)
+
     result = ec.sendDetectorCommand('arm')
     sequence_id = result['sequence id']
 
-    with perf_utils.perf('frame_iterator', output_dir='profiles') as perf_data:
-        t0 = time.perf_counter()
-        while frames.is_running():
-            stack = frames.get_next_stack(max_size=32)
-            s = stack.serialize()
-            new_stack = libertem_dectris.FrameStack.deserialize(s)
-            # for i in range(len(new_stack)):
-            #     frame = new_stack[i]
-        t1 = time.perf_counter()
-        print(t1-t0)
+    conn = libertem_dectris.DectrisConnection(
+        uri="tcp://localhost:9999",
+        handle_path="/tmp/dectris_shm",
+        frame_stack_size=32,
+        num_slots=2000,
+        bytes_per_frame=512*512,
+        huge=False,
+    )
 
-    frames.close()
+    conn.start(sequence_id)
+    cam_client = libertem_dectris.CamClient(conn.get_socket_path())
+
+    with perf_utils.perf('frame_iterator', output_dir='profiles') as perf_data:
+        try:
+            t0 = time.perf_counter()
+            total = 0
+            while True:
+                stack_handle = conn.get_next_stack(max_size=512)
+                if stack_handle is None:
+                    break
+                stack_handle.serialize()
+                total += len(stack_handle)
+                cam_client.done(stack_handle)
+        finally:
+            t1 = time.perf_counter()
+            print(f"got {total} frames in {t1 - t0:.3f}s ({total/(t1-t0):.3f} fps); done, closing")
+            conn.close()
+
+
+if __name__ == "__main__":
+    main()
