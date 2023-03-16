@@ -28,32 +28,31 @@ def get_reference_array(fn):
 
 
 if __name__ == "__main__":
+    sock = "/tmp/asi-tpx3-shm.sock"
     conn = ASITpx3Connection(
         uri="localhost:8283",
+        handle_path=sock,
         chunks_per_stack=2,
         num_slots=4000,
         bytes_per_chunk=150000,
         huge=False,
     )
 
-    sock = "/tmp/asi-tpx3-shm.sock"
-
-    conn.serve_shm(sock)
     conn.start_passive()
 
     reference_array = get_reference_array("/cachedata/alex/tpx3/csr_streaming/sparse.toml")
     print(reference_array)
 
     split_at = 16*512
-    split_at = 128
+    # split_at = 128
 
-    for i in range(100):
+    for i in range(10):
         while (header := conn.wait_for_arm(timeout=1)) is None:
             print("waiting for header...")
 
         print(header)
 
-        cam_client = CamClient(socket_path=sock)
+        cam_client = CamClient(handle_path=sock)
 
         seen = 0
         frames_cursor = 0
@@ -65,7 +64,7 @@ if __name__ == "__main__":
             # print(chunk_stack)
             chunks = cam_client.get_chunks(handle=chunk_stack)
             for layout, indptr, indices, values in chunks:
-                print(layout)
+                # print(layout)
                 indptr_arr = np.frombuffer(indptr, dtype=layout.get_indptr_dtype())
                 indices_arr = np.frombuffer(indices, dtype=layout.get_indices_dtype())
                 values_arr = np.frombuffer(values, dtype=layout.get_value_dtype())
@@ -80,7 +79,6 @@ if __name__ == "__main__":
                 assert np.allclose(ref_slice.data, chunk_arr.data)
                 assert np.allclose(ref_slice.indices, chunk_arr.indices)
                 assert np.allclose(ref_slice.indptr, chunk_arr.indptr)
-                print("allclose!")
 
                 frames_cursor += layout.get_nframes()
 

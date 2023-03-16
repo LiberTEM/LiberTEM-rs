@@ -23,7 +23,9 @@ def try_for_split_value(conn, cam_client, split_at):
             cam_client.done(chunk_stack)
 
 if __name__ == "__main__":
+    sock = "/tmp/asi-tpx3-shm.sock"
     conn = ASITpx3Connection(
+        handle_path=sock,
         uri="localhost:8283",
         chunks_per_stack=32,
         bytes_per_chunk=150000,
@@ -31,11 +33,8 @@ if __name__ == "__main__":
         huge=True,
     )
 
-    sock = "/tmp/asi-tpx3-shm.sock"
-
-    conn.serve_shm(sock)
     conn.start_passive()
-    cam_client = CamClient(socket_path=sock)
+    cam_client = CamClient(handle_path=sock)
 
     split_at = None
 

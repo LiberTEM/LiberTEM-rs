@@ -7,8 +7,6 @@ from acquisition import AsiAcquisition, AsiDetectorConnection
 
 
 if __name__ == "__main__":
-    # ctx = LiveContext.make_with('inline')
-    #
     executor = PipelinedExecutor(
         spec=PipelinedExecutor.make_spec(
             cpus=range(20), cudas=[]
