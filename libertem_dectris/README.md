@@ -81,6 +81,10 @@ finally:
 
 ## Changelog
 
+### v0.2.4 - v0.2.6
+
+- Updated examples and CI configuration
+
 ### v0.2.3
 
 - Add `env_logger`: set environment variable `LIBERTEM_DECTRIS_LOG_LEVEL` to e.g. `'INFO'` to enable logging
