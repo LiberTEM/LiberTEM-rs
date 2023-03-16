@@ -6,6 +6,11 @@ come with Python bindings using PyO3, and can be built using [maturin](https://g
 The repository is structured as a cargo workspace, and some of the crates are just used internally,
 like `bs-sys`.
 
+## Development
+
+Please clone using `git clone --recurse-submodules ...` to include vendored
+code in submodules. After cloning, remember to enable pre-commit hooks using
+`pre-commit install --install-hooks`.
 
 ## Contents
 
