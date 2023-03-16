@@ -38,10 +38,7 @@ jobs:
       with:
         submodules: recursive
     - name: rustup stable
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        default: true
+      run: rustup default stable
     - name: Rust Cache
       uses: Swatinem/rust-cache@v2.2.1
     - uses: actions/setup-python@v4
@@ -102,10 +99,7 @@ jobs:
       with:
         submodules: recursive
     - name: rustup stable
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        default: true
+      run: rustup default stable
     - name: Rust Cache
       uses: Swatinem/rust-cache@v2.2.1
     - uses: actions/setup-python@v4
@@ -129,10 +123,7 @@ jobs:
       with:
         submodules: recursive
     - name: rustup stable
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        default: true
+      run: rustup default stable
     - name: Rust Cache
       uses: Swatinem/rust-cache@v2.2.1
     - uses: actions/setup-python@v4
