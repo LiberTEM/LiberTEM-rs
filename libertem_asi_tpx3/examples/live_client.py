@@ -11,23 +11,24 @@ async def main():
         last_msg = None
         while True:
             msg = await websocket.recv()
-            try:
-                decoded_msg = json.loads(msg)
-                last_msg = decoded_msg
-                print(decoded_msg)
-            except UnicodeDecodeError as e:
-                # binary message, probably
-                print(f"binary message of length {len(msg)}")
-                if last_msg is not None and last_msg["event"] == "RESULT":
+            decoded_msg = json.loads(msg)
+            last_msg = decoded_msg
+            print(decoded_msg)
+
+            if decoded_msg['event'] == "RESULT":
+                for chan in decoded_msg['channels']:
+                    msg = await websocket.recv()
+                    print(f"binary message of length {len(msg)}")
+                    print(chan)
                     # decompress just for fun:
                     decomp = bitshuffle.decompress_lz4(
                         np.frombuffer(msg, dtype="uint8"),
-                        dtype=np.dtype(last_msg['dtype']),
-                        shape=last_msg['shape']
+                        dtype=np.dtype(chan['dtype']),
+                        shape=chan['delta_shape']
                     )
                     print(f"decompressed into {decomp.nbytes} bytes")
-                else:
-                    print(f"last msg: {last_msg}")
+            else:
+                print(f"last msg: {last_msg}")
 
 
 

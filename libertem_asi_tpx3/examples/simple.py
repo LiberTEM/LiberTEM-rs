@@ -1,5 +1,6 @@
 import os
 import time
+import tqdm
 
 import tomli
 import scipy.sparse
@@ -15,10 +16,9 @@ if __name__ == "__main__":
         num_slots=4000,
         bytes_per_chunk=1500000,
         huge=False,
-        hande_path=sock,
+        handle_path=sock,
     )
 
-    conn.serve_shm(sock)
     conn.start_passive()
 
     split_at = 16*512
@@ -30,6 +30,10 @@ if __name__ == "__main__":
 
         print(header)
 
+        nav_shape = header.get_nav_shape()
+        num_frames = nav_shape[0] * nav_shape[1]
+        tq = tqdm.tqdm(total=num_frames)
+
         cam_client = CamClient(handle_path=sock)
 
         seen = 0
@@ -39,10 +43,11 @@ if __name__ == "__main__":
             serialized = chunk_stack.serialize()
             chunk_stack = ChunkStackHandle.deserialize(serialized)
 
+            tq.update(len(chunk_stack))
+
             # print(chunk_stack)
             chunks = cam_client.get_chunks(handle=chunk_stack)
             for layout, indptr, indices, values in chunks:
-                print(layout)
                 indptr_arr = np.frombuffer(indptr, dtype=layout.get_indptr_dtype())
                 indices_arr = np.frombuffer(indices, dtype=layout.get_indices_dtype())
                 values_arr = np.frombuffer(values, dtype=layout.get_value_dtype())
@@ -67,6 +72,8 @@ if __name__ == "__main__":
             cam_client.done(chunk_stack)
 
             # print(f"{len(chunks)} chunks in this stack")
+
+        tq.close()
 
         print(f"chunks seen: {seen}")
         # time.sleep(0.1)
