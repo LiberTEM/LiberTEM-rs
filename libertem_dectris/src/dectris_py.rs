@@ -15,7 +15,6 @@ use crate::{
     frame_stack::FrameStackHandle,
     receiver::{DectrisReceiver, ReceiverStatus, ResultMsg},
     sim::DectrisSim,
-    stats::Stats,
 };
 
 use ipc_test::SharedSlabAllocator;
@@ -24,6 +23,7 @@ use pyo3::{
     exceptions::{self, PyRuntimeError},
     prelude::*,
 };
+use stats::Stats;
 
 #[pymodule]
 fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
@@ -150,6 +150,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
                 }
                 Some(ResultMsg::End { frame_stack }) => {
                     self.stats.log_stats();
+                    self.stats.reset();
                     return Ok(Some(frame_stack));
                 }
                 Some(ResultMsg::FrameStack { frame_stack }) => {
@@ -304,6 +305,7 @@ impl DectrisConnection {
 
     fn close(mut slf: PyRefMut<Self>) {
         slf.stats.log_stats();
+        slf.stats.reset();
         slf.close_impl();
     }
 
@@ -320,7 +322,7 @@ impl DectrisConnection {
         )?;
         iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
             if let Some(frame_stack) = &maybe_stack {
-                self.stats.count_frame_stack(frame_stack);
+                self.stats.count_stats_item(frame_stack);
             }
             maybe_stack
         })
@@ -329,6 +331,7 @@ impl DectrisConnection {
     fn log_shm_stats(&self) {
         let free = self.local_shm.num_slots_free();
         let total = self.local_shm.num_slots_total();
+        self.stats.log_stats();
         info!("shm stats free/total: {}/{}", free, total);
     }
 }

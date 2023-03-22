@@ -5,6 +5,7 @@ members = [
     "ipc_test",
     "playegui",
     "bs-sys",
+    "stats",
 ]
 
 [profile.release]
