@@ -12,7 +12,6 @@ use crate::{
     exceptions::{ConnectionError, TimeoutError},
     headers::AcquisitionStart,
     receiver::{ReceiverStatus, ResultMsg, TPXReceiver},
-    stats::Stats,
 };
 
 use ipc_test::SharedSlabAllocator;
@@ -21,6 +20,7 @@ use pyo3::{
     exceptions::{self, PyRuntimeError},
     prelude::*,
 };
+use stats::Stats;
 
 #[pymodule]
 fn libertem_asi_tpx3(py: Python, m: &PyModule) -> PyResult<()> {
@@ -146,6 +146,7 @@ impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
                 }
                 Some(ResultMsg::End { frame_stack }) => {
                     self.stats.log_stats();
+                    self.stats.reset();
                     return Ok(Some(frame_stack));
                 }
                 Some(ResultMsg::FrameStack { frame_stack }) => {
@@ -302,6 +303,7 @@ impl ASITpx3Connection {
     // for example `wait_for_arm`, which calls `allow_threads`...
     fn close(&mut self) {
         self.stats.log_stats();
+        self.stats.reset();
         self.close_impl();
     }
 
@@ -314,7 +316,7 @@ impl ASITpx3Connection {
         )?;
         iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
             if let Some(frame_stack) = &maybe_stack {
-                self.stats.count_chunk_stack(frame_stack);
+                self.stats.count_stats_item(frame_stack);
             }
             maybe_stack
         })
@@ -323,6 +325,7 @@ impl ASITpx3Connection {
     fn log_shm_stats(&self) {
         let free = self.local_shm.num_slots_free();
         let total = self.local_shm.num_slots_total();
+        self.stats.log_stats();
         info!("shm stats free/total: {}/{}", free, total);
     }
 }
