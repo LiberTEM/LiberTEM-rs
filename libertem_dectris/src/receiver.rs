@@ -230,6 +230,8 @@ fn passive_acquisition(
             let detector_config: DetectorConfig =
                 serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
+            debug!("detector_config: {detector_config:?}");
+
             acquisition(
                 detector_config,
                 control_channel,
@@ -490,6 +492,8 @@ fn background_thread(
                     recv_part(&mut msg, &socket, to_thread_r)?;
                     let detector_config: DetectorConfig =
                         serde_json::from_str(msg.as_str().unwrap()).unwrap();
+
+                    debug!("detector_config: {detector_config:?}");
 
                     match acquisition(
                         detector_config,
