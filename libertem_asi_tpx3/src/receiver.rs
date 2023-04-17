@@ -127,16 +127,31 @@ impl Display for AcquisitionError {
     }
 }
 
+#[derive(Debug)]
+pub enum ControlError {
+    Cancelled,
+    StateError { msg: String },
+}
+
+impl From<ControlError> for AcquisitionError {
+    fn from(value: ControlError) -> Self {
+        match value {
+            ControlError::Cancelled => AcquisitionError::Cancelled,
+            ControlError::StateError { msg } => AcquisitionError::StateError { msg },
+        }
+    }
+}
+
 /// With a running acquisition, check for control messages;
 /// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
-fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), AcquisitionError> {
+fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), ControlError> {
     match control_channel.try_recv() {
-        Ok(ControlMsg::StartAcquisitionPassive) => Err(AcquisitionError::StateError {
+        Ok(ControlMsg::StartAcquisitionPassive) => Err(ControlError::StateError {
             msg: "received StartAcquisitionPassive while an acquisition was already running"
                 .to_string(),
         }),
-        Ok(ControlMsg::StopThread) => Err(AcquisitionError::Cancelled),
-        Err(TryRecvError::Disconnected) => Err(AcquisitionError::Cancelled),
+        Ok(ControlMsg::StopThread) => Err(ControlError::Cancelled),
+        Err(TryRecvError::Disconnected) => Err(ControlError::Cancelled),
         Err(TryRecvError::Empty) => Ok(()),
     }
 }
@@ -154,7 +169,11 @@ fn wait_for_acquisition(
     let mut header_bytes: [u8; 32] = [0; 32];
     loop {
         info!("waiting for acquisition header...");
-        let header = stream_recv_header(stream, &mut header_bytes)?;
+        let header = stream_recv_header(
+            stream,
+            &mut header_bytes,
+            Box::new(|_kind| Ok(check_for_control(control_channel)?)),
+        )?;
 
         trace!("got a header: {header:?}");
 
@@ -211,7 +230,11 @@ fn wait_for_scan(
     let mut header_bytes: [u8; 32] = [0; 32];
     info!("waiting for scan header...");
     loop {
-        let header = stream_recv_header(stream, &mut header_bytes)?;
+        let header = stream_recv_header(
+            stream,
+            &mut header_bytes,
+            Box::new(|_kind| Ok(check_for_control(control_channel)?)),
+        )?;
         trace!("got a header: {header:?}");
 
         match header {
@@ -307,7 +330,11 @@ fn handle_scan(
         }
 
         let mut header_bytes: [u8; 32] = [0; 32];
-        let header = stream_recv_header(stream, &mut header_bytes)?;
+        let header = stream_recv_header(
+            stream,
+            &mut header_bytes,
+            Box::new(|_kind| Ok(check_for_control(to_thread_r)?)),
+        )?;
 
         match header {
             HeaderTypes::ArrayChunk { header } => {
@@ -467,6 +494,11 @@ fn passive_loop(
                     return Ok(()); // the other end of the channel is gone, so :shrug:
                 }
                 Err(AcquisitionError::StreamError { err }) => {
+                    // special case: if the acquisition has been cancelled,
+                    // don't try to reconnect
+                    if let StreamError::ControlError(ControlError::Cancelled) = err {
+                        return Err(AcquisitionError::Cancelled);
+                    }
                     // FIXME: should probably bubble this one up further, as it
                     // may leave buffer contents "undefined"... => clean SHM is best
                     error!("Got a stream error: {err:?} - reconnecting...");
