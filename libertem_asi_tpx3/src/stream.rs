@@ -1,14 +1,18 @@
 use std::{io::Read, net::TcpStream};
 
-use log::trace;
+use log::warn;
 
-use crate::headers::{HeaderTypes, WireFormatError};
+use crate::{
+    headers::{HeaderTypes, WireFormatError},
+    receiver::ControlError,
+};
 
 #[derive(Debug)]
 pub enum StreamError {
     Timeout,
     IoError(std::io::Error),
     FormatError(WireFormatError),
+    ControlError(ControlError),
 }
 
 impl From<std::io::Error> for StreamError {
@@ -26,22 +30,28 @@ impl From<WireFormatError> for StreamError {
     }
 }
 
+impl From<ControlError> for StreamError {
+    fn from(value: ControlError) -> Self {
+        Self::ControlError(value)
+    }
+}
+
+type RecvCallback<'a> = Box<dyn Fn(&std::io::ErrorKind) -> Result<(), StreamError> + 'a>;
+
 pub fn stream_recv_header(
     stream: &mut TcpStream,
     header_bytes: &mut [u8; 32],
+    timeout_cb: RecvCallback,
 ) -> Result<HeaderTypes, StreamError> {
     // TODO: timeout? can't block indefinitely - can we make this atomic?
-    // TODO: we may have to periodically check for control messages etc.
-    // maybe just use a simple timeout and return `None` here?
-
-    //stream.read_exact(header_bytes)?;
 
     loop {
         match stream.read_exact(header_bytes) {
             Ok(_) => break,
             Err(e) => match e.kind() {
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-                    trace!("stream error: {e}");
+                    warn!("stream error: {e}");
+                    timeout_cb(&e.kind())?;
                     continue;
                 }
                 _ => return Err(e.into()),
