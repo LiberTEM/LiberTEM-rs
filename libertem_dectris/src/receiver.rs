@@ -227,6 +227,13 @@ fn passive_acquisition(
 
             // second message: the header itself
             recv_part(&mut msg, socket, control_channel)?;
+
+            if let Some(msg_str) = msg.as_str() {
+                debug!("detector config: {}", msg_str);
+            } else {
+                warn!("non-string received as detector config!")
+            }
+
             let detector_config: DetectorConfig =
                 serde_json::from_str(msg.as_str().unwrap()).unwrap();
 
@@ -495,10 +502,15 @@ fn background_thread(
 
                     // second message: the header itself
                     recv_part(&mut msg, &socket, to_thread_r)?;
+
+                    if let Some(msg_str) = msg.as_str() {
+                        debug!("detector config: {}", msg_str);
+                    } else {
+                        warn!("non-string received as detector config!")
+                    }
+
                     let detector_config: DetectorConfig =
                         serde_json::from_str(msg.as_str().unwrap()).unwrap();
-
-                    debug!("detector config: {}", msg.as_str().unwrap());
 
                     match acquisition(
                         detector_config,
