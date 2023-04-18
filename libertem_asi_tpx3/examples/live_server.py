@@ -22,7 +22,6 @@ from libertem_live.api import LiveContext
 from libertem_live.udf.monitor import (
     SignalMonitorUDF, PartitionMonitorUDF
 )
-from acquisition import AsiAcquisition, AsiDetectorConnection
 
 from libertem.udf.base import UDFResults, UDF
 from libertem.common.async_utils import sync_to_async
@@ -262,7 +261,7 @@ class WSServer:
     async def handle_partial_result(
         self,
         partial_results: UDFResults,
-        pending_acq,
+        pending_aq,
         acq_id: str,
         previous_results: typing.Optional[UDFResults]
     ):
@@ -299,19 +298,18 @@ class WSServer:
     async def acquisition_loop(self):
         min_delta = 0.05
         while True:
-            pending_acq = await sync_to_async(self.conn.wait_for_acquisition, timeout=10)
-            if pending_acq is None:
+            pending_aq = await sync_to_async(self.conn.wait_for_acquisition, timeout=10)
+            if pending_aq is None:
                 continue
             try:
-                acq_id = await self.handle_pending_acquisition(pending_acq)
+                acq_id = await self.handle_pending_acquisition(pending_aq)
                 print(f"acquisition starting with id={acq_id}")
                 t0 = time.perf_counter()
                 previous_results = None
                 partial_results = None
-                aq = self.ctx.prepare_from_pending(
-                    pending_acq,
+                aq = self.ctx.make_acquisition(
                     conn=self.conn,
-                    pending_aq=pending_acq,
+                    pending_aq=pending_aq,
                     frames_per_partition=4*8192,
                 )
                 last_update = 0
@@ -319,10 +317,10 @@ class WSServer:
                     udfs_only = list(self.udfs.values())
                     async for partial_results in self.ctx.run_udf_iter(dataset=aq, udf=udfs_only, sync=False):
                         if time.time() - last_update > min_delta:
-                            await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
+                            await self.handle_partial_result(partial_results, pending_aq, acq_id, previous_results)
                             previous_results = copy.deepcopy(partial_results)
                             last_update = time.time()
-                    await self.handle_partial_result(partial_results, pending_acq, acq_id, previous_results)
+                    await self.handle_partial_result(partial_results, pending_aq, acq_id, previous_results)
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
@@ -331,7 +329,7 @@ class WSServer:
                     self.connect()
                 previous_results = copy.deepcopy(partial_results)
             finally:
-                await self.handle_acquisition_end(pending_acq, acq_id)
+                await self.handle_acquisition_end(pending_aq, acq_id)
             previous_results = None
             t1 = time.perf_counter()
             print(f"acquisition done with id={acq_id}; took {t1-t0:.3f}s")
@@ -345,12 +343,6 @@ class WSServer:
                 self.ctx.close()
 
     def connect(self):
-        conn = AsiDetectorConnection(
-            uri="localhost:8283",
-            chunks_per_stack=16,
-            bytes_per_chunk=1500000,
-            num_slots=1000,
-        )
         executor = PipelinedExecutor(
             spec=PipelinedExecutor.make_spec(
                 cpus=range(20), cudas=[]
@@ -359,6 +351,13 @@ class WSServer:
             # delayed_gc=False,
         )
         ctx = LiveContext(executor=executor)
+        conn = ctx.make_connection('asi_tpx3').open(
+            data_host="localhost",
+            data_port=8283,
+            chunks_per_stack=16,
+            bytes_per_chunk=1500000,
+            buffer_size=2048,
+        )
 
         self.conn = conn
         self.executor = executor
