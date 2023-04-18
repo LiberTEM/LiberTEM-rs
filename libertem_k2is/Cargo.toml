@@ -1,0 +1,23 @@
+[package]
+name = "k2opy"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "k2opy"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.17.1", features = ["extension-module", "abi3-py37"] }
+numpy = "0.17.1"
+k2o = { path = "../k2o" }
+crossbeam-channel = "0.5.6"
+crossbeam = "0.8.2"
+opentelemetry = { version = "0.17.0", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.10.0" }
+opentelemetry-semantic-conventions = "0.9.0"
+tokio = "1.21.0"
+ipc-test = { path = "../ipc_test" }
+bincode = "1.3.3"
+sendfd = "0.4.3"
