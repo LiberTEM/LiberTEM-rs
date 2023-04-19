@@ -108,11 +108,8 @@ impl FrameSender {
         // So I think it is warranted to go into an error state if the
         // consumer can't keep up.
 
-        // FIXME: We may want to add a "replay speed" later to limit the message
-        // rate to something sensible.
-
         // milliseconds
-        socket.set_sndtimeo(1000)?;
+        socket.set_sndtimeo(30000)?;
 
         let m = cursor.read_raw_msg();
         socket.send(m, zmq::SNDMORE)?;
@@ -179,7 +176,7 @@ impl FrameSender {
         CB: Fn() -> Option<()>,
     {
         // milliseconds
-        self.socket.set_sndtimeo(100)?;
+        self.socket.set_sndtimeo(30000)?;
 
         let cursor = &mut self.cursor;
         cursor.seek_to_first_header_of_type("dheader-1.0");
