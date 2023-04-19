@@ -7,7 +7,7 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use zmq::{Message, Socket};
 
 use crate::{
@@ -276,6 +276,8 @@ fn acquisition(
         Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
     }
 
+    debug!("acquisition starting");
+
     // approx uppper bound of image size in bytes
     let approx_size_bytes = detector_config.get_num_pixels()
         * (detector_config.bit_depth_image as f32 / 8.0f32).ceil() as u64;
@@ -290,10 +292,13 @@ fn acquisition(
     let mut msg = Message::new();
     let mut msg_image = Message::new();
 
+    debug!("starting receive loop");
+
     loop {
         if last_control_check.elapsed() > Duration::from_millis(300) {
             last_control_check = Instant::now();
             check_for_control(to_thread_r)?;
+            trace!("acquisition progress: expected_frame_id={expected_frame_id}");
         }
 
         let (dimage, dimaged, dconfig) =

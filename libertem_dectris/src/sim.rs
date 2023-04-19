@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use log::{debug, info};
+use log::{debug, info, trace};
 use pyo3::{exceptions, prelude::*};
 use serde_json::json;
 use zmq::{Context, Socket, SocketType::PUSH};
@@ -208,6 +208,7 @@ impl FrameSender {
             "series": self.series,
         });
         self.socket.send(&footer_json.to_string(), 0).unwrap();
+        info!("sent footer");
     }
 
     pub fn get_num_frames(&self) -> u64 {
@@ -303,12 +304,16 @@ impl DectrisSim {
                 t0 = Instant::now();
                 py.check_signals()?;
 
+                trace!("send_frames: progress: frame_idx={frame_idx}");
+
                 // also drop GIL once in a while
                 py.allow_threads(|| {
                     spin_sleep::sleep(Duration::from_micros(5));
                 });
             }
         }
+
+        info!("sent {effective_nframes} frames");
 
         Ok(())
     }
