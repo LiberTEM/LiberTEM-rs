@@ -89,6 +89,7 @@ finally:
 
 - Log more details in `DectrisConnection.log_shm_stats` and change log level to
   `INFO`
+- Increase timeout for sending headers and frames
 
 ### v0.2.4 - v0.2.6
 
