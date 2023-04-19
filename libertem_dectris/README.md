@@ -81,6 +81,10 @@ finally:
 
 ## Changelog
 
+### v0.2.9
+
+- Add more debug and trace output
+
 ### v0.2.7
 
 - Log more details in `DectrisConnection.log_shm_stats` and change log level to
