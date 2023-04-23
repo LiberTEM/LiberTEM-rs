@@ -2,7 +2,15 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
+      - 'v[0-9]*'  # stable branches
+      # filter pattern cheat sheet: https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#filter-pattern-cheat-sheet
   pull_request:
+
+concurrency: 
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
