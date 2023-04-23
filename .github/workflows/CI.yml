@@ -55,7 +55,7 @@ jobs:
         crate: [libertem_dectris, libertem_asi_tpx3]
     steps:
     - name: Install LLVM and Clang # required for bindgen to work, see https://github.com/rust-lang/rust-bindgen/issues/1797
-      uses: KyleMayes/install-llvm-action@v1.5.4
+      uses: KyleMayes/install-llvm-action@v1.8
       # if: matrix.config.os == 'windows-latest'
       with:
         version: "14.0"
@@ -86,7 +86,7 @@ jobs:
         crate: [libertem_dectris, libertem_asi_tpx3, ipc_test]
     steps:
     - name: Install LLVM and Clang # required for bindgen to work, see https://github.com/rust-lang/rust-bindgen/issues/1797
-      uses: KyleMayes/install-llvm-action@v1.5.4
+      uses: KyleMayes/install-llvm-action@v1.8
       # if: matrix.config.os == 'windows-latest'
       with:
         version: "14.0"
