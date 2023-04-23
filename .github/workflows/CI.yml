@@ -27,6 +27,30 @@ jobs:
       with:
         name: wheels
         path: ${{ matrix.crate }}/target/dist
+  linux-aarch64:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [libertem_dectris, libertem_asi_tpx3]
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: recursive
+    - name: Setup QEMU
+      uses: docker/setup-qemu-action@v2
+    - uses: messense/maturin-action@v1
+      with:
+        working-directory: ${{ matrix.crate }}
+        manylinux: auto
+        command: build
+        container: ghcr.io/libertem/manylinux2014_aarch64:latest
+        args: --release --sdist -o target/dist --find-interpreter
+        sccache: 'true'
+    - name: Upload wheels
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: ${{ matrix.crate }}/target/dist
 
   linux-test:
     runs-on: ubuntu-latest
