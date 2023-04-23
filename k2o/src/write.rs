@@ -4,6 +4,7 @@ use std::{
     os::unix::prelude::FileExt,
 };
 
+#[cfg(feature = "hdf5")]
 use hdf5::{
     plist::FileAccess,
     types::{IntSize, TypeDescriptor},
@@ -201,10 +202,12 @@ impl Writer for MMapWriter {
     }
 }
 
+#[cfg(feature = "hdf5")]
 pub struct HDF5WriterBuilder {
     filename: String,
 }
 
+#[cfg(feature = "hdf5")]
 impl WriterBuilder for HDF5WriterBuilder {
     fn open_for_writing(
         &self,
@@ -281,14 +284,17 @@ impl WriterBuilder for HDF5WriterBuilder {
     }
 }
 
+#[cfg(feature = "hdf5")]
 pub struct HDF5Writer {
     ds: Dataset,
     is_resizable: bool,
     frame_shape: Shape2,
 }
 
+#[cfg(feature = "hdf5")]
 impl HDF5Writer {}
 
+#[cfg(feature = "hdf5")]
 impl Writer for HDF5Writer {
     fn write_frame(&mut self, frame: &SubFrame, frame_idx: u32) {
         self.ds

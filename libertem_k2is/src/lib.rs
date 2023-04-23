@@ -18,8 +18,12 @@ use k2o::{
     events::{AcquisitionParams, AcquisitionSync},
     frame::{K2Frame, K2ISFrame},
     tracing::{get_tracer, init_tracer},
-    write::{DirectWriterBuilder, HDF5WriterBuilder, MMapWriterBuilder, WriterBuilder},
+    write::{DirectWriterBuilder, MMapWriterBuilder, WriterBuilder},
 };
+
+#[cfg(feature = "hdf5")]
+use k2o::write::HDF5WriterBuilder;
+
 use numpy::ndarray::Dim;
 use numpy::{BorrowError, NotContiguousError, PyArray, PyArray2};
 use opentelemetry::{
@@ -146,6 +150,7 @@ impl PyWriter {
         let wb: Box<dyn WriterBuilder + Send> = match self.method.as_str() {
             "direct" => DirectWriterBuilder::for_filename(filename),
             "mmap" => MMapWriterBuilder::for_filename(filename),
+            #[cfg(feature = "hdf5")]
             "hdf5" => HDF5WriterBuilder::for_filename(filename),
             _ => {
                 let meth = &self.method;
