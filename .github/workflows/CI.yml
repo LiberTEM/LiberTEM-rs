@@ -31,7 +31,7 @@ jobs:
         args: --release --sdist -o target/dist --find-interpreter
         sccache: 'true'
     - name: Upload wheels
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: wheels
         path: ${{ matrix.crate }}/target/dist
@@ -82,7 +82,7 @@ jobs:
         args: --release -o dist --find-interpreter
         sccache: 'true'
     - name: Upload wheels
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: wheels
         path: ${{ matrix.crate }}/dist
@@ -163,7 +163,7 @@ jobs:
         args: --release -o dist
         sccache: 'true'
     - name: Upload wheels
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: wheels
         path: ${{ matrix.crate }}/dist
