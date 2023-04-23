@@ -18,6 +18,9 @@ code in submodules. After cloning, remember to enable pre-commit hooks using
 - `ipc_test`: internal crate for efficient shared memory communication using a shared slab data structure.
 - `libertem_asi_tpx3`: A Rust+Python library for receiving sparse array streams from Amsterdam Scientific Instruments CheeTah TPX3 detectors.
 - `libertem_dectris`: This is a Python package for efficiently receiving data from DECTRIS detectors with the zeromq interface.
+- `libertem_k2is`: A Python package for receiving data from K2IS cameras.
+- `k2o`: A rust library for receiving data from K2IS cameras.
+- `stats`: Small crate for keeping simple stats on shared memory usage.
 - `playegui`: `egui`-based prototype for efficient on-line visualization of 4D STEM reconstructions
 
 
