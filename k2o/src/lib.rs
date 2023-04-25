@@ -1,9 +1,4 @@
-#![feature(allocator_api)]
-// #![feature(adt_const_params)]
-#![feature(portable_simd)]
-
 pub mod acquisition;
-pub mod allocators;
 pub mod args;
 pub mod assemble;
 pub mod block;

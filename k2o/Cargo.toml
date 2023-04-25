@@ -1,6 +1,6 @@
 [package]
 name = "k2o"
-version = "0.1.0"
+version = "0.2.9"
 edition = "2021"
 
 [dependencies]
@@ -15,7 +15,6 @@ tokio = { version = "1", features = ["full"] }
 memmap2 = "0.5.2"
 ndarray = { version="0.15.4", features = ["approx"]}
 ndarray-npy = "0.8.1"
-bumpalo = { version="3.9.1", features=["allocator_api"]}
 jemallocator = "0.5.0"
 rayon = "1.5.1"
 human_bytes = { version="0.3.1", features=["bibytes"] }
@@ -34,6 +33,7 @@ hdf5 = ["dep:hdf5"]
 [dev-dependencies]
 criterion = "0.3.4"
 criterion-linux-perf = "0.1.0"
+tempfile = "3.5.0"
 
 [[bench]]
 name = "decode_benchmarks"

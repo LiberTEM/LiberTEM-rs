@@ -248,7 +248,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
             let frame_shape = F::get_shape_for_binning(&self.params.binning);
             let frame_size_bytes = frame_shape.0 * frame_shape.1 * std::mem::size_of::<u16>(); // assumes u16 data
             for subframe_idx in frame.subframe_indexes(&self.params.binning) {
-                let subframe = frame.get_subframe(subframe_idx, &self.params.binning);
+                let subframe = frame.get_subframe(subframe_idx, &self.params.binning, &self.shm);
                 writer.write_frame(&subframe, out_frame_idx_base + subframe_idx);
                 self.ref_bytes_written += frame_size_bytes;
                 self.counter += 1;
