@@ -93,16 +93,13 @@ impl WriterBuilder for DirectWriterBuilder {
 impl Writer for DirectWriter {
     fn write_frame(&mut self, frame: &SubFrame, frame_idx: u32) {
         let offset = (self.frame_size_bytes * frame_idx as usize) as u64;
-        // FIXME: can we get rid of this `unsafe`?
-        // https://stackoverflow.com/a/30838655/540644
-        // maybe: https://docs.rs/zerocopy/0.6.1/zerocopy/trait.AsBytes.html
-        let payload = unsafe {
-            let raw_payload = frame.get_payload();
-            slice::from_raw_parts(
-                raw_payload.as_ptr() as *const u8,
-                raw_payload.len() * self.pixel_size_bytes,
-            )
-        };
+        let payload: &[u8] = bytemuck::cast_slice(frame.get_payload());
+
+        (|| {
+            self.file
+                .write_all_at(payload, offset)
+                .expect("write_all_at should not err");
+        })();
         self.file
             .write_all_at(payload, offset)
             .expect("write_all_at should not err");

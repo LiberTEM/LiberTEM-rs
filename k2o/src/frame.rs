@@ -1,6 +1,6 @@
 use std::{ops::Range, time::Instant, vec};
 
-use ipc_test::{SharedSlabAllocator, SlotForWriting, SlotInfo};
+use ipc_test::{SharedSlabAllocator, Slot, SlotForWriting, SlotInfo};
 use itertools::Itertools;
 use ndarray::{s, ArrayView2, ArrayViewMut2};
 
@@ -10,11 +10,12 @@ use crate::{
     helpers::Shape2,
 };
 
-pub trait K2Frame: Send + Sized {
+pub trait FrameForWriting: Sized {
     const FRAME_WIDTH: usize;
     const FRAME_HEIGHT: usize;
 
     type Block: K2Block;
+    type ReadOnlyFrame: K2Frame;
 
     fn get_frame_id(&self) -> u32;
     fn get_created_timestamp(&self) -> Instant;
@@ -39,12 +40,7 @@ pub trait K2Frame: Send + Sized {
         shm: &mut SharedSlabAllocator,
     ) -> Self;
 
-    fn writing_done(self, shm: &mut SharedSlabAllocator) -> SlotInfo;
-
-    fn free_payload(self, shm: &mut SharedSlabAllocator) {
-        let slot_r = self.writing_done(shm);
-        shm.free_idx(slot_r.slot_idx);
-    }
+    fn writing_done(self, shm: &mut SharedSlabAllocator) -> Self::ReadOnlyFrame;
 
     fn reset(&mut self) {
         self.get_tracker_mut().fill(false);
@@ -147,11 +143,45 @@ pub trait K2Frame: Send + Sized {
         // update "mtime"
         self.set_modified_timestamp(&Instant::now());
     }
+}
+
+pub trait K2Frame: Send + Sized {
+    const FRAME_WIDTH: usize;
+    const FRAME_HEIGHT: usize;
+
+    type Block: K2Block;
+
+    fn get_frame_id(&self) -> u32;
+    fn get_created_timestamp(&self) -> Instant;
+    fn get_modified_timestamp(&self) -> Instant;
+    fn get_slot(&self, shm: &SharedSlabAllocator) -> Slot;
+    fn get_size_bytes() -> usize {
+        Self::FRAME_WIDTH * Self::FRAME_HEIGHT * std::mem::size_of::<u16>()
+    }
+
+    fn get_payload(&self, shm: &SharedSlabAllocator) -> &[u16] {
+        let slot = self.get_slot(shm);
+        &bytemuck::cast_slice(slot.as_slice())
+    }
+
+    fn free_payload(self, shm: &mut SharedSlabAllocator) {
+        let slot_r = self.get_slot(shm);
+        shm.free_idx(slot_r.slot_idx);
+    }
+
+    fn as_array(&self, shm: &SharedSlabAllocator) -> ArrayView2<u16> {
+        let view = ArrayView2::from_shape(
+            (Self::FRAME_HEIGHT, Self::FRAME_WIDTH),
+            self.get_payload(shm),
+        )
+        .unwrap();
+        view
+    }
 
     fn get_shape_for_binning(binning: &Binning) -> Shape2;
     fn get_num_subframes(binning: &Binning) -> u32;
     fn subframe_indexes(&self, binning: &Binning) -> Range<u32>;
-    fn get_subframe(&self, index: u32, binning: &Binning) -> SubFrame;
+    fn get_subframe(&self, index: u32, binning: &Binning, shm: &SharedSlabAllocator) -> SubFrame;
 }
 
 pub struct SubFrame<'a> {
@@ -175,7 +205,7 @@ impl<'a> SubFrame<'a> {
     }
 }
 
-pub struct K2ISFrame {
+pub struct K2ISFrameForWriting {
     /// the decoded payload of the whole frame
     pub payload: SlotForWriting,
     /// used to keep track of which block positions we have seen
@@ -193,23 +223,7 @@ pub struct K2ISFrame {
     pub modified_timestamp: Instant,
 }
 
-impl K2ISFrame {
-    pub fn dump_finished_state(&self) {
-        let counts = self.tracker.iter().counts();
-        println!(
-            "have {} hits and {} still missing",
-            counts.get(&true).unwrap_or(&0),
-            counts.get(&false).unwrap_or(&0)
-        );
-    }
-}
-
-impl K2Frame for K2ISFrame {
-    const FRAME_WIDTH: usize = 2048;
-    const FRAME_HEIGHT: usize = 1860;
-
-    type Block = K2ISBlock;
-
+impl FrameForWriting for K2ISFrameForWriting {
     fn empty_with_timestamp<B: K2Block>(
         frame_id: u32,
         ts: &Instant,
@@ -249,23 +263,6 @@ impl K2Frame for K2ISFrame {
         self.subframe_idx = 0;
     }
 
-    fn get_frame_id(&self) -> u32 {
-        self.frame_id
-    }
-
-    fn get_created_timestamp(&self) -> Instant {
-        self.created_timestamp
-    }
-
-    fn get_modified_timestamp(&self) -> Instant {
-        self.modified_timestamp
-    }
-
-    fn get_payload(&self) -> &[u16] {
-        let slot_as_u16: &[u16] = bytemuck::cast_slice(self.payload.as_slice());
-        slot_as_u16
-    }
-
     fn set_modified_timestamp(&mut self, ts: &Instant) {
         self.modified_timestamp = *ts;
     }
@@ -281,6 +278,93 @@ impl K2Frame for K2ISFrame {
 
     fn get_tracker(&self) -> &Vec<bool> {
         &self.tracker
+    }
+
+    fn writing_done(self, shm: &mut SharedSlabAllocator) -> Self::ReadOnlyFrame {
+        let slot_info = shm.writing_done(self.payload);
+        self.into_readonly(slot_info)
+    }
+
+    const FRAME_WIDTH: usize = 2048;
+    const FRAME_HEIGHT: usize = 1860;
+
+    type Block = K2ISBlock;
+    type ReadOnlyFrame = K2ISFrame;
+
+    fn get_frame_id(&self) -> u32 {
+        self.frame_id
+    }
+
+    fn get_created_timestamp(&self) -> Instant {
+        self.created_timestamp
+    }
+
+    fn get_modified_timestamp(&self) -> Instant {
+        self.modified_timestamp
+    }
+
+    fn get_payload(&self) -> &[u16] {
+        todo!("return type? Slot, which the called can convert to a slice?")
+    }
+}
+
+impl K2ISFrameForWriting {
+    pub fn dump_finished_state(&self) {
+        let counts = self.tracker.iter().counts();
+        println!(
+            "have {} hits and {} still missing",
+            counts.get(&true).unwrap_or(&0),
+            counts.get(&false).unwrap_or(&0)
+        );
+    }
+
+    fn into_readonly(self, slot_info: SlotInfo) -> K2ISFrame {
+        K2ISFrame {
+            payload: slot_info,
+            subframe_idx: self.subframe_idx,
+            frame_id: self.frame_id,
+            created_timestamp: self.created_timestamp,
+            modified_timestamp: self.modified_timestamp,
+        }
+    }
+}
+
+pub struct K2ISFrame {
+    /// the decoded payload of the whole frame
+    pub payload: SlotInfo,
+
+    subframe_idx: u8,
+
+    /// the frame id as received
+    pub frame_id: u32,
+
+    /// when the first block was received, to handle dropped packets
+    pub created_timestamp: Instant,
+
+    /// when the last block was received, to handle dropped packets
+    pub modified_timestamp: Instant,
+}
+
+impl K2Frame for K2ISFrame {
+    const FRAME_WIDTH: usize = 2048;
+    const FRAME_HEIGHT: usize = 1860;
+
+    type Block = K2ISBlock;
+
+    fn get_frame_id(&self) -> u32 {
+        self.frame_id
+    }
+
+    fn get_created_timestamp(&self) -> Instant {
+        self.created_timestamp
+    }
+
+    fn get_modified_timestamp(&self) -> Instant {
+        self.modified_timestamp
+    }
+
+    fn get_slot(&self, shm: &SharedSlabAllocator) -> Slot {
+        shm.get(self.payload.slot_idx)
     }
 
     fn get_shape_for_binning(binning: &Binning) -> Shape2 {
@@ -301,7 +385,7 @@ impl K2Frame for K2ISFrame {
         }
     }
 
-    fn get_subframe(&self, index: u32, binning: &Binning) -> SubFrame {
+    fn get_subframe(&self, index: u32, binning: &Binning, shm: &SharedSlabAllocator) -> SubFrame {
         let skip_rows: usize = match binning {
             Binning::Bin1x => 0,
             Binning::Bin2x => 4,
@@ -309,7 +393,7 @@ impl K2Frame for K2ISFrame {
             Binning::Bin8x => 4,
         } + (index as usize * 66);
         let shape = Self::get_shape_for_binning(binning);
-        let payload_raw = self.get_payload();
+        let payload_raw = self.get_payload(shm);
         let start = shape.1 * skip_rows;
         let end = start + shape.0 * shape.1;
         let payload = &payload_raw[start..end];
@@ -329,132 +413,156 @@ impl K2Frame for K2ISFrame {
             Binning::Bin8x => 4,
         }
     }
-
-    fn writing_done(self, shm: &mut SharedSlabAllocator) -> SlotInfo {
-        shm.writing_done(self.payload)
-    }
 }
 
-pub struct K2SummitFrame {
-    /// the decoded payload of the whole frame
-    pub payload: SlotForWriting,
-    // pub payload_slices: Vec<ArrayBase<ViewRepr<& u16>, Dim<[usize; 2]>>>,
-    /// used to keep track of which block positions we have seen
-    tracker: Vec<bool>,
+#[cfg(disabled)]
+mod stuff {
+    pub struct K2SummitFrame {
+        /// the decoded payload of the whole frame
+        pub payload: SlotInfo,
+        // pub payload_slices: Vec<ArrayBase<ViewRepr<& u16>, Dim<[usize; 2]>>>,
+        /// used to keep track of which block positions we have seen
+        tracker: Vec<bool>,
 
-    /// the frame id as received
-    pub frame_id: u32,
+        /// the frame id as received
+        pub frame_id: u32,
 
-    subframe_idx: u8,
+        subframe_idx: u8,
 
-    /// when the first block was received, to handle dropped packets
-    pub created_timestamp: Instant,
+        /// when the first block was received, to handle dropped packets
+        pub created_timestamp: Instant,
 
-    /// when the last block was received, to handle dropped packets
-    pub modified_timestamp: Instant,
-}
-
-impl K2SummitFrame {}
-
-impl K2Frame for K2SummitFrame {
-    const FRAME_WIDTH: usize = 4096;
-    const FRAME_HEIGHT: usize = 3840;
-
-    fn get_frame_id(&self) -> u32 {
-        self.frame_id
+        /// when the last block was received, to handle dropped packets
+        pub modified_timestamp: Instant,
     }
 
-    fn get_created_timestamp(&self) -> Instant {
-        self.created_timestamp
+    pub struct K2SummitFrameForWriting {
+        /// the decoded payload of the whole frame
+        pub payload: SlotForWriting,
+        // pub payload_slices: Vec<ArrayBase<ViewRepr<& u16>, Dim<[usize; 2]>>>,
+        /// used to keep track of which block positions we have seen
+        tracker: Vec<bool>,
+
+        /// the frame id as received
+        pub frame_id: u32,
+
+        subframe_idx: u8,
+
+        /// when the first block was received, to handle dropped packets
+        pub created_timestamp: Instant,
+
+        /// when the last block was received, to handle dropped packets
+        pub modified_timestamp: Instant,
     }
 
-    fn get_modified_timestamp(&self) -> Instant {
-        self.modified_timestamp
-    }
+    impl K2SummitFrameForWriting {}
 
-    fn get_payload(&self) -> &[u16] {
-        let slot_as_u16: &[u16] = bytemuck::cast_slice(self.payload.as_slice());
-        slot_as_u16
-    }
+    impl FrameForWriting for K2SummitFrameForWriting {
+        const FRAME_WIDTH: usize = 4096;
+        const FRAME_HEIGHT: usize = 3840;
 
-    fn empty_with_timestamp<B: K2Block>(
-        frame_id: u32,
-        ts: &Instant,
-        shm: &mut SharedSlabAllocator,
-    ) -> Self {
-        let mut payload = shm.get_mut().expect("get free SHM slot");
-        assert!(payload.size >= Self::FRAME_WIDTH * Self::FRAME_HEIGHT);
-
-        for item in payload.as_slice_mut() {
-            *item = 0;
+        fn get_frame_id(&self) -> u32 {
+            self.frame_id
         }
 
-        // how many blocks are there? in IS-mode, we have
-        // FRAME_WIDTH=2048, FRAME_HEIGHT=1860
-        // block_width == 16, block_height == 930
-        // -> we have 1860/930=2 blocks in y direction, and 2048/16=128 blocks in x direction
-        // -> 256 blocks per frame
-        // or, alternatively: 2048*1860/930/16 == 256
-        let tracker: Vec<bool> = vec![false; 8 * B::BLOCKS_PER_SECTOR as usize];
+        fn get_created_timestamp(&self) -> Instant {
+            self.created_timestamp
+        }
 
-        Self {
-            payload,
-            tracker,
-            frame_id,
-            created_timestamp: *ts,
-            modified_timestamp: Instant::now(),
-            subframe_idx: 0,
+        fn get_modified_timestamp(&self) -> Instant {
+            self.modified_timestamp
+        }
+
+        fn get_payload(&self) -> &[u16] {
+            let slot_as_u16: &[u16] = bytemuck::cast_slice(self.payload.as_slice());
+            slot_as_u16
+        }
+
+        fn empty_with_timestamp<B: K2Block>(
+            frame_id: u32,
+            ts: &Instant,
+            shm: &mut SharedSlabAllocator,
+        ) -> Self {
+            let mut payload = shm.get_mut().expect("get free SHM slot");
+            assert!(payload.size >= Self::FRAME_WIDTH * Self::FRAME_HEIGHT);
+
+            for item in payload.as_slice_mut() {
+                *item = 0;
+            }
+
+            // how many blocks are there? in IS-mode, we have
+            // FRAME_WIDTH=2048, FRAME_HEIGHT=1860
+            // block_width == 16, block_height == 930
+            // -> we have 1860/930=2 blocks in y direction, and 2048/16=128 blocks in x direction
+            // -> 256 blocks per frame
+            // or, alternatively: 2048*1860/930/16 == 256
+            let tracker: Vec<bool> = vec![false; 8 * B::BLOCKS_PER_SECTOR as usize];
+
+            Self {
+                payload,
+                tracker,
+                frame_id,
+                created_timestamp: *ts,
+                modified_timestamp: Instant::now(),
+                subframe_idx: 0,
+            }
+        }
+
+        fn reset_with_timestamp<B: K2Block>(&mut self, frame_id: u32, ts: &Instant) {
+            self.reset();
+            self.created_timestamp = *ts;
+            self.modified_timestamp = *ts;
+            self.frame_id = frame_id;
+            self.subframe_idx = 0;
+        }
+
+        fn set_modified_timestamp(&mut self, ts: &Instant) {
+            self.modified_timestamp = *ts;
+        }
+
+        fn get_tracker_mut(&mut self) -> &mut Vec<bool> {
+            &mut self.tracker
+        }
+
+        fn get_payload_mut(&mut self) -> &mut [u16] {
+            let slot_as_u16: &mut [u16] = bytemuck::cast_slice_mut(self.payload.as_slice_mut());
+            slot_as_u16
+        }
+
+        fn get_tracker(&self) -> &Vec<bool> {
+            &self.tracker
+        }
+
+        type Block = K2SummitBlock;
+
+        type ReadOnlyFrame = K2SummitFrame;
+
+        fn writing_done(self, shm: &mut SharedSlabAllocator) -> SlotInfo {
+            shm.writing_done(self.payload)
         }
     }
 
-    fn reset_with_timestamp<B: K2Block>(&mut self, frame_id: u32, ts: &Instant) {
-        self.reset();
-        self.created_timestamp = *ts;
-        self.modified_timestamp = *ts;
-        self.frame_id = frame_id;
-        self.subframe_idx = 0;
-    }
+    impl K2Frame for K2SummitFrame {
+        type Block = K2SummitBlock;
 
-    fn set_modified_timestamp(&mut self, ts: &Instant) {
-        self.modified_timestamp = *ts;
-    }
-
-    fn get_tracker_mut(&mut self) -> &mut Vec<bool> {
-        &mut self.tracker
-    }
-
-    fn get_payload_mut(&mut self) -> &mut [u16] {
-        let slot_as_u16: &mut [u16] = bytemuck::cast_slice_mut(self.payload.as_slice_mut());
-        slot_as_u16
-    }
-
-    fn get_tracker(&self) -> &Vec<bool> {
-        &self.tracker
-    }
-
-    fn get_shape_for_binning(_binning: &Binning) -> Shape2 {
-        (Self::FRAME_HEIGHT, Self::FRAME_WIDTH)
-    }
-
-    fn subframe_indexes(&self, _binning: &Binning) -> Range<u32> {
-        0..1
-    }
-
-    fn get_subframe(&self, _index: u32, binning: &Binning) -> SubFrame {
-        SubFrame {
-            binning: *binning,
-            payload: self.get_payload(),
-            shape: Self::get_shape_for_binning(binning),
+        fn get_shape_for_binning(_binning: &Binning) -> Shape2 {
+            (Self::FRAME_HEIGHT, Self::FRAME_WIDTH)
         }
-    }
 
-    fn get_num_subframes(_binning: &Binning) -> u32 {
-        1
-    }
+        fn subframe_indexes(&self, _binning: &Binning) -> Range<u32> {
+            0..1
+        }
 
-    type Block = K2SummitBlock;
+        fn get_subframe(&self, _index: u32, binning: &Binning) -> SubFrame {
+            SubFrame {
+                binning: *binning,
+                payload: self.get_payload(),
+                shape: Self::get_shape_for_binning(binning),
+            }
+        }
 
-    fn writing_done(self, shm: &mut SharedSlabAllocator) -> SlotInfo {
-        shm.writing_done(self.payload)
+        fn get_num_subframes(_binning: &Binning) -> u32 {
+            1
+        }
     }
 }

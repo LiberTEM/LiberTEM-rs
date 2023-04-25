@@ -8,22 +8,22 @@ use std::{
 };
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender};
-use ipc_test::{SHMHandle, SharedSlabAllocator};
+use ipc_test::SharedSlabAllocator;
 use opentelemetry::Context;
 
 use crate::{
     block::{BlockRouteInfo, K2Block},
     events::{EventMsg, EventReceiver},
-    frame::K2Frame,
+    frame::{FrameForWriting, K2Frame},
     helpers::{set_cpu_affinity, CPU_AFF_ASSEMBLY},
 };
 
-pub struct PendingFrames<F: K2Frame> {
+pub struct PendingFrames<F: FrameForWriting> {
     pub frames: HashMap<u32, F>,
     timeout: Duration,
 }
 
-impl<F: K2Frame> PendingFrames<F> {
+impl<F: FrameForWriting> PendingFrames<F> {
     pub fn new() -> Self {
         PendingFrames {
             frames: HashMap::new(),
@@ -47,7 +47,11 @@ impl<F: K2Frame> PendingFrames<F> {
     /// as we keep the finished data around by default, it's possible to call this function
     /// only for every N received blocks, or only if a certain time has passed, without losing
     /// data (possibly small performance loss because of data locality, if you wait for too long)
-    pub fn retire_finished<E, CB: Fn(F) -> Result<(), E>>(&mut self, cb: CB) -> Result<(), E> {
+    pub fn retire_finished<E, CB: Fn(F::ReadOnlyFrame) -> Result<(), E>>(
+        &mut self,
+        shm: &mut SharedSlabAllocator,
+        cb: CB,
+    ) -> Result<(), E> {
         let mut to_remove: Vec<u32> = Vec::with_capacity(16);
 
         for (_, frame) in self.frames.iter() {
@@ -57,14 +61,19 @@ impl<F: K2Frame> PendingFrames<F> {
         }
 
         for frame_id in to_remove {
-            let frame = self.frames.remove(&frame_id).unwrap();
+            let frame_for_writing = self.frames.remove(&frame_id).unwrap();
+            let frame = frame_for_writing.writing_done(shm);
             cb(frame)?;
         }
 
         Ok(())
     }
 
-    pub fn retire_timed_out<E, CB: Fn(F) -> Result<(), E>>(&mut self, cb: CB) -> Result<(), E> {
+    pub fn retire_timed_out<E, CB: Fn(F::ReadOnlyFrame) -> Result<(), E>>(
+        &mut self,
+        shm: &mut SharedSlabAllocator,
+        cb: CB,
+    ) -> Result<(), E> {
         let mut to_remove: Vec<u32> = Vec::with_capacity(16);
         let now = Instant::now();
 
@@ -76,7 +85,8 @@ impl<F: K2Frame> PendingFrames<F> {
         }
 
         for frame_id in to_remove {
-            let frame = self.frames.remove(&frame_id).unwrap();
+            let frame_for_writing = self.frames.remove(&frame_id).unwrap();
+            let frame = frame_for_writing.writing_done(shm);
             cb(frame)?;
         }
 
@@ -100,7 +110,7 @@ impl<F: K2Frame> PendingFrames<F> {
     }
 }
 
-impl<F: K2Frame> Default for PendingFrames<F> {
+impl<F: FrameForWriting> Default for PendingFrames<F> {
     fn default() -> Self {
         Self::new()
     }
@@ -116,16 +126,15 @@ pub enum AssemblyResult<F: K2Frame> {
     AssemblyTimeout { frame: F, frame_id: u32 },
 }
 
-fn assembly_worker<F: K2Frame, B: K2Block>(
+fn assembly_worker<F: FrameForWriting, B: K2Block>(
     blocks_rx: Receiver<B>,
-    frames_tx: Sender<AssemblyResult<F>>,
+    frames_tx: Sender<AssemblyResult<F::ReadOnlyFrame>>,
     recycle_blocks_tx: &Sender<B>,
     stop_event: Arc<AtomicBool>,
-    shm_handle: SHMHandle,
+    handle_path: &str,
 ) -> Result<(), AssemblyError> {
-    let mut pending = PendingFrames::new();
-    let mut shm =
-        SharedSlabAllocator::connect(shm_handle.fd, &shm_handle.info).expect("connect to SHM");
+    let mut pending: PendingFrames<F> = PendingFrames::new();
+    let mut shm = SharedSlabAllocator::connect(handle_path).expect("connect to SHM");
 
     loop {
         match blocks_rx.recv_timeout(Duration::from_millis(100)) {
@@ -145,7 +154,7 @@ fn assembly_worker<F: K2Frame, B: K2Block>(
             }
         }
 
-        pending.retire_finished(|frame| {
+        pending.retire_finished(&mut shm, |frame| {
             if let Err(SendError(_)) = frames_tx.send(AssemblyResult::AssembledFrame(frame)) {
                 // can't retire frames if the other end is disconnected, so we die, too:
                 return Err(AssemblyError::Disconnected);
@@ -153,7 +162,7 @@ fn assembly_worker<F: K2Frame, B: K2Block>(
             Ok(())
         })?;
 
-        pending.retire_timed_out(|frame| {
+        pending.retire_timed_out(&mut shm, |frame: F::ReadOnlyFrame| {
             let frame_id = frame.get_frame_id();
             if let Err(SendError(_)) =
                 frames_tx.send(AssemblyResult::AssemblyTimeout { frame, frame_id })
@@ -168,9 +177,9 @@ fn assembly_worker<F: K2Frame, B: K2Block>(
     Ok(())
 }
 
-pub fn assembler_main<F: K2Frame + Send, B: K2Block>(
+pub fn assembler_main<F: FrameForWriting, B: K2Block>(
     blocks_rx: &Receiver<(B, BlockRouteInfo)>,
-    frames_tx: &Sender<AssemblyResult<F>>,
+    frames_tx: &Sender<AssemblyResult<F::ReadOnlyFrame>>,
     recycle_blocks_tx: &Sender<B>,
     events_rx: EventReceiver,
     shm: SharedSlabAllocator,
@@ -200,12 +209,12 @@ pub fn assembler_main<F: K2Frame + Send, B: K2Block>(
                 .spawn(move |_| {
                     asm_worker_ctx.attach();
                     set_cpu_affinity(CPU_AFF_ASSEMBLY + idx);
-                    if assembly_worker(
+                    if assembly_worker::<F, B>(
                         rx.clone(),
                         frames_tx.clone(),
                         &recycle_blocks_tx.clone(),
                         this_stop_event,
-                        shm_handle,
+                        &shm_handle.os_handle,
                     )
                     .is_err()
                     {
@@ -247,12 +256,15 @@ mod tests {
     use ipc_test::SharedSlabAllocator;
     use ndarray::s;
     use ndarray::ArrayView;
+    use tempfile::tempdir;
 
     use crate::assemble::PendingFrames;
     use crate::block::K2Block;
     use crate::block::K2ISBlock;
     use crate::decode::HEADER_SIZE;
+    use crate::frame::FrameForWriting;
     use crate::frame::K2ISFrame;
+    use crate::frame::K2ISFrameForWriting;
 
     use super::K2Frame;
 
@@ -267,14 +279,19 @@ mod tests {
 
     #[test]
     fn k2frame_assign_blocks_happy_case() {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.into_path().join("stuff.socket");
+        let handle_path = socket_as_path.to_str().unwrap();
+
         const FRAME_ID: u32 = 42;
         let mut ssa = SharedSlabAllocator::new(
             10,
             K2ISFrame::FRAME_HEIGHT * K2ISFrame::FRAME_WIDTH * std::mem::size_of::<u16>(),
             false,
+            &socket_as_path,
         )
         .expect("create SHM area for testing");
-        let mut frame: K2ISFrame = K2ISFrame::empty(FRAME_ID, &mut ssa);
+        let mut frame: K2ISFrameForWriting = K2ISFrameForWriting::empty(FRAME_ID, &mut ssa);
 
         assert!(!frame.is_finished());
 
@@ -315,12 +332,17 @@ mod tests {
 
     #[test]
     fn pending_frames_assign_blocks_happy_case() {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.into_path().join("stuff.socket");
+        let handle_path = socket_as_path.to_str().unwrap();
+
         const FRAME_ID: u32 = 42;
-        let mut pending_frames: PendingFrames<K2ISFrame> = PendingFrames::new();
+        let mut pending_frames: PendingFrames<K2ISFrameForWriting> = PendingFrames::new();
         let mut ssa = SharedSlabAllocator::new(
             10,
             K2ISFrame::FRAME_HEIGHT * K2ISFrame::FRAME_WIDTH * std::mem::size_of::<u16>(),
             false,
+            &socket_as_path,
         )
         .expect("create SHM area for testing");
 
@@ -345,8 +367,8 @@ mod tests {
         assert_eq!(pending_frames.num_unfinished(), 0);
 
         pending_frames
-            .retire_finished(|frame| {
-                let frame_arr = frame.as_array();
+            .retire_finished(&mut ssa, |frame| {
+                let frame_arr = frame.as_array(&ssa);
 
                 // all slices contain the test data pattern:
                 for y_idx in 0..2 {
@@ -369,14 +391,19 @@ mod tests {
 
     #[test]
     fn assemly_single_block() {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.into_path().join("stuff.socket");
+        let handle_path = socket_as_path.to_str().unwrap();
+
         const FRAME_ID: u32 = 42;
         let mut ssa = SharedSlabAllocator::new(
             10,
             K2ISFrame::FRAME_HEIGHT * K2ISFrame::FRAME_WIDTH * std::mem::size_of::<u16>(),
             false,
+            &socket_as_path,
         )
         .expect("create SHM area for testing");
-        let mut pending_frames: PendingFrames<K2ISFrame> = PendingFrames::new();
+        let mut pending_frames: PendingFrames<K2ISFrameForWriting> = PendingFrames::new();
 
         assert_eq!(pending_frames.num_finished(), 0);
         assert_eq!(pending_frames.num_unfinished(), 0);
@@ -395,7 +422,7 @@ mod tests {
         assert_eq!(pending_frames.num_unfinished(), 1);
 
         pending_frames
-            .retire_finished(|_| -> Result<(), ()> {
+            .retire_finished(&mut ssa, |_| -> Result<(), ()> {
                 panic!("this should not be called, as we don't have any finished frames yet");
             })
             .unwrap();
