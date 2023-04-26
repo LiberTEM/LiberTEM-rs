@@ -34,6 +34,8 @@ pub struct FrameSender {
     socket: Socket,
     cursor: RecordCursor,
     detector_config: DetectorConfig,
+    detector_config_raw: String,
+    dheader_raw: String,
     series: u64,
     nimages: u64,
     uri: String,
@@ -74,8 +76,8 @@ impl FrameSender {
         let mut cursor = file.get_cursor();
 
         cursor.seek_to_first_header_of_type("dheader-1.0");
-        let dheader_raw = cursor.read_raw_msg();
-        let dheader: DHeader = serde_json::from_slice(dheader_raw)
+        let dheader_raw = cursor.read_raw_msg().to_owned();
+        let dheader: DHeader = serde_json::from_slice(&dheader_raw)
             .expect("json should match our serialization schema");
 
         debug!("{dheader:?}");
@@ -86,12 +88,18 @@ impl FrameSender {
         let nimages = detector_config.get_num_images();
         let series = dheader.series;
 
+        cursor.seek_to_first_header_of_type("dheader-1.0");
+        cursor.read_raw_msg(); // skip dheader
+        let detector_config_raw = cursor.read_raw_msg().to_owned();
+
         FrameSender {
             socket,
             cursor: file.get_cursor(),
             series,
             nimages,
             detector_config,
+            detector_config_raw: String::from_utf8(detector_config_raw).unwrap(),
+            dheader_raw: String::from_utf8(dheader_raw).unwrap(),
             uri: canonical_uri,
         }
     }
@@ -102,6 +110,14 @@ impl FrameSender {
 
     pub fn get_detector_config(&self) -> &DetectorConfig {
         &self.detector_config
+    }
+
+    pub fn get_detector_config_raw(&self) -> &str {
+        &self.detector_config_raw
+    }
+
+    pub fn get_dheader_raw(&self) -> &str {
+        &self.dheader_raw
     }
 
     pub fn send_frame(&mut self) -> Result<(), SendError> {
@@ -259,6 +275,15 @@ impl DectrisSim {
 
     fn get_detector_config(slf: PyRef<Self>) -> DetectorConfig {
         slf.frame_sender.get_detector_config().clone()
+    }
+
+    /// Get the unparsed JSON detector config as a string
+    fn get_detector_config_raw(slf: PyRef<Self>) -> String {
+        slf.frame_sender.get_detector_config_raw().to_owned()
+    }
+
+    fn get_dheader_raw(&self) -> String {
+        self.frame_sender.get_dheader_raw().to_owned()
     }
 
     fn send_headers(mut slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
