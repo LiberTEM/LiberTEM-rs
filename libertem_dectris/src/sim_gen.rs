@@ -76,6 +76,10 @@ pub fn make_sim_data(num_frames: usize) -> Vec<u8> {
             .map(|_| (frame_idx % u16::MAX as usize) as u16)
             .collect();
         let compressed_data = compress_lz4(&pixel_data, None).unwrap();
+        let compressed_data: Vec<u8> = (0..12)
+            .map(|_| 0u8)
+            .chain(compressed_data.into_iter())
+            .collect();
 
         let size = compressed_data.len();
         let hash = format!("{:?}", md5::compute(&compressed_data));
