@@ -10,7 +10,8 @@ use crate::{
     cam_client::CamClient,
     chunk_stack::ChunkStackHandle,
     exceptions::{ConnectionError, TimeoutError},
-    headers::AcquisitionStart,
+    headers::{AcquisitionEnd, AcquisitionStart, DType, FormatType, ScanEnd, ScanStart},
+    headers_py::make_sim_data,
     receiver::{ReceiverStatus, ResultMsg, TPXReceiver},
 };
 
@@ -30,9 +31,14 @@ fn libertem_asi_tpx3(py: Python, m: &PyModule) -> PyResult<()> {
 
     m.add_class::<ChunkStackHandle>()?;
     m.add_class::<ASITpx3Connection>()?;
-    // m.add_class::<DType>()?;
-    // m.add_class::<FormatType>()?;
+    m.add_class::<DType>()?;
+    m.add_class::<FormatType>()?;
+    m.add_class::<AcquisitionStart>()?;
+    m.add_class::<ScanStart>()?;
+    m.add_class::<ScanEnd>()?;
+    m.add_class::<AcquisitionEnd>()?;
     m.add_class::<CamClient>()?;
+    m.add_function(wrap_pyfunction!(make_sim_data, m)?)?;
     m.add("TimeoutError", py.get_type::<TimeoutError>())?;
 
     // register_header_module(py, m)?;

@@ -56,6 +56,30 @@ impl HeaderTypes {
             }
         })
     }
+
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut out: [u8; 32] = [0; 32];
+        let options = bincode::DefaultOptions::new().with_fixint_encoding();
+
+        match self {
+            HeaderTypes::AcquisitionStart { header } => {
+                out[0..].copy_from_slice(&options.serialize(header).unwrap()[..])
+            }
+            HeaderTypes::ScanStart { header } => {
+                out[0..].copy_from_slice(&options.serialize(header).unwrap()[..])
+            }
+            HeaderTypes::ArrayChunk { header } => {
+                out[0..].copy_from_slice(&options.serialize(header).unwrap()[..])
+            }
+            HeaderTypes::ScanEnd { header } => {
+                out[0..].copy_from_slice(&options.serialize(header).unwrap()[..])
+            }
+            HeaderTypes::AcquisitionEnd { header } => {
+                out[0..].copy_from_slice(&options.serialize(header).unwrap()[..])
+            }
+        }
+        out
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
@@ -109,6 +133,7 @@ impl DType {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u8)]
+#[pyclass]
 pub enum FormatType {
     /// Sorted CSR
     CSR,
@@ -261,6 +286,7 @@ impl ArrayChunk {
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[pyclass]
 pub struct ScanEnd {
     tag: u8, // const. 0x03
 
@@ -280,6 +306,7 @@ impl ScanEnd {
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[pyclass]
 pub struct AcquisitionEnd {
     tag: u8, // const. 0x04
 
