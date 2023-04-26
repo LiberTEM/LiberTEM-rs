@@ -1,3 +1,4 @@
+pub mod bin_fmt;
 pub mod cam_client;
 pub mod common;
 pub mod dectris_py;
@@ -5,4 +6,6 @@ pub mod exceptions;
 pub mod frame_stack;
 pub mod receiver;
 pub mod sim;
+pub mod sim_data_source;
+pub mod sim_gen;
 pub mod stats;

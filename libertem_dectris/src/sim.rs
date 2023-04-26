@@ -1,13 +1,18 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use log::{debug, info, trace};
-use pyo3::{exceptions, prelude::*};
+use pyo3::{exceptions, prelude::*, types::PyType};
 use serde_json::json;
 use zmq::{Context, Socket, SocketType::PUSH};
 
 use crate::{
-    common::{setup_monitor, DHeader, DetectorConfig, DumpRecordFile, RecordCursor},
+    common::{setup_monitor, DHeader, DetectorConfig},
     exceptions::TimeoutError,
+    sim_data_source::{DumpRecordFile, RecordCursor},
+    sim_gen::make_sim_data,
 };
 
 #[derive(Debug)]
@@ -35,7 +40,12 @@ pub struct FrameSender {
 }
 
 impl FrameSender {
-    pub fn new(uri: &str, filename: &str, random_port: bool) -> Self {
+    pub fn from_file(uri: &str, filename: &str, random_port: bool) -> Self {
+        let file = DumpRecordFile::from_file(filename);
+        Self::new(uri, &file, random_port)
+    }
+
+    pub fn new(uri: &str, file: &DumpRecordFile, random_port: bool) -> Self {
         let ctx = Context::new();
         let socket = ctx
             .socket(PUSH)
@@ -59,8 +69,6 @@ impl FrameSender {
         socket
             .set_sndhwm(4 * 256)
             .expect("should be possible to set sndhwm");
-
-        let file = DumpRecordFile::new(filename);
 
         // temporary cursor to deserialize headers:
         let mut cursor = file.get_cursor();
@@ -224,7 +232,23 @@ impl DectrisSim {
     #[new]
     fn new(uri: &str, filename: &str, dwelltime: Option<u64>, random_port: bool) -> Self {
         DectrisSim {
-            frame_sender: FrameSender::new(uri, filename, random_port),
+            frame_sender: FrameSender::from_file(uri, filename, random_port),
+            dwelltime,
+        }
+    }
+
+    #[classmethod]
+    fn new_mocked(
+        _cls: &PyType,
+        uri: &str,
+        num_frames: usize,
+        dwelltime: Option<u64>,
+        random_port: bool,
+    ) -> Self {
+        let data = make_sim_data(num_frames);
+        let drf = DumpRecordFile::from_raw_data(Arc::new(data));
+        DectrisSim {
+            frame_sender: FrameSender::new(uri, &drf, random_port),
             dwelltime,
         }
     }

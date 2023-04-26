@@ -1,19 +1,24 @@
+mod bin_fmt;
 mod common;
 mod exceptions;
 mod sim;
+mod sim_data_source;
+mod sim_gen;
 
+use crate::bin_fmt::{write_raw_msg, write_raw_msg_fh, write_serializable};
 use crate::common::DHeader;
 use crate::common::DImage;
 use crate::common::DetectorConfig;
 use crate::sim::FrameSender;
-use serde::Serialize;
+use crate::sim_data_source::DumpRecordFile;
+use crate::sim_gen::make_sim_data;
 use std::collections::HashMap;
-use std::io;
 use std::io::Write;
+use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use zmq::Message;
 
-use crate::common::DumpRecordFile;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -48,13 +53,17 @@ enum Action {
     Sim {
         uri: String,
     },
+    SimMocked {
+        num_frames: usize,
+        uri: String,
+    },
     Record {
         uri: String,
     },
 }
 
 fn action_cat(cli: &Cli, start_idx: usize, end_idx: usize) {
-    let file = DumpRecordFile::new(&cli.filename);
+    let file = DumpRecordFile::from_file(&cli.filename);
     let mut cursor = file.get_cursor();
 
     eprintln!("writing from {start_idx} to {end_idx}");
@@ -109,7 +118,7 @@ fn get_msg_type(maybe_value: &Option<serde_json::Value>) -> String {
 }
 
 fn get_summary(filename: &str) -> HashMap<String, usize> {
-    let file = DumpRecordFile::new(filename);
+    let file = DumpRecordFile::from_file(filename);
     let mut cursor = file.get_cursor();
 
     let mut msg_map = HashMap::<String, usize>::new();
@@ -142,7 +151,7 @@ fn try_parse(raw_msg: &[u8]) -> Option<serde_json::Value> {
 }
 
 fn action_inspect(cli: &Cli, head: Option<usize>, summary: bool) {
-    let file = DumpRecordFile::new(&cli.filename);
+    let file = DumpRecordFile::from_file(&cli.filename);
     let mut cursor = file.get_cursor();
 
     match head {
@@ -167,30 +176,8 @@ fn action_inspect(cli: &Cli, head: Option<usize>, summary: bool) {
     }
 }
 
-fn write_raw_msg(msg: &[u8]) {
-    write_raw_msg_fh(msg, &mut io::stdout());
-}
-
-fn write_raw_msg_fh<W>(msg: &[u8], out: &mut W)
-where
-    W: Write,
-{
-    let length = (msg.len() as i64).to_le_bytes();
-    out.write_all(&length).unwrap();
-    out.write_all(msg).unwrap();
-}
-
-fn write_serializable<T>(value: &T)
-where
-    T: Serialize,
-{
-    let binding = serde_json::to_string(&value).expect("serialization should not fail");
-    let msg_raw = binding.as_bytes();
-    write_raw_msg(msg_raw);
-}
-
 fn action_repeat(cli: &Cli, repetitions: usize) {
-    let file = DumpRecordFile::new(&cli.filename);
+    let file = DumpRecordFile::from_file(&cli.filename);
     let mut cursor = file.get_cursor();
 
     cursor.seek_to_first_header_of_type("dheader-1.0");
@@ -252,13 +239,28 @@ fn action_repeat(cli: &Cli, repetitions: usize) {
 }
 
 fn action_sim(filename: &str, uri: &str) {
-    let mut sender = FrameSender::new(uri, filename, false);
+    let mut sender = FrameSender::from_file(uri, filename, false);
     sender.send_headers(|| Some(())).unwrap();
-    sender.send_frames();
+    for _ in 0..sender.get_num_frames() {
+        sender.send_frame().unwrap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
     sender.send_footer();
 }
 
-fn action_record(filename: &String, uri: &String) {
+fn action_sim_mocked(num_frames: usize, uri: &str) {
+    let data = make_sim_data(num_frames);
+    let drf = DumpRecordFile::from_raw_data(Arc::new(data));
+    let mut sender = FrameSender::new(uri, &drf, false);
+    sender.send_headers(|| Some(())).unwrap();
+    for _ in 0..sender.get_num_frames() {
+        sender.send_frame().unwrap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    sender.send_footer();
+}
+
+fn action_record(filename: &String, uri: &str) {
     let raw_file = std::fs::File::create(filename).unwrap();
     let mut file = std::io::BufWriter::new(raw_file);
     let ctx = zmq::Context::new();
@@ -279,8 +281,8 @@ fn action_record(filename: &String, uri: &String) {
         let first_header = first_header.as_str();
         if let Some(first_header) = first_header {
             let dheader_res: Result<DHeader, _> = serde_json::from_str(first_header);
-            if dheader_res.is_ok() {
-                break dheader_res.unwrap();
+            if let Ok(dheader_res) = dheader_res {
+                break dheader_res;
             }
         }
     };
@@ -300,6 +302,8 @@ fn action_record(filename: &String, uri: &String) {
     println!("detector config: {:?}", detector_config);
 
     let num_msg = detector_config.get_num_images() * 4 + 1;
+
+    println!("expecting {} messages", num_msg);
 
     write_raw_msg_fh(&first_header, &mut file);
     write_raw_msg_fh(&detector_config_msg, &mut file);
@@ -342,6 +346,7 @@ pub fn main() {
         Action::Inspect { head, summary } => action_inspect(&cli, head, summary),
         Action::Repeat { repetitions } => action_repeat(&cli, repetitions),
         Action::Sim { uri } => action_sim(&cli.filename, &uri),
+        Action::SimMocked { uri, num_frames } => action_sim_mocked(num_frames, &uri),
         Action::Record { uri } => action_record(&cli.filename, &uri),
     }
 }
