@@ -1,3 +1,4 @@
+use log::debug;
 use pyo3::{pyfunction, pymethods};
 
 use crate::{
@@ -119,13 +120,13 @@ pub fn make_sim_data(
             1,
         ),
     };
-    println!("{acquisition_start_header:?}");
+    debug!("{acquisition_start_header:?}");
     out.extend_from_slice(&acquisition_start_header.to_bytes());
 
     let scan_start_header = HeaderTypes::ScanStart {
         header: ScanStart::new(1, 0),
     };
-    println!("{scan_start_header:?}");
+    debug!("{scan_start_header:?}");
     out.extend_from_slice(&scan_start_header.to_bytes());
 
     let nnz = values.len() as u32;
@@ -147,11 +148,11 @@ pub fn make_sim_data(
     };
     layout.validate();
 
-    println!("layout: {:?}", layout);
-    println!("sizes: {:?}", sizes);
+    debug!("layout: {:?}", layout);
+    debug!("sizes: {:?}", sizes);
 
     let mut chunk: Vec<u8> = (0..sizes.total()).map(|_| 0).collect();
-    // println!("total size: {} {}", sizes.total(), chunk.);
+    // debug!("total size: {} {}", sizes.total(), chunk.);
     let mut view_mut: CSRViewMut<u32, u32, u32> =
         CSRViewMut::from_bytes_with_layout(&mut chunk, &layout);
     view_mut.copy_from_slices(&indptr, &indices, &values);
@@ -165,7 +166,7 @@ pub fn make_sim_data(
             layout.value_offset as u32,
         ),
     };
-    println!("{array_chunk_header:?}");
+    debug!("{array_chunk_header:?}");
     out.extend_from_slice(&array_chunk_header.to_bytes());
     out.extend_from_slice(&chunk);
 
