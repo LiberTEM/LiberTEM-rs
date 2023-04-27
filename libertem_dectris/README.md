@@ -81,6 +81,12 @@ finally:
 
 ## Changelog
 
+### v0.2.10
+
+- Add functionality to generate mock data for sending via the simulator
+- Add missing numpy dependency
+- Make debug output a bit more reliable
+
 ### v0.2.9
 
 - Add more debug and trace output
