@@ -17,8 +17,6 @@ from libertem import masks
 from libertem.udf.sum import SumUDF
 from libertem.udf.sumsigudf import SumSigUDF
 from libertem.udf.masks import ApplyMasksUDF
-from libertem.udf.com import COMParams
-from libertem_icom.udf.icom import ICOMUDF
 from libertem.executor.pipelined import PipelinedExecutor
 from libertem_live.api import LiveContext
 from libertem_live.udf.monitor import (
@@ -128,12 +126,9 @@ class WSServer:
                 radius_inner=ri)
 
         mask_udf = SingleMaskUDF(mask_factories=[_ring])
-        params = COMParams(cy=cy, cx=cx, r=ro, ri=ri)
-        icom_udf = ICOMUDF(params)
         return OrderedDict({
             # "brightfield": SumSigUDF(),
             "annular": mask_udf,
-            "icom": icom_udf,
             # "sum": SumUDF(),
             # "monitor": SignalMonitorUDF(),
             "monitor_partition": PartitionMonitorUDF(),
@@ -191,9 +186,6 @@ class WSServer:
             udf_name = udf_names[idx]
             for channel_name in partial_results.buffers[idx].keys():
                 data = partial_results.buffers[idx][channel_name].data
-                # FIXME implement n-dimnsional result buffers
-                if len(data.shape) != 2:
-                    continue
                 if previous_results is None:
                     data_previous = np.zeros_like(data)
                 else:
@@ -318,7 +310,7 @@ class WSServer:
                 aq = self.ctx.make_acquisition(
                     conn=self.conn,
                     pending_aq=pending_aq,
-                    frames_per_partition=4*8192,
+                    frames_per_partition=25,
                 )
                 last_update = 0
                 try:
@@ -343,7 +335,7 @@ class WSServer:
             print(f"acquisition done with id={acq_id}; took {t1-t0:.3f}s")
 
     async def serve(self):
-        async with websockets.serve(self, "0.0.0.0", 8444):
+        async with websockets.serve(self, "localhost", 8444):
             try:
                 await self.acquisition_loop()
             finally:
@@ -353,17 +345,17 @@ class WSServer:
     def connect(self):
         executor = PipelinedExecutor(
             spec=PipelinedExecutor.make_spec(
-                cpus=range(20), cudas=[]
+                cpus=range(16), cudas=[]
             ),
             pin_workers=False,
             # delayed_gc=False,
         )
         ctx = LiveContext(executor=executor)
-        conn = ctx.make_connection('asi_tpx3').open(
+        conn = ctx.make_connection('asi_mpx3').open(
             data_host="localhost",
             data_port=8283,
-            chunks_per_stack=16,
-            bytes_per_chunk=1500000,
+            api_host="localhost",
+            api_port=8080,
             buffer_size=2048,
         )
 

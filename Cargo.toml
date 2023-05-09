@@ -2,10 +2,12 @@
 members = [
     "libertem_dectris",
     "libertem_asi_tpx3",
+    "libertem_asi_mpx3",
     "ipc_test",
     "playegui",
     "bs-sys",
     "stats",
+    "serval-client",
 ]
 
 [profile.release]
