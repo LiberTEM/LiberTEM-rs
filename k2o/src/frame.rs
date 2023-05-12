@@ -159,11 +159,6 @@ pub trait K2Frame: Send + Sized {
         Self::FRAME_WIDTH * Self::FRAME_HEIGHT * std::mem::size_of::<u16>()
     }
 
-    fn get_payload(&self, shm: &SharedSlabAllocator) -> &[u16] {
-        let slot = self.get_slot(shm);
-        &bytemuck::cast_slice(slot.as_slice())
-    }
-
     fn free_payload(self, shm: &mut SharedSlabAllocator) {
         let slot_r = self.get_slot(shm);
         shm.free_idx(slot_r.slot_idx);
@@ -282,7 +277,13 @@ impl FrameForWriting for K2ISFrameForWriting {
 
     fn writing_done(self, shm: &mut SharedSlabAllocator) -> Self::ReadOnlyFrame {
         let slot_info = shm.writing_done(self.payload);
-        self.into_readonly(slot_info)
+        K2ISFrame {
+            payload: slot_info,
+            subframe_idx: self.subframe_idx,
+            frame_id: self.frame_id,
+            created_timestamp: self.created_timestamp,
+            modified_timestamp: self.modified_timestamp,
+        }
     }
 
     const FRAME_WIDTH: usize = 2048;
