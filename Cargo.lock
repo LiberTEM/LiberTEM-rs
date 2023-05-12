@@ -1771,6 +1771,7 @@ dependencies = [
  "ipc-test",
  "log",
  "lz4",
+ "md5",
  "memmap2",
  "nix 0.26.2",
  "numpy",

@@ -289,7 +289,7 @@ fn acquisition(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
     num_triggers: usize,
-    stream: &TcpStream,
+    stream: &mut TcpStream,
     frame_stack_size: usize,
     shm: &mut SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
@@ -304,7 +304,7 @@ fn acquisition(
     debug!("acquisition starting");
 
     // approx uppper bound of image size in bytes
-    let peek_meta = peek_header(&mut stream);
+    let peek_meta = peek_header(stream);
     let approx_size_bytes = 2 * peek_meta.get_size();
 
     let slot = match shm.get_mut() {
@@ -332,7 +332,7 @@ fn acquisition(
 
         recv_frame(
             sequence,
-            &mut stream,
+            stream,
             &to_thread_r,
             &mut frame_stack,
             &mut extra_frame_stack,
