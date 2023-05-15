@@ -8,12 +8,9 @@ use std::{
 
 use crate::{
     cam_client::CamClient,
-    common::{
-        DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig, PixelType, TriggerMode,
-    },
     exceptions::{ConnectionError, DecompressError, TimeoutError},
     frame_stack::FrameStackHandle,
-    receiver::{DectrisReceiver, ReceiverStatus, ResultMsg},
+    receiver::{ServalReceiver, ReceiverStatus, ResultMsg},
     sim::DectrisSim,
 };
 
@@ -63,7 +60,7 @@ fn register_header_module(py: Python<'_>, parent_module: &PyModule) -> PyResult<
 }
 
 struct FrameChunkedIterator<'a, 'b, 'c, 'd> {
-    receiver: &'a mut DectrisReceiver,
+    receiver: &'a mut ServalReceiver,
     shm: &'b mut SharedSlabAllocator,
     remainder: &'c mut Vec<FrameStackHandle>,
     stats: &'d mut Stats,
@@ -161,7 +158,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
     }
 
     fn new(
-        receiver: &'a mut DectrisReceiver,
+        receiver: &'a mut ServalReceiver,
         shm: &'b mut SharedSlabAllocator,
         remainder: &'c mut Vec<FrameStackHandle>,
         stats: &'d mut Stats,
@@ -177,7 +174,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
 
 #[pyclass]
 struct DectrisConnection {
-    receiver: DectrisReceiver,
+    receiver: ServalReceiver,
     remainder: Vec<FrameStackHandle>,
     local_shm: SharedSlabAllocator,
     stats: Stats,
@@ -232,7 +229,7 @@ impl DectrisConnection {
         let local_shm = shm.clone_and_connect().expect("clone SHM");
 
         Ok(Self {
-            receiver: DectrisReceiver::new(uri, frame_stack_size, shm),
+            receiver: ServalReceiver::new(uri, frame_stack_size, shm),
             remainder: Vec::new(),
             local_shm,
             stats: Stats::new(),

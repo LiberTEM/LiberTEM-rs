@@ -49,11 +49,6 @@ pub enum ControlMsg {
 
     /// Wait for any acquisition to start on a given host/port
     StartAcquisitionPassive,
-
-    /// Wait for a specific series to start
-    StartAcquisition {
-        series: u64,
-    },
 }
 
 #[derive(PartialEq, Eq)]
@@ -201,7 +196,6 @@ fn recv_frame(
 enum AcquisitionError {
     Disconnected,
     SeriesMismatch,
-    SerdeError { recvd_msg: String, msg: String },
     Cancelled,
     BufferFull,
     StateError { msg: String },
@@ -213,9 +207,6 @@ impl Display for AcquisitionError {
         match self {
             AcquisitionError::Cancelled => {
                 write!(f, "acquisition cancelled")
-            }
-            AcquisitionError::SerdeError { recvd_msg, msg } => {
-                write!(f, "deserialization failed: {msg}; got msg {recvd_msg}")
             }
             AcquisitionError::SeriesMismatch => {
                 write!(f, "series mismatch")
@@ -240,9 +231,6 @@ impl Display for AcquisitionError {
 /// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
 fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), AcquisitionError> {
     match control_channel.try_recv() {
-        Ok(ControlMsg::StartAcquisition { series: _ }) => Err(AcquisitionError::StateError {
-            msg: "received StartAcquisition while an acquisition was already running".to_string(),
-        }),
         Ok(ControlMsg::StartAcquisitionPassive) => Err(AcquisitionError::StateError {
             msg: "received StartAcquisitionPassive while an acquisition was already running"
                 .to_string(),
@@ -258,15 +246,18 @@ fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), Acqui
 fn passive_acquisition(
     control_channel: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
-    stream: &mut TcpStream,
     frame_stack_size: usize,
     shm: &mut SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     loop {
+        let stream: &mut TcpStream;
+
+        // FIXME: try to connect, then
+
         // block until we get the first frame:
         let first_frame = peek_header(stream);
 
-        let num_triggers = 0; // FIXME
+        let num_triggers = 0; // FIXME: ask the HTTP API about the detector config
 
         acquisition(
             control_channel,
@@ -440,7 +431,6 @@ fn background_thread(
                     match passive_acquisition(
                         to_thread_r,
                         from_thread_s,
-                        &socket,
                         frame_stack_size,
                         &mut shm,
                     ) {
@@ -450,40 +440,6 @@ fn background_thread(
                         }
                         Err(e) => {
                             let msg = format!("passive_acquisition error: {}", e);
-                            from_thread_s.send(ResultMsg::Error { msg }).unwrap();
-                            error!("background_thread: error: {}; re-connecting", e);
-                            continue 'outer;
-                        }
-                    }
-                }
-                Ok(ControlMsg::StartAcquisition { series }) => {
-                    // second message: the header itself
-                    recv_part(&mut msg, &socket, to_thread_r)?;
-
-                    if let Some(msg_str) = msg.as_str() {
-                        debug!("detector config: {}", msg_str);
-                    } else {
-                        warn!("non-string received as detector config!")
-                    }
-
-                    let detector_config: DetectorConfig =
-                        serde_json::from_str(msg.as_str().unwrap()).unwrap();
-
-                    match acquisition(
-                        detector_config,
-                        to_thread_r,
-                        from_thread_s,
-                        &socket,
-                        series,
-                        frame_stack_size,
-                        &mut shm,
-                    ) {
-                        Ok(_) => {}
-                        Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            let msg = format!("acquisition error: {}", e);
                             from_thread_s.send(ResultMsg::Error { msg }).unwrap();
                             error!("background_thread: error: {}; re-connecting", e);
                             continue 'outer;
@@ -517,9 +473,9 @@ impl Display for ReceiverError {
     }
 }
 
-/// Start a background thread that received data from the zeromq socket and
+/// Start a background thread that receives data from the socket and
 /// puts it into shared memory.
-pub struct DectrisReceiver {
+pub struct ServalReceiver {
     bg_thread: Option<JoinHandle<()>>,
     to_thread: Sender<ControlMsg>,
     from_thread: Receiver<ResultMsg>,
@@ -527,7 +483,7 @@ pub struct DectrisReceiver {
     pub shm_handle: SHMHandle,
 }
 
-impl DectrisReceiver {
+impl ServalReceiver {
     pub fn new(uri: &str, frame_stack_size: usize, shm: SharedSlabAllocator) -> Self {
         let (to_thread_s, to_thread_r) = unbounded();
         let (from_thread_s, from_thread_r) = unbounded();
@@ -537,7 +493,7 @@ impl DectrisReceiver {
 
         let shm_handle = shm.get_handle();
 
-        DectrisReceiver {
+        ServalReceiver {
             bg_thread: Some(
                 builder
                     .name("bg_thread".to_string())
@@ -595,19 +551,6 @@ impl DectrisReceiver {
                 RecvTimeoutError::Timeout => None,
             },
         }
-    }
-
-    pub fn start_series(&mut self, series: u64) -> Result<(), ReceiverError> {
-        if self.status == ReceiverStatus::Closed {
-            return Err(ReceiverError {
-                msg: "receiver is closed".to_string(),
-            });
-        }
-        self.to_thread
-            .send(ControlMsg::StartAcquisition { series })
-            .expect("background thread should be running");
-        self.status = ReceiverStatus::Running;
-        Ok(())
     }
 
     pub fn start_passive(&mut self) -> Result<(), ReceiverError> {
