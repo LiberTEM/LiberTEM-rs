@@ -88,7 +88,7 @@ def init_acquisition(serverurl, detector_config):
     """
 
     # Sets the number of triggers.
-    detector_config["nTriggers"] = 999999999
+    detector_config["nTriggers"] = 1024
 
     # Set the trigger mode to be software-defined.
     detector_config["TriggerMode"] = "CONTINUOUS"

@@ -1,13 +1,13 @@
 use bincode::serialize;
 use ipc_test::{SharedSlabAllocator, SlotForWriting, SlotInfo};
 use pyo3::{
-    exceptions::{self, PyRuntimeError, PyValueError},
+    exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
     types::{PyBytes, PyType},
 };
 use serde::{Deserialize, Serialize};
 
-use crate::common::FrameMeta;
+use crate::common::{DType, FrameMeta};
 
 pub struct FrameStackForWriting {
     slot: SlotForWriting,
@@ -52,7 +52,7 @@ impl FrameStackForWriting {
 
     /// Temporarily take mutable ownership of a buffer
     /// for a single frame, and receive the data into it.
-    pub fn write_frame(&mut self, meta: &FrameMeta, fill_buffer: impl Fn(&mut [u8])) {
+    pub fn write_frame(&mut self, meta: &FrameMeta, mut fill_buffer: impl FnMut(&mut [u8])) {
         // FIXME: `fill_buffer` should return a `Result`
         let start = self.cursor;
         let stop = start + meta.data_length_bytes;
@@ -190,42 +190,13 @@ impl FrameStackHandle {
         Self::deserialize_impl(serialized)
     }
 
-    fn get_series_id(slf: PyRef<Self>) -> PyResult<u64> {
-        Ok(slf.first_meta()?.dimage.series)
-    }
-
     fn get_frame_id(slf: PyRef<Self>) -> PyResult<u64> {
-        Ok(slf.first_meta()?.dimage.frame)
+        Ok(slf.first_meta()?.sequence)
     }
 
-    fn get_hash(slf: PyRef<Self>) -> PyResult<String> {
-        Ok(slf.first_meta()?.dimage.hash.clone())
-    }
-
-    fn get_pixel_type(slf: PyRef<Self>) -> PyResult<String> {
-        Ok(match &slf.first_meta()?.dimaged.type_ {
-            PixelType::Uint8 => "uint8".to_string(),
-            PixelType::Uint16 => "uint16".to_string(),
-            PixelType::Uint32 => "uint32".to_string(),
-        })
-    }
-
-    fn get_encoding(slf: PyRef<Self>) -> PyResult<String> {
-        Ok(slf.first_meta()?.dimaged.encoding.clone())
-    }
-
-    /// return endianess in numpy notation
-    fn get_endianess(slf: PyRef<Self>) -> PyResult<String> {
-        match slf.first_meta()?.dimaged.encoding.chars().last() {
-            Some(c) => Ok(c.to_string()),
-            None => Err(exceptions::PyValueError::new_err(
-                "encoding should be non-empty".to_string(),
-            )),
-        }
-    }
-
-    fn get_shape(slf: PyRef<Self>) -> PyResult<Vec<u64>> {
-        Ok(slf.first_meta()?.dimaged.shape.clone())
+    fn get_shape(slf: PyRef<Self>) -> PyResult<(u16, u16)> {
+        let meta = slf.first_meta()?;
+        Ok((meta.height, meta.width))
     }
 
     fn __len__(slf: PyRef<Self>) -> usize {
@@ -246,126 +217,5 @@ mod tests {
         let socket_as_path = socket_dir.path().join("stuff.socket");
 
         (socket_dir, socket_as_path)
-    }
-
-    #[test]
-    fn test_frame_stack() {
-        let (_socket_dir, socket_as_path) = get_socket_path();
-        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
-        let slot = shm.get_mut().expect("get a free shm slot");
-        let mut fs = FrameStackForWriting::new(slot, 1, 256);
-        let dimage = crate::common::DImage {
-            htype: "".to_string(),
-            series: 1,
-            frame: 1,
-            hash: "".to_string(),
-        };
-        let dimaged = crate::common::DImageD {
-            htype: "".to_string(),
-            shape: vec![512, 512],
-            type_: crate::common::PixelType::Uint16,
-            encoding: ">bslz4".to_string(),
-        };
-        let dconfig = crate::common::DConfig {
-            htype: "".to_string(),
-            start_time: 0,
-            stop_time: 0,
-            real_time: 0,
-        };
-        assert_eq!(fs.cursor, 0);
-        fs.frame_done(dimage, dimaged, dconfig, &[42]);
-        assert_eq!(fs.cursor, 1);
-
-        let _fs_handle = fs.writing_done(&mut shm);
-    }
-
-    #[test]
-    fn test_split_frame_stack_handle() {
-        let (_socket_dir, socket_as_path) = get_socket_path();
-        // need at least three slots: one is the source, two for the results.
-        let mut shm = SharedSlabAllocator::new(3, 4096, false, &socket_as_path).unwrap();
-        let slot = shm.get_mut().expect("get a free shm slot");
-        let mut fs = FrameStackForWriting::new(slot, 2, 16);
-        let dimage = crate::common::DImage {
-            htype: "".to_string(),
-            series: 1,
-            frame: 1,
-            hash: "".to_string(),
-        };
-        let dimaged = crate::common::DImageD {
-            htype: "".to_string(),
-            shape: vec![512, 512],
-            type_: crate::common::PixelType::Uint16,
-            encoding: ">bslz4".to_string(),
-        };
-        let dconfig = crate::common::DConfig {
-            htype: "".to_string(),
-            start_time: 0,
-            stop_time: 0,
-            real_time: 0,
-        };
-        assert_eq!(fs.cursor, 0);
-        fs.frame_done(
-            dimage.clone(),
-            dimaged.clone(),
-            dconfig.clone(),
-            &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        );
-        assert_eq!(fs.cursor, 16);
-        fs.frame_done(
-            dimage,
-            dimaged,
-            dconfig,
-            &[2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
-        );
-        assert_eq!(fs.cursor, 32);
-        assert_eq!(fs.offsets, vec![0, 16]);
-
-        println!("{:?}", fs.slot.as_slice());
-
-        let fs_handle = fs.writing_done(&mut shm);
-
-        let slot_r = shm.get(fs_handle.slot.slot_idx);
-        let slice_0 = fs_handle.get_slice_for_frame(0, &slot_r);
-        assert_eq!(slice_0.len(), 16);
-        for &elem in slice_0 {
-            assert_eq!(elem, 1);
-        }
-        let slice_1 = fs_handle.get_slice_for_frame(1, &slot_r);
-        assert_eq!(slice_1.len(), 16);
-        for &elem in slice_1 {
-            assert_eq!(elem, 2);
-        }
-
-        let old_meta_len = fs_handle.meta.len();
-
-        let (a, b) = fs_handle.split_at(1, &mut shm);
-
-        let slot_a: Slot = shm.get(a.slot.slot_idx);
-        let slot_b: Slot = shm.get(b.slot.slot_idx);
-        let slice_a = &slot_a.as_slice()[..16];
-        let slice_b = &slot_b.as_slice()[..16];
-        println!("{:?}", slice_a);
-        println!("{:?}", slice_b);
-        for &elem in slice_a {
-            assert_eq!(elem, 1);
-        }
-        for &elem in slice_b {
-            assert_eq!(elem, 2);
-        }
-        assert_eq!(slice_a, a.get_slice_for_frame(0, &slot_a));
-        assert_eq!(slice_b, b.get_slice_for_frame(0, &slot_b));
-
-        assert_eq!(a.meta.len() + b.meta.len(), old_meta_len);
-        assert_eq!(a.offsets.len() + b.offsets.len(), 2);
-
-        // when the split is done, there should be one free shm slot:
-        assert_eq!(shm.num_slots_free(), 1);
-
-        // and we can free them again:
-        shm.free_idx(a.slot.slot_idx);
-        shm.free_idx(b.slot.slot_idx);
-
-        assert_eq!(shm.num_slots_free(), 3);
     }
 }

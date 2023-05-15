@@ -9,13 +9,6 @@ create_exception!(
 
 create_exception!(
     libertem_dectris,
-    DecompressError,
-    exceptions::PyException,
-    "Decompression failed"
-);
-
-create_exception!(
-    libertem_dectris,
     ConnectionError,
     exceptions::PyException,
     "SHM Connection failed"

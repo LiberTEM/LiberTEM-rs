@@ -1,6 +1,6 @@
 use std::{
     fmt::{Debug, Display},
-    io::Read,
+    io::{ErrorKind, Read},
     mem::replace,
     net::TcpStream,
     str::FromStr,
@@ -11,13 +11,14 @@ use std::{
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
+use serval_client::{DetectorConfig, ServalClient};
 
 use crate::{
     common::{DType, FrameMeta},
     frame_stack::{FrameStackForWriting, FrameStackHandle},
 };
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub enum ResultMsg {
     Error {
         msg: String,
@@ -29,7 +30,7 @@ pub enum ResultMsg {
     },
 
     AcquisitionStart {
-        // series: u64,
+        detector_config: DetectorConfig,
     },
 
     /// A stack of frames, part of an acquisition
@@ -42,6 +43,14 @@ pub enum ResultMsg {
     End {
         frame_stack: FrameStackHandle,
     },
+}
+
+#[derive(Debug)]
+enum ParseError {
+    WrongMagic { got: [u8; 2] },
+    Eof,
+    InvalidMaxVal { got: u32 },
+    WhiteSpaceExpected { pos: usize, got: u8 },
 }
 
 pub enum ControlMsg {
@@ -71,12 +80,109 @@ where
 }
 
 /// Peek and parse the first frame header
-fn peek_header(stream: &mut TcpStream) -> FrameMeta {
-    const HEADER_BUF_SIZE: usize = 512;
+fn peek_header(stream: &mut TcpStream) -> Result<FrameMeta, ParseError> {
     let mut buf: [u8; HEADER_BUF_SIZE] = [0; HEADER_BUF_SIZE];
     // FIXME: error handling, timeout, ...
-    let nbytes = stream.peek(&mut buf).unwrap();
-    todo!("extract header parsing logic from `recv_frame` and use it here");
+
+    let mut nbytes = 0;
+
+    // Ugh.. wait until enough data is in the buffer
+    // possibly, the sender sends the header and payload separately,
+    // in which case we get only a short header, and we need to retry.
+    // All because we don't really know how large the header is supposed to be.
+    // This is broken for very small frames (where header+data < 512),
+    // so if an acquisition only contains <512 bytes in total, we will wait
+    // here indefinitely.
+    while nbytes < HEADER_BUF_SIZE {
+        nbytes = stream.peek(&mut buf).unwrap();
+        // FIXME: timeout!!
+    }
+
+    parse_header(&buf, 0)
+}
+
+const HEADER_BUF_SIZE: usize = 512;
+
+fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<FrameMeta, ParseError> {
+    let mut pos: usize = 0;
+
+    // Each PGM image consists of the following:
+    // •      A "magic number" for identifying the file type.  A pgm image's magic number is the two characters "P5".
+    // FIXME: error handling
+    if &buf[0..2] != b"P5" {
+        return Err(ParseError::WrongMagic {
+            got: [buf[0], buf[1]],
+        });
+    }
+
+    pos += 2;
+
+    // •      Whitespace (blanks, TABs, CRs, LFs).
+    while buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
+        pos += 1;
+    }
+
+    // •      A width, formatted as ASCII characters in decimal.
+    let width_start = pos;
+    while !buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
+        pos += 1;
+    }
+    let width: u16 = num_from_byte_slice(&buf[width_start..pos]);
+
+    // •      Whitespace.
+    while buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
+        pos += 1;
+    }
+
+    // •      A height, again in ASCII decimal.
+    let height_start = pos;
+    while !buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
+        pos += 1;
+    }
+    let height: u16 = num_from_byte_slice(&buf[height_start..pos]);
+
+    // •      Whitespace.
+    while buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
+        pos += 1;
+    }
+
+    // •      The maximum gray value (Maxval), again in ASCII decimal.  Must be less than 65536, and more than zero.
+    // really, more than zero? how do you represent an all-black image in PGM then?
+    let maxval_start = pos;
+    while !buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
+        pos += 1;
+    }
+    let maxval: u32 = num_from_byte_slice(&buf[maxval_start..pos]);
+
+    if !(0..65536).contains(&maxval) {
+        return Err(ParseError::InvalidMaxVal { got: maxval });
+    }
+
+    // •      A single whitespace character (usually a newline).
+    if !buf[pos].is_ascii_whitespace() {
+        return Err(ParseError::WhiteSpaceExpected { pos, got: buf[pos] });
+    }
+
+    // •      A raster of Height rows, [...]
+    let raster_start_pos = pos;
+
+    let dtype: DType = DType::from_maxval(maxval);
+    let data_length_bytes = width as usize * height as usize * dtype.num_bytes();
+
+    let header_length_bytes: usize = pos + 1;
+
+    let meta = FrameMeta {
+        sequence,
+        dtype,
+        width,
+        height,
+        data_length_bytes,
+        header_length_bytes,
+    };
+
+    trace!("frame header parsed: {meta:?}");
+
+    Ok(meta)
 }
 
 fn recv_frame(
@@ -92,7 +198,6 @@ fn recv_frame(
 
     // 1) Read the first N bytes (512?) from the socket into a buffer, and parse the PGM header
 
-    const HEADER_BUF_SIZE: usize = 512;
     let mut buf: [u8; HEADER_BUF_SIZE] = [0; HEADER_BUF_SIZE];
 
     match stream.read_exact(&mut buf) {
@@ -102,91 +207,32 @@ fn recv_frame(
 
     // 2) Parse the header, importantly reading width, height, bytes-per-pixel (maxval)
 
-    let mut pos: usize = 0;
-
-    // Each PGM image consists of the following:
-    // •      A "magic number" for identifying the file type.  A pgm image's magic number is the two characters "P5".
-    // FIXME: error handling
-    assert_eq!(&buf[0..2], b"P5");
-    pos += 2;
-
-    // •      Whitespace (blanks, TABs, CRs, LFs).
-    while buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
-        pos += 1;
-    }
-
-    // •      A width, formatted as ASCII characters in decimal.
-    let mut width_start = pos;
-    while !buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
-        pos += 1;
-    }
-    let width: u16 = num_from_byte_slice(&buf[width_start..pos]);
-
-    // •      Whitespace.
-    while buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
-        pos += 1;
-    }
-
-    // •      A height, again in ASCII decimal.
-    let mut height_start = pos;
-    while !buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
-        pos += 1;
-    }
-    let height: u16 = num_from_byte_slice(&buf[height_start..pos]);
-
-    // •      Whitespace.
-    while buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
-        pos += 1;
-    }
-
-    // •      The maximum gray value (Maxval), again in ASCII decimal.  Must be less than 65536, and more than zero.
-    let mut maxval_start = pos;
-    while !buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
-        pos += 1;
-    }
-    let maxval: u32 = num_from_byte_slice(&buf[maxval_start..pos]);
-
-    // really, more than zero? how do you represent an all-black image in PGM then?
-    assert!(maxval < 65536 && maxval >= 0);
-
-    // •      A single whitespace character (usually a newline).
-    assert!(buf[pos].is_ascii_whitespace());
-
-    // •      A raster of Height rows, [...]
-    let raster_start_pos = pos;
-
-    let dtype: DType = DType::from_maxval(maxval);
-    let data_length_bytes = width as usize * height as usize * dtype.num_bytes();
+    let meta = parse_header(&buf, sequence)?;
 
     // 3) Now we know how large the binary part is. Copy the rest of the buffer
     //    into the frame stack, and read the remaining bytes directly into the
     //    shared memory.
 
-    let meta = FrameMeta {
-        sequence,
-        dtype,
-        width,
-        height,
-        data_length_bytes,
-    };
-
-    let mut fs = if frame_stack.can_fit(data_length_bytes) {
+    let fs = if frame_stack.can_fit(meta.data_length_bytes) {
         frame_stack
     } else {
-        assert!(extra_frame_stack.len() == 0);
-        assert!(extra_frame_stack.can_fit(data_length_bytes));
+        assert!(extra_frame_stack.is_empty());
+        assert!(extra_frame_stack.can_fit(meta.data_length_bytes));
         extra_frame_stack
     };
 
     fs.write_frame(&meta, |dest_buf| {
-        let head_src = &buf[pos..];
-        dest_buf[0..head_src.len()].copy_from_slice(&head_src);
+        // copy the data after the header from our temporary stack buffer:
+        let head_src = &buf[meta.header_length_bytes..];
+        dest_buf[0..head_src.len()].copy_from_slice(head_src);
 
-        let mut dest_rest = &mut dest_buf[head_src.len()..];
+        let dest_rest = &mut dest_buf[head_src.len()..];
 
         // FIXME: error handling (can we pass the error through as result of the closure?)
         // FIXME: this blocks - we need to check for control messages every now and then
-        stream.read_exact(&mut dest_rest).unwrap();
+        stream.read_exact(dest_rest).unwrap();
+
+        // trace!("{dest_rest:?}");
     });
 
     Ok(meta)
@@ -195,11 +241,12 @@ fn recv_frame(
 #[derive(Debug, Clone)]
 enum AcquisitionError {
     Disconnected,
-    SeriesMismatch,
     Cancelled,
     BufferFull,
     StateError { msg: String },
     ConfigurationError { msg: String },
+    ParseError { msg: String },
+    ConnectionError { msg: String },
 }
 
 impl Display for AcquisitionError {
@@ -207,9 +254,6 @@ impl Display for AcquisitionError {
         match self {
             AcquisitionError::Cancelled => {
                 write!(f, "acquisition cancelled")
-            }
-            AcquisitionError::SeriesMismatch => {
-                write!(f, "series mismatch")
             }
             AcquisitionError::Disconnected => {
                 write!(f, "other end has disconnected")
@@ -223,6 +267,20 @@ impl Display for AcquisitionError {
             AcquisitionError::ConfigurationError { msg } => {
                 write!(f, "configuration error: {msg}")
             }
+            AcquisitionError::ParseError { msg } => {
+                write!(f, "parse error: {msg}")
+            }
+            AcquisitionError::ConnectionError { msg } => {
+                write!(f, "connection error: {msg}")
+            }
+        }
+    }
+}
+
+impl From<ParseError> for AcquisitionError {
+    fn from(value: ParseError) -> Self {
+        AcquisitionError::ParseError {
+            msg: format!("{:?}", value),
         }
     }
 }
@@ -247,23 +305,43 @@ fn passive_acquisition(
     control_channel: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
     frame_stack_size: usize,
+    data_uri: &str,
+    api_uri: &str,
     shm: &mut SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
-    loop {
-        let stream: &mut TcpStream;
+    let client = ServalClient::new(api_uri);
 
-        // FIXME: try to connect, then
+    loop {
+        trace!("connecting to {data_uri}...");
+        let mut stream: TcpStream = match TcpStream::connect(data_uri) {
+            Ok(s) => s,
+            Err(e) => match e.kind() {
+                ErrorKind::ConnectionRefused
+                | ErrorKind::TimedOut
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::ConnectionReset => {
+                    // if we re-connect too fast after an acquisition, the connection might succeed and then be closed from the other end
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                _ => return Err(AcquisitionError::ConnectionError { msg: e.to_string() }),
+            },
+        };
+
+        // FIXME: try to connect, then continue as below
 
         // block until we get the first frame:
-        let first_frame = peek_header(stream);
+        let first_frame = peek_header(&mut stream);
 
-        let num_triggers = 0; // FIXME: ask the HTTP API about the detector config
+        // then, we should be able to reliably get the detector config
+        // (we assume once data arrives, the config is immutable)
+        let detector_config = client.get_detector_config();
 
         acquisition(
             control_channel,
             from_thread_s,
-            num_triggers,
-            stream,
+            &detector_config,
+            &mut stream,
             frame_stack_size,
             shm,
         )?;
@@ -279,7 +357,7 @@ fn passive_acquisition(
 fn acquisition(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
-    num_triggers: usize,
+    detector_config: &DetectorConfig,
     stream: &mut TcpStream,
     frame_stack_size: usize,
     shm: &mut SharedSlabAllocator,
@@ -287,7 +365,9 @@ fn acquisition(
     let t0 = Instant::now();
     let mut last_control_check = Instant::now();
 
-    match from_thread_s.send(ResultMsg::AcquisitionStart {}) {
+    match from_thread_s.send(ResultMsg::AcquisitionStart {
+        detector_config: detector_config.clone(),
+    }) {
         Ok(_) => (),
         Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
     }
@@ -295,7 +375,7 @@ fn acquisition(
     debug!("acquisition starting");
 
     // approx uppper bound of image size in bytes
-    let peek_meta = peek_header(stream);
+    let peek_meta = peek_header(stream)?;
     let approx_size_bytes = 2 * peek_meta.get_size();
 
     let slot = match shm.get_mut() {
@@ -307,8 +387,12 @@ fn acquisition(
 
     // in case the frame stack is full, the receiving function needs
     // an alternative destination:
+    let extra_slot = match shm.get_mut() {
+        None => return Err(AcquisitionError::BufferFull),
+        Some(x) => x,
+    };
     let mut extra_frame_stack =
-        FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
+        FrameStackForWriting::new(extra_slot, frame_stack_size, approx_size_bytes as usize);
 
     debug!("starting receive loop");
 
@@ -327,7 +411,7 @@ fn acquisition(
             &to_thread_r,
             &mut frame_stack,
             &mut extra_frame_stack,
-        );
+        )?;
         sequence += 1;
 
         // If `recv_frame` had to use `extra_frame_stack`, `frame_stack` is
@@ -358,7 +442,7 @@ fn acquisition(
         }
 
         // we will be done after this frame:
-        let done = sequence == num_triggers as u64;
+        let done = sequence == detector_config.n_triggers;
 
         if done {
             let elapsed = t0.elapsed();
@@ -399,11 +483,19 @@ fn acquisition(
 fn background_thread_wrap(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
-    uri: String,
+    data_uri: &str,
+    api_uri: &str,
     frame_stack_size: usize,
     shm: SharedSlabAllocator,
 ) {
-    if let Err(err) = background_thread(to_thread_r, from_thread_s, uri, frame_stack_size, shm) {
+    if let Err(err) = background_thread(
+        to_thread_r,
+        from_thread_s,
+        data_uri,
+        api_uri,
+        frame_stack_size,
+        shm,
+    ) {
         log::error!("background_thread err'd: {}", err.to_string());
         // NOTE: `shm` is dropped in case of an error, so anyone who tries to connect afterwards
         // will get an error
@@ -418,7 +510,8 @@ fn background_thread_wrap(
 fn background_thread(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
-    uri: String,
+    data_uri: &str,
+    api_uri: &str,
     frame_stack_size: usize,
     mut shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
@@ -432,6 +525,8 @@ fn background_thread(
                         to_thread_r,
                         from_thread_s,
                         frame_stack_size,
+                        data_uri,
+                        api_uri,
                         &mut shm,
                     ) {
                         Ok(_) => {}
@@ -484,12 +579,18 @@ pub struct ServalReceiver {
 }
 
 impl ServalReceiver {
-    pub fn new(uri: &str, frame_stack_size: usize, shm: SharedSlabAllocator) -> Self {
+    pub fn new(
+        data_uri: &str,
+        api_uri: &str,
+        frame_stack_size: usize,
+        shm: SharedSlabAllocator,
+    ) -> Self {
         let (to_thread_s, to_thread_r) = unbounded();
         let (from_thread_s, from_thread_r) = unbounded();
 
         let builder = std::thread::Builder::new();
-        let uri = uri.to_string();
+        let data_uri = data_uri.to_string();
+        let api_uri = api_uri.to_string();
 
         let shm_handle = shm.get_handle();
 
@@ -501,7 +602,8 @@ impl ServalReceiver {
                         background_thread_wrap(
                             &to_thread_r,
                             &from_thread_s,
-                            uri.to_string(),
+                            &data_uri,
+                            &api_uri,
                             frame_stack_size,
                             shm,
                         )

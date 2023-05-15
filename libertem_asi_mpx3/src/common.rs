@@ -1,6 +1,8 @@
+use pyo3::pyclass;
 use serde::{Deserialize, Serialize};
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Debug)]
+#[pyclass]
 pub enum DType {
     U8,
     U16,
@@ -32,6 +34,9 @@ pub struct FrameMeta {
 
     /// The exact length of the data for this frame
     pub data_length_bytes: usize,
+
+    /// The length of the header in bytes
+    pub header_length_bytes: usize,
 }
 
 impl FrameMeta {

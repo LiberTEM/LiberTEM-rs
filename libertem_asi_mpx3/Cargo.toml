@@ -24,9 +24,9 @@ pyo3 = { version = "0.17", features = ["abi3-py37"] }
 serde = { version = "1.0.143", features = ["derive"] }
 spin_sleep = "1.1.1"
 ipc-test = { path = "../ipc_test" }
+serval-client = { path = "../serval-client" }
 stats = { path = "../stats" }
 nix = "0.26.1"
-lz4 = "1.24.0"
 zerocopy = "0.6.1"
 md5 = "0.7.0"
 

@@ -8,10 +8,10 @@ use std::{
 
 use crate::{
     cam_client::CamClient,
-    exceptions::{ConnectionError, DecompressError, TimeoutError},
+    common::DType,
+    exceptions::{ConnectionError, TimeoutError},
     frame_stack::FrameStackHandle,
-    receiver::{ServalReceiver, ReceiverStatus, ResultMsg},
-    sim::DectrisSim,
+    receiver::{ReceiverStatus, ResultMsg, ServalReceiver},
 };
 
 use ipc_test::SharedSlabAllocator;
@@ -20,29 +20,27 @@ use pyo3::{
     exceptions::{self, PyRuntimeError},
     prelude::*,
 };
+use serval_client::DetectorConfig;
 use stats::Stats;
 
 #[pymodule]
-fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
+fn libertem_asi_mpx3(py: Python, m: &PyModule) -> PyResult<()> {
     // FIXME: logging integration deadlocks on close(), when trying to acquire
     // the GIL
     // pyo3_log::init();
 
     m.add_class::<FrameStackHandle>()?;
-    m.add_class::<DectrisConnection>()?;
-    m.add_class::<PixelType>()?;
-    m.add_class::<DectrisSim>()?;
-    m.add_class::<DetectorConfig>()?;
-    m.add_class::<TriggerMode>()?;
+    m.add_class::<ServalConnection>()?;
+    m.add_class::<DType>()?;
+    m.add_class::<PyDetectorConfig>()?;
     m.add_class::<CamClient>()?;
     m.add("TimeoutError", py.get_type::<TimeoutError>())?;
-    m.add("DecompressError", py.get_type::<DecompressError>())?;
 
     register_header_module(py, m)?;
 
     let env = env_logger::Env::default()
-        .filter_or("LIBERTEM_DECTRIS_LOG_LEVEL", "error")
-        .write_style_or("LIBERTEM_DECTRIS_LOG_STYLE", "always");
+        .filter_or("LIBERTEM_ASI_LOG_LEVEL", "error")
+        .write_style_or("LIBERTEM_ASI_LOG_STYLE", "always");
     env_logger::init_from_env(env);
 
     Ok(())
@@ -50,13 +48,25 @@ fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
 
 fn register_header_module(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let headers_module = PyModule::new(py, "headers")?;
-    headers_module.add_class::<DHeader>()?;
-    headers_module.add_class::<DImage>()?;
-    headers_module.add_class::<DImageD>()?;
-    headers_module.add_class::<DConfig>()?;
-    headers_module.add_class::<DSeriesEnd>()?;
     parent_module.add_submodule(headers_module)?;
     Ok(())
+}
+
+#[derive(Debug)]
+#[pyclass(name = "DetectorConfig")]
+struct PyDetectorConfig {
+    config: DetectorConfig,
+}
+
+#[pymethods]
+impl PyDetectorConfig {
+    fn __repr__(&self) -> String {
+        format!("{:?}", self)
+    }
+
+    fn get_n_triggers(&self) -> u64 {
+        self.config.n_triggers
+    }
 }
 
 struct FrameChunkedIterator<'a, 'b, 'c, 'd> {
@@ -128,19 +138,13 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
                 None => {
                     continue;
                 }
-                Some(ResultMsg::AcquisitionStart {
-                    series: _,
-                    detector_config: _,
-                }) => {
-                    // FIXME: in case of "passive" mode, we should actually not hit this,
-                    // as the "outer" structure (`DectrisConnection`) handles it?
-                    continue;
+                Some(ResultMsg::ParseError { msg }) => {
+                    todo!();
                 }
-                Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(format!(
-                        "serialization error: {}, message: {}",
-                        msg, recvd_msg
-                    )))
+                Some(ResultMsg::AcquisitionStart { detector_config }) => {
+                    // FIXME: in case of "passive" mode, we should actually not hit this,
+                    // as the "outer" structure (`ServalConnection`) handles it?
+                    continue;
                 }
                 Some(ResultMsg::Error { msg }) => {
                     return Err(exceptions::PyRuntimeError::new_err(msg))
@@ -173,20 +177,14 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
 }
 
 #[pyclass]
-struct DectrisConnection {
+struct ServalConnection {
     receiver: ServalReceiver,
     remainder: Vec<FrameStackHandle>,
     local_shm: SharedSlabAllocator,
     stats: Stats,
 }
 
-impl DectrisConnection {
-    fn start_series_impl(&mut self, series: u64) -> PyResult<()> {
-        self.receiver
-            .start_series(series)
-            .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
-    }
-
+impl ServalConnection {
     fn start_passive_impl(&mut self) -> PyResult<()> {
         self.receiver
             .start_passive()
@@ -199,10 +197,11 @@ impl DectrisConnection {
 }
 
 #[pymethods]
-impl DectrisConnection {
+impl ServalConnection {
     #[new]
     fn new(
-        uri: &str,
+        data_uri: &str,
+        api_uri: &str,
         frame_stack_size: usize,
         handle_path: String,
         num_slots: Option<usize>,
@@ -229,7 +228,7 @@ impl DectrisConnection {
         let local_shm = shm.clone_and_connect().expect("clone SHM");
 
         Ok(Self {
-            receiver: ServalReceiver::new(uri, frame_stack_size, shm),
+            receiver: ServalReceiver::new(data_uri, api_uri, frame_stack_size, shm),
             remainder: Vec::new(),
             local_shm,
             stats: Stats::new(),
@@ -239,11 +238,7 @@ impl DectrisConnection {
     /// Wait until the detector is armed, or until the timeout expires (in seconds)
     /// Returns `None` in case of timeout, the detector config otherwise.
     /// This method drops the GIL to allow concurrent Python threads.
-    fn wait_for_arm(
-        &mut self,
-        timeout: f32,
-        py: Python,
-    ) -> PyResult<Option<(DetectorConfig, u64)>> {
+    fn wait_for_arm(&mut self, timeout: f32, py: Python) -> PyResult<Option<PyDetectorConfig>> {
         let timeout = Duration::from_secs_f32(timeout);
         let deadline = Instant::now() + timeout;
         let step = Duration::from_millis(100);
@@ -258,18 +253,17 @@ impl DectrisConnection {
             });
 
             match res {
-                Some(ResultMsg::AcquisitionStart {
-                    series,
-                    detector_config,
-                }) => return Ok(Some((detector_config, series))),
+                Some(ResultMsg::AcquisitionStart { detector_config }) => {
+                    return Ok(Some(PyDetectorConfig {
+                        config: detector_config,
+                    }))
+                }
                 msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {
                     let err = format!("unexpected message: {:?}", msg);
                     return Err(PyRuntimeError::new_err(err));
                 }
+                Some(ResultMsg::ParseError { msg }) => return Err(PyRuntimeError::new_err(msg)),
                 Some(ResultMsg::Error { msg }) => return Err(PyRuntimeError::new_err(msg)),
-                Some(ResultMsg::SerdeError { msg, recvd_msg: _ }) => {
-                    return Err(PyRuntimeError::new_err(msg))
-                }
                 None => {
                     // timeout
                     if Instant::now() > deadline {
@@ -288,10 +282,6 @@ impl DectrisConnection {
 
     fn is_running(slf: PyRef<Self>) -> bool {
         slf.receiver.status == ReceiverStatus::Running
-    }
-
-    fn start(mut slf: PyRefMut<Self>, series: u64) -> PyResult<()> {
-        slf.start_series_impl(series)
     }
 
     /// Start listening for global acquisition headers on the zeromq socket.
