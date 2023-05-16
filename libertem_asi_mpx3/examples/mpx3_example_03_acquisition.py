@@ -88,13 +88,13 @@ def init_acquisition(serverurl, detector_config):
     """
 
     # Sets the number of triggers.
-    detector_config["nTriggers"] = 1024
+    detector_config["nTriggers"] = 128*128
 
     # Set the trigger mode to be software-defined.
     detector_config["TriggerMode"] = "CONTINUOUS"
 
     # 0.1 second = 10fps
-    dwell_time = 0.1
+    dwell_time = 0.01
 
     # Sets the trigger period (time between triggers) in seconds.
     detector_config["TriggerPeriod"] = dwell_time

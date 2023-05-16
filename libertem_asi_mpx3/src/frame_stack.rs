@@ -7,7 +7,7 @@ use pyo3::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DType, FrameMeta};
+use crate::common::FrameMeta;
 
 pub struct FrameStackForWriting {
     slot: SlotForWriting,
@@ -44,6 +44,14 @@ impl FrameStackForWriting {
 
     pub fn can_fit(&self, num_bytes: usize) -> bool {
         self.slot.size - self.cursor >= num_bytes
+    }
+
+    pub fn slot_size(&self) -> usize {
+        self.slot.size
+    }
+
+    pub fn bytes_free(&self) -> usize {
+        self.slot.size - self.cursor
     }
 
     pub fn is_empty(&self) -> bool {

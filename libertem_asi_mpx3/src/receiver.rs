@@ -80,7 +80,7 @@ where
 }
 
 /// Peek and parse the first frame header
-fn peek_header(stream: &mut TcpStream) -> Result<FrameMeta, ParseError> {
+fn peek_header(stream: &mut TcpStream) -> Result<FrameMeta, AcquisitionError> {
     let mut buf: [u8; HEADER_BUF_SIZE] = [0; HEADER_BUF_SIZE];
     // FIXME: error handling, timeout, ...
 
@@ -94,11 +94,14 @@ fn peek_header(stream: &mut TcpStream) -> Result<FrameMeta, ParseError> {
     // so if an acquisition only contains <512 bytes in total, we will wait
     // here indefinitely.
     while nbytes < HEADER_BUF_SIZE {
-        nbytes = stream.peek(&mut buf).unwrap();
+        nbytes = match stream.peek(&mut buf) {
+            Ok(n) => n,
+            Err(e) => return Err(AcquisitionError::ConnectionError { msg: e.to_string() }),
+        }
         // FIXME: timeout!!
     }
 
-    parse_header(&buf, 0)
+    Ok(parse_header(&buf, 0)?)
 }
 
 const HEADER_BUF_SIZE: usize = 512;
@@ -185,6 +188,12 @@ fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<FrameMeta,
     Ok(meta)
 }
 
+/// Puts `new` into `right`, `right` into `left` and returns the old `left`
+fn three_way_shift<T>(left: &mut T, right: &mut T, new: T) -> T {
+    let old_right = replace(right, new);
+    replace(left, old_right)
+}
+
 fn recv_frame(
     sequence: u64,
     stream: &mut TcpStream,
@@ -200,9 +209,18 @@ fn recv_frame(
 
     let mut buf: [u8; HEADER_BUF_SIZE] = [0; HEADER_BUF_SIZE];
 
+    // FIXME: need to have a timeout here!
+    // In the happy case, this succeeds, or we get a
+    // ConnectionReset/ConnectionAborted, but in case the network inbetween is
+    // going bad, we might block here indefinitely. But we must regularly check
+    // for control messages from the `control_channel`, which we can't do here
+    // like this.
     match stream.read_exact(&mut buf) {
         Ok(_) => {}
-        Err(_) => todo!(),
+        Err(e) => {
+            // any kind of connection error means something is gone bad
+            return Err(AcquisitionError::ConnectionError { msg: e.to_string() });
+        }
     }
 
     // 2) Parse the header, importantly reading width, height, bytes-per-pixel (maxval)
@@ -216,8 +234,25 @@ fn recv_frame(
     let fs = if frame_stack.can_fit(meta.data_length_bytes) {
         frame_stack
     } else {
-        assert!(extra_frame_stack.is_empty());
-        assert!(extra_frame_stack.can_fit(meta.data_length_bytes));
+        trace!(
+            "frame_stack can't fit this frame: {} {}",
+            frame_stack.bytes_free(),
+            meta.data_length_bytes
+        );
+        if !extra_frame_stack.is_empty() {
+            return Err(AcquisitionError::StateError {
+                msg: "extra_frame_stack should be empty".to_string(),
+            });
+        }
+        if !extra_frame_stack.can_fit(meta.data_length_bytes) {
+            return Err(AcquisitionError::ConfigurationError {
+                msg: format!(
+                    "extra_frame_stack can't fit frame; frame size {}, frame stack size {}",
+                    meta.data_length_bytes,
+                    extra_frame_stack.slot_size()
+                ),
+            });
+        }
         extra_frame_stack
     };
 
@@ -285,6 +320,12 @@ impl From<ParseError> for AcquisitionError {
     }
 }
 
+impl<T> From<SendError<T>> for AcquisitionError {
+    fn from(_value: SendError<T>) -> Self {
+        AcquisitionError::Disconnected
+    }
+}
+
 /// With a running acquisition, check for control messages;
 /// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
 fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), AcquisitionError> {
@@ -313,6 +354,7 @@ fn passive_acquisition(
 
     loop {
         trace!("connecting to {data_uri}...");
+        check_for_control(control_channel)?;
         let mut stream: TcpStream = match TcpStream::connect(data_uri) {
             Ok(s) => s,
             Err(e) => match e.kind() {
@@ -320,18 +362,26 @@ fn passive_acquisition(
                 | ErrorKind::TimedOut
                 | ErrorKind::ConnectionAborted
                 | ErrorKind::ConnectionReset => {
-                    // if we re-connect too fast after an acquisition, the connection might succeed and then be closed from the other end
-                    std::thread::sleep(Duration::from_millis(10));
+                    // If we re-connect too fast after an acquisition, the
+                    // connection might succeed and then be closed from the
+                    // other end. That's why we have to handle Connection{Aborted,Reset}
+                    // here.
+                    std::thread::sleep(Duration::from_millis(100));
                     continue;
                 }
                 _ => return Err(AcquisitionError::ConnectionError { msg: e.to_string() }),
             },
         };
 
-        // FIXME: try to connect, then continue as below
-
         // block until we get the first frame:
-        let first_frame = peek_header(&mut stream);
+        let _first_frame = match peek_header(&mut stream) {
+            Ok(m) => m,
+            Err(AcquisitionError::ConnectionError { msg }) => {
+                warn!("connection error while peeking first frame: {msg}; reconnecting");
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
 
         // then, we should be able to reliably get the detector config
         // (we assume once data arrives, the config is immutable)
@@ -365,12 +415,9 @@ fn acquisition(
     let t0 = Instant::now();
     let mut last_control_check = Instant::now();
 
-    match from_thread_s.send(ResultMsg::AcquisitionStart {
+    from_thread_s.send(ResultMsg::AcquisitionStart {
         detector_config: detector_config.clone(),
-    }) {
-        Ok(_) => (),
-        Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
-    }
+    })?;
 
     debug!("acquisition starting");
 
@@ -408,7 +455,7 @@ fn acquisition(
         recv_frame(
             sequence,
             stream,
-            &to_thread_r,
+            to_thread_r,
             &mut frame_stack,
             &mut extra_frame_stack,
         )?;
@@ -416,7 +463,8 @@ fn acquisition(
 
         // If `recv_frame` had to use `extra_frame_stack`, `frame_stack` is
         // finished and we need to exchange the stacks:
-        if extra_frame_stack.len() > 0 {
+        if !extra_frame_stack.is_empty() {
+            trace!("got something in `extra_frame_stack`, swapping things around...");
             // approx. the following is happening here:
             // 1) to_send <- frame_stack
             // 2) frame_stack <- extra_frame_stack
@@ -429,16 +477,15 @@ fn acquisition(
                 };
                 let new_frame_stack =
                     FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
-                let old_frame_stack = replace(&mut frame_stack, new_frame_stack);
+
+                let old_frame_stack =
+                    three_way_shift(&mut frame_stack, &mut extra_frame_stack, new_frame_stack);
                 old_frame_stack.writing_done(shm)
             };
             // send to our queue:
-            match from_thread_s.send(ResultMsg::FrameStack {
+            from_thread_s.send(ResultMsg::FrameStack {
                 frame_stack: to_send,
-            }) {
-                Ok(_) => (),
-                Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
-            }
+            })?;
         }
 
         // we will be done after this frame:
@@ -449,21 +496,15 @@ fn acquisition(
             info!("done in {elapsed:?}");
 
             let handle = frame_stack.writing_done(shm);
-            match from_thread_s.send(ResultMsg::End {
+            from_thread_s.send(ResultMsg::End {
                 frame_stack: handle,
-            }) {
-                Ok(_) => (),
-                Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
-            }
+            })?;
 
-            if extra_frame_stack.len() > 0 {
+            if !extra_frame_stack.is_empty() {
                 let handle = extra_frame_stack.writing_done(shm);
-                match from_thread_s.send(ResultMsg::End {
+                from_thread_s.send(ResultMsg::End {
                     frame_stack: handle,
-                }) {
-                    Ok(_) => (),
-                    Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
-                }
+                })?;
             } else {
                 // let's not leak the `extra_frame_stack`:
                 // FIXME: `FrameStackForWriting` should really free itself,
