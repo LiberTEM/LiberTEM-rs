@@ -72,10 +72,8 @@ impl ServalClient {
 
     pub fn get_detector_config(&self) -> DetectorConfig {
         let url = self.base_url.join("/detector/config/").unwrap();
-        println!("{url}");
         let resp = reqwest::blocking::get(url).unwrap();
         let resp_text = resp.text().unwrap();
-        println!("{}", resp_text);
         let config: DetectorConfig = serde_json::from_str(&resp_text).unwrap();
         config
     }
