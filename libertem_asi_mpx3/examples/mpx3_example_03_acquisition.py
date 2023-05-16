@@ -94,7 +94,9 @@ def init_acquisition(serverurl, detector_config):
     detector_config["TriggerMode"] = "CONTINUOUS"
 
     # 0.1 second = 10fps
-    dwell_time = 0.0005
+    # 0.0005 second = 2000fps
+    dwell_time = 0.0001
+    # dwell_time = 0.0005
 
     # Sets the trigger period (time between triggers) in seconds.
     detector_config["TriggerPeriod"] = dwell_time
@@ -177,7 +179,7 @@ if __name__ == '__main__':
             # What (image) format to write the files in.
             "Format": "pgm",
             # What data to build a frame from (tot, toa, tof, count)
-            "Mode": "count"
+            "Mode": "count",
         }]
     }
 

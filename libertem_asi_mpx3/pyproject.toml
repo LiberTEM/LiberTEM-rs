@@ -11,7 +11,6 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
-    "numpy>=1.16.0",
 ]
 
 [project.urls]

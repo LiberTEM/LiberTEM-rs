@@ -60,16 +60,22 @@ impl FrameStackForWriting {
 
     /// Temporarily take mutable ownership of a buffer
     /// for a single frame, and receive the data into it.
-    pub fn write_frame(&mut self, meta: &FrameMeta, mut fill_buffer: impl FnMut(&mut [u8])) {
+    pub fn write_frame<E>(
+        &mut self,
+        meta: &FrameMeta,
+        mut fill_buffer: impl FnMut(&mut [u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
         // FIXME: `fill_buffer` should return a `Result`
         let start = self.cursor;
         let stop = start + meta.data_length_bytes;
         let dest = &mut self.slot.as_slice_mut()[start..stop];
-        fill_buffer(dest);
+        fill_buffer(dest)?;
 
         self.meta.push(meta.clone());
         self.offsets.push(self.cursor);
         self.cursor += meta.data_length_bytes;
+
+        Ok(())
     }
 
     pub fn writing_done(self, shm: &mut SharedSlabAllocator) -> FrameStackHandle {

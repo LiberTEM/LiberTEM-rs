@@ -6,9 +6,9 @@ conn = libertem_asi_mpx3.ServalConnection(
     data_uri="localhost:8283",
     api_uri="http://localhost:8080",
     handle_path="/tmp/asi_mpx3_shm",
-    frame_stack_size=32,
+    frame_stack_size=16,
     num_slots=2000,
-    bytes_per_frame=512*512,
+    bytes_per_frame=512*512*2,
     huge=False,
 )
 
@@ -28,7 +28,7 @@ try:
         # stored in the SHM:
         cam_client = libertem_asi_mpx3.CamClient(conn.get_socket_path())
 
-        tq = tqdm.tqdm(total=config.get_n_triggers())
+        tq = tqdm.tqdm(total=config.get_n_triggers() * 512 * 512 * 2, unit='B', unit_scale=True, unit_divisor=1024)
 
         while True:
             # get at most `max_size` frames as a stack
@@ -44,7 +44,7 @@ try:
 
             frames = cam_client.get_frames(stack_handle)
 
-            tq.update(len(frames))
+            tq.update(len(frames) * 512 * 512 * 2)
 
             del frames  # let's hope no-one else keeps a reference, as it will be invalid after `done` is called
 

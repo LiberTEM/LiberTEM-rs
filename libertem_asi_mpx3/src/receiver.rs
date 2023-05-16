@@ -263,12 +263,12 @@ fn recv_frame(
 
         let dest_rest = &mut dest_buf[head_src.len()..];
 
-        // FIXME: error handling (can we pass the error through as result of the closure?)
         // FIXME: this blocks - we need to check for control messages every now and then
-        stream.read_exact(dest_rest).unwrap();
-
-        // trace!("{dest_rest:?}");
-    });
+        match stream.read_exact(dest_rest) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(AcquisitionError::ConnectionError { msg: e.to_string() }),
+        }
+    })?;
 
     Ok(meta)
 }

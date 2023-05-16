@@ -1770,17 +1770,11 @@ dependencies = [
  "env_logger",
  "ipc-test",
  "log",
- "md5",
- "memmap2",
- "nix 0.26.2",
- "numpy",
  "pyo3",
  "serde",
  "serval-client",
- "spin_sleep",
  "stats",
  "tempfile",
- "zerocopy",
 ]
 
 [[package]]

@@ -85,27 +85,3 @@ impl Drop for CamClient {
         trace!("CamClient::drop");
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use numpy::PyArray;
-    use tempfile::tempdir;
-
-    use ipc_test::SharedSlabAllocator;
-    use pyo3::{prepare_freethreaded_python, Python};
-
-    use crate::{
-        cam_client::CamClient,
-        frame_stack::{FrameStackForWriting, FrameStackHandle},
-    };
-    use tempfile::TempDir;
-
-    fn get_socket_path() -> (TempDir, PathBuf) {
-        let socket_dir = tempdir().unwrap();
-        let socket_as_path = socket_dir.path().join("stuff.socket");
-
-        (socket_dir, socket_as_path)
-    }
-}
