@@ -366,7 +366,7 @@ fn passive_acquisition(
                     // connection might succeed and then be closed from the
                     // other end. That's why we have to handle Connection{Aborted,Reset}
                     // here.
-                    std::thread::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
                 _ => return Err(AcquisitionError::ConnectionError { msg: e.to_string() }),

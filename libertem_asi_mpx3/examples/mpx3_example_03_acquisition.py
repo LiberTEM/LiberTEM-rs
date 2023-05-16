@@ -94,7 +94,7 @@ def init_acquisition(serverurl, detector_config):
     detector_config["TriggerMode"] = "CONTINUOUS"
 
     # 0.1 second = 10fps
-    dwell_time = 0.01
+    dwell_time = 0.0005
 
     # Sets the trigger period (time between triggers) in seconds.
     detector_config["TriggerPeriod"] = dwell_time
@@ -126,6 +126,8 @@ def acquisition_test(serverurl):
         # Stop measurement once Serval has collected all frames
         if dashboard["Measurement"]["Status"] == "DA_IDLE":
             taking_data = False
+        import time
+        time.sleep(0.01)
 
 
 # Example of usage
