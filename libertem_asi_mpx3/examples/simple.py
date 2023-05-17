@@ -14,6 +14,8 @@ conn = libertem_asi_mpx3.ServalConnection(
 
 conn.start_passive()
 
+cam_client = None
+
 try:
     while True:
         config = None
@@ -54,4 +56,5 @@ try:
         tq.close()
 finally:
     conn.close()  # clean up background thread etc.
-    cam_client.close()
+    if cam_client is not None:
+        cam_client.close()

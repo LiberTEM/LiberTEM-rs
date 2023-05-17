@@ -11,7 +11,7 @@ use std::{
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
-use serval_client::{DetectorConfig, ServalClient};
+use serval_client::{DetectorConfig, ServalClient, ServalError};
 
 use crate::{
     common::{DType, FrameMeta},
@@ -31,6 +31,7 @@ pub enum ResultMsg {
 
     AcquisitionStart {
         detector_config: DetectorConfig,
+        first_frame_meta: FrameMeta,
     },
 
     /// A stack of frames, part of an acquisition
@@ -282,6 +283,7 @@ enum AcquisitionError {
     ConfigurationError { msg: String },
     ParseError { msg: String },
     ConnectionError { msg: String },
+    APIError { msg: String },
 }
 
 impl Display for AcquisitionError {
@@ -308,6 +310,9 @@ impl Display for AcquisitionError {
             AcquisitionError::ConnectionError { msg } => {
                 write!(f, "connection error: {msg}")
             }
+            AcquisitionError::APIError { msg } => {
+                write!(f, "serval HTTP API error: {msg}")
+            }
         }
     }
 }
@@ -323,6 +328,14 @@ impl From<ParseError> for AcquisitionError {
 impl<T> From<SendError<T>> for AcquisitionError {
     fn from(_value: SendError<T>) -> Self {
         AcquisitionError::Disconnected
+    }
+}
+
+impl From<ServalError> for AcquisitionError {
+    fn from(value: ServalError) -> Self {
+        Self::APIError {
+            msg: value.to_string(),
+        }
     }
 }
 
@@ -374,7 +387,7 @@ fn passive_acquisition(
         };
 
         // block until we get the first frame:
-        let _first_frame = match peek_header(&mut stream) {
+        let first_frame_meta = match peek_header(&mut stream) {
             Ok(m) => m,
             Err(AcquisitionError::ConnectionError { msg }) => {
                 warn!("connection error while peeking first frame: {msg}; reconnecting");
@@ -385,12 +398,13 @@ fn passive_acquisition(
 
         // then, we should be able to reliably get the detector config
         // (we assume once data arrives, the config is immutable)
-        let detector_config = client.get_detector_config();
+        let detector_config = client.get_detector_config()?;
 
         acquisition(
             control_channel,
             from_thread_s,
             &detector_config,
+            &first_frame_meta,
             &mut stream,
             frame_stack_size,
             shm,
@@ -408,6 +422,7 @@ fn acquisition(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
     detector_config: &DetectorConfig,
+    first_frame_meta: &FrameMeta,
     stream: &mut TcpStream,
     frame_stack_size: usize,
     shm: &mut SharedSlabAllocator,
@@ -417,6 +432,7 @@ fn acquisition(
 
     from_thread_s.send(ResultMsg::AcquisitionStart {
         detector_config: detector_config.clone(),
+        first_frame_meta: first_frame_meta.clone(),
     })?;
 
     debug!("acquisition starting");

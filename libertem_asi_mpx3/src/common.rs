@@ -1,4 +1,4 @@
-use pyo3::pyclass;
+use pyo3::{pyclass, pymethods};
 use serde::{Deserialize, Serialize};
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Debug)]
@@ -21,6 +21,16 @@ impl DType {
         match self {
             DType::U8 => 1,
             DType::U16 => 2,
+        }
+    }
+}
+
+#[pymethods]
+impl DType {
+    fn as_string(&self) -> String {
+        match self {
+            Self::U8 => "uint8".to_string(),
+            Self::U16 => "uint16".to_string(),
         }
     }
 }

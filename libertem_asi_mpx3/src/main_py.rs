@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     cam_client::CamClient,
-    common::DType,
+    common::{DType, FrameMeta},
     exceptions::{ConnectionError, TimeoutError},
     frame_stack::FrameStackHandle,
     receiver::{ReceiverStatus, ResultMsg, ServalReceiver},
@@ -20,7 +20,7 @@ use pyo3::{
     exceptions::{self, PyRuntimeError},
     prelude::*,
 };
-use serval_client::DetectorConfig;
+use serval_client::{DetectorConfig, DetectorInfo, DetectorLayout, ServalClient};
 use stats::Stats;
 
 #[pymodule]
@@ -33,6 +33,8 @@ fn libertem_asi_mpx3(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<ServalConnection>()?;
     m.add_class::<DType>()?;
     m.add_class::<PyDetectorConfig>()?;
+    m.add_class::<PyDetectorInfo>()?;
+    m.add_class::<PyServalClient>()?;
     m.add_class::<CamClient>()?;
     m.add("TimeoutError", py.get_type::<TimeoutError>())?;
 
@@ -41,7 +43,9 @@ fn libertem_asi_mpx3(py: Python, m: &PyModule) -> PyResult<()> {
     let env = env_logger::Env::default()
         .filter_or("LIBERTEM_ASI_LOG_LEVEL", "error")
         .write_style_or("LIBERTEM_ASI_LOG_STYLE", "always");
-    env_logger::init_from_env(env);
+    env_logger::Builder::from_env(env)
+        .format_timestamp_micros()
+        .init();
 
     Ok(())
 }
@@ -66,6 +70,71 @@ impl PyDetectorConfig {
 
     fn get_n_triggers(&self) -> u64 {
         self.config.n_triggers
+    }
+}
+
+#[derive(Debug)]
+#[pyclass(name = "DetectorInfo")]
+struct PyDetectorInfo {
+    info: DetectorInfo,
+}
+
+#[pymethods]
+impl PyDetectorInfo {
+    fn __repr__(&self) -> String {
+        format!("{:?}", self)
+    }
+
+    fn get_pix_count(&self) -> u64 {
+        self.info.pix_count
+    }
+}
+
+#[derive(Debug)]
+#[pyclass(name = "DetectorLayout")]
+struct PyDetectorLayout {
+    info: DetectorLayout,
+}
+
+#[pymethods]
+impl PyDetectorLayout {
+    fn __repr__(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
+#[pyclass(name = "ServalAPIClient")]
+struct PyServalClient {
+    client: ServalClient,
+    base_url: String,
+}
+
+#[pymethods]
+impl PyServalClient {
+    #[new]
+    fn new(base_url: &str) -> Self {
+        Self {
+            client: ServalClient::new(base_url),
+            base_url: base_url.to_string(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<ServalClient base_url={}>", self.base_url)
+    }
+
+    fn get_detector_config(&self) -> PyResult<PyDetectorConfig> {
+        self.client
+            .get_detector_config()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+            .map(|value| PyDetectorConfig { config: value })
+    }
+
+    fn get_detector_info(&self) -> PyResult<PyDetectorInfo> {
+        self.client
+            .get_detector_info()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+            .map(|value| PyDetectorInfo { info: value })
     }
 }
 
@@ -139,9 +208,12 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
                     continue;
                 }
                 Some(ResultMsg::ParseError { msg }) => {
-                    todo!();
+                    return Err(exceptions::PyRuntimeError::new_err(msg))
                 }
-                Some(ResultMsg::AcquisitionStart { detector_config }) => {
+                Some(ResultMsg::AcquisitionStart {
+                    detector_config: _,
+                    first_frame_meta: _,
+                }) => {
                     // FIXME: in case of "passive" mode, we should actually not hit this,
                     // as the "outer" structure (`ServalConnection`) handles it?
                     continue;
@@ -196,6 +268,29 @@ impl ServalConnection {
     }
 }
 
+#[pyclass]
+struct PendingAcquisition {
+    config: DetectorConfig,
+    first_frame_meta: FrameMeta,
+}
+
+#[pymethods]
+impl PendingAcquisition {
+    fn get_detector_config(&self) -> PyDetectorConfig {
+        PyDetectorConfig {
+            config: self.config.clone(),
+        }
+    }
+
+    fn get_frame_width(&self) -> u16 {
+        self.first_frame_meta.width
+    }
+
+    fn get_frame_height(&self) -> u16 {
+        self.first_frame_meta.height
+    }
+}
+
 #[pymethods]
 impl ServalConnection {
     #[new]
@@ -238,7 +333,7 @@ impl ServalConnection {
     /// Wait until the detector is armed, or until the timeout expires (in seconds)
     /// Returns `None` in case of timeout, the detector config otherwise.
     /// This method drops the GIL to allow concurrent Python threads.
-    fn wait_for_arm(&mut self, timeout: f32, py: Python) -> PyResult<Option<PyDetectorConfig>> {
+    fn wait_for_arm(&mut self, timeout: f32, py: Python) -> PyResult<Option<PendingAcquisition>> {
         let timeout = Duration::from_secs_f32(timeout);
         let deadline = Instant::now() + timeout;
         let step = Duration::from_millis(100);
@@ -253,9 +348,13 @@ impl ServalConnection {
             });
 
             match res {
-                Some(ResultMsg::AcquisitionStart { detector_config }) => {
-                    return Ok(Some(PyDetectorConfig {
+                Some(ResultMsg::AcquisitionStart {
+                    detector_config,
+                    first_frame_meta,
+                }) => {
+                    return Ok(Some(PendingAcquisition {
                         config: detector_config,
+                        first_frame_meta,
                     }))
                 }
                 msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {

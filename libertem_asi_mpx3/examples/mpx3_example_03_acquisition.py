@@ -95,8 +95,8 @@ def init_acquisition(serverurl, detector_config):
 
     # 0.1 second = 10fps
     # 0.0005 second = 2000fps
-    dwell_time = 0.0001
-    # dwell_time = 0.0005
+    # dwell_time = 0.0001
+    dwell_time = 0.0005
 
     # Sets the trigger period (time between triggers) in seconds.
     detector_config["TriggerPeriod"] = dwell_time
@@ -192,6 +192,9 @@ if __name__ == '__main__':
     response = get_request(url=serverurl + '/server/destination')
     data = response.text
     print('Selected destination : ' + data)
+
+    print(f"Layout: {json.dumps(get_request(url=serverurl + '/detector/layout').json(), indent=2)}")
+    print(f"Info: {json.dumps(get_request(url=serverurl + '/detector/info').json(), indent=2)}")
 
     # Running acquisition process
     acquisition_test(serverurl)
