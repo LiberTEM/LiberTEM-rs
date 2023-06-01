@@ -2,7 +2,10 @@ from k2opy import Cam, Sync, AcquisitionParams, Writer
 
 
 def main():
-    cam = Cam(local_addr="192.168.10.99")
+    cam = Cam(
+        local_addr_top="192.168.10.99",
+        local_addr_bottom="192.168.10.99",
+    )
 
     writer = Writer(
         method="direct",
@@ -15,6 +18,7 @@ def main():
         sync=Sync.Immediately,
         writer=writer,
         enable_frame_iterator=False,
+        shm_path="/tmp/k2shm.socket",
     )
 
     aq = cam.make_acquisition(aqp)

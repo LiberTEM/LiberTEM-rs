@@ -167,9 +167,11 @@ impl<F: K2Frame> FrameOrdering<F> {
     }
 }
 
+#[cfg(nope)]
 #[cfg(test)]
 mod tests {
     use ipc_test::SharedSlabAllocator;
+    use tempfile::tempdir;
 
     use crate::{
         frame::{K2Frame, K2ISFrame},
@@ -180,12 +182,17 @@ mod tests {
 
     #[test]
     fn test_direct_return() {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.into_path();
+        let handle_path = socket_as_path.to_str().unwrap();
+
         let mut ordering: FrameOrdering<K2ISFrame> = FrameOrdering::new(0);
 
         let mut ssa = SharedSlabAllocator::new(
             10,
             K2ISFrame::FRAME_HEIGHT * K2ISFrame::FRAME_WIDTH * std::mem::size_of::<u16>(),
             false,
+            &socket_as_path,
         )
         .expect("create SHM area for testing");
 

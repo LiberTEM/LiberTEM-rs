@@ -1,4 +1,3 @@
-use core::slice;
 use std::{
     fs::{File, OpenOptions},
     os::unix::prelude::FileExt,
@@ -10,6 +9,7 @@ use hdf5::{
     types::{IntSize, TypeDescriptor},
     Dataset, Extent,
 };
+use log::trace;
 use memmap2::{MmapMut, MmapOptions};
 use ndarray::s;
 use ndarray_npy::{write_zeroed_npy, ViewMutNpyExt};
@@ -93,16 +93,17 @@ impl WriterBuilder for DirectWriterBuilder {
 impl Writer for DirectWriter {
     fn write_frame(&mut self, frame: &SubFrame, frame_idx: u32) {
         let offset = (self.frame_size_bytes * frame_idx as usize) as u64;
-        let payload: &[u8] = bytemuck::cast_slice(frame.get_payload());
 
-        (|| {
+        frame.apply_to_payload_raw(|payload| {
+            assert!(payload.len() == self.frame_size_bytes);
+            trace!(
+                "write_frame: {:?}... @ offset {offset} for idx {frame_idx}",
+                &payload[0..16]
+            );
             self.file
                 .write_all_at(payload, offset)
                 .expect("write_all_at should not err");
-        })();
-        self.file
-            .write_all_at(payload, offset)
-            .expect("write_all_at should not err");
+        });
     }
 
     fn resize(&mut self, num_frames: usize) -> Result<(), WriterError> {
@@ -178,7 +179,9 @@ impl Writer for MMapWriter {
     fn write_frame(&mut self, frame: &SubFrame, frame_idx: u32) {
         let mut dest_arr = ndarray::ArrayViewMut3::<u16>::view_mut_npy(&mut self.mmap).unwrap();
         let mut dest_slice = dest_arr.slice_mut(s![frame_idx as usize, .., ..]);
-        dest_slice.assign(&frame.as_array());
+        frame.apply_to_payload_array(|array| {
+            dest_slice.assign(&array);
+        })
     }
 
     fn resize(&mut self, num_frames: usize) -> Result<(), WriterError> {

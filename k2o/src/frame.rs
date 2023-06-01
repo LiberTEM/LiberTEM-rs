@@ -5,7 +5,7 @@ use itertools::Itertools;
 use ndarray::{s, ArrayView2, ArrayViewMut2};
 
 use crate::{
-    block::{K2Block, K2ISBlock, K2SummitBlock},
+    block::{K2Block, K2ISBlock},
     events::Binning,
     helpers::Shape2,
 };
@@ -14,8 +14,11 @@ pub trait FrameForWriting: Sized {
     const FRAME_WIDTH: usize;
     const FRAME_HEIGHT: usize;
 
+    /// The associated block type
     type Block: K2Block;
-    type ReadOnlyFrame: K2Frame;
+
+    /// The matching read-only frame type
+    type ReadOnlyFrame: K2Frame<FrameForWriting = Self>;
 
     fn get_frame_id(&self) -> u32;
     fn get_created_timestamp(&self) -> Instant;
@@ -150,28 +153,30 @@ pub trait K2Frame: Send + Sized {
     const FRAME_HEIGHT: usize;
 
     type Block: K2Block;
+    type FrameForWriting: FrameForWriting<ReadOnlyFrame = Self>;
 
     fn get_frame_id(&self) -> u32;
     fn get_created_timestamp(&self) -> Instant;
     fn get_modified_timestamp(&self) -> Instant;
-    fn get_slot(&self, shm: &SharedSlabAllocator) -> Slot;
     fn get_size_bytes() -> usize {
         Self::FRAME_WIDTH * Self::FRAME_HEIGHT * std::mem::size_of::<u16>()
     }
 
     fn free_payload(self, shm: &mut SharedSlabAllocator) {
-        let slot_r = self.get_slot(shm);
+        let slot_r = self.into_slot(shm);
         shm.free_idx(slot_r.slot_idx);
     }
 
-    fn as_array(&self, shm: &SharedSlabAllocator) -> ArrayView2<u16> {
-        let view = ArrayView2::from_shape(
-            (Self::FRAME_HEIGHT, Self::FRAME_WIDTH),
-            self.get_payload(shm),
-        )
-        .unwrap();
-        view
-    }
+    fn into_slot(self, smh: &SharedSlabAllocator) -> Slot;
+
+    // fn as_array(&self, shm: &SharedSlabAllocator) -> ArrayView2<u16> {
+    //     let view = ArrayView2::from_shape(
+    //         (Self::FRAME_HEIGHT, Self::FRAME_WIDTH),
+    //         self.get_payload(shm),
+    //     )
+    //     .unwrap();
+    //     view
+    // }
 
     fn get_shape_for_binning(binning: &Binning) -> Shape2;
     fn get_num_subframes(binning: &Binning) -> u32;
@@ -179,25 +184,49 @@ pub trait K2Frame: Send + Sized {
     fn get_subframe(&self, index: u32, binning: &Binning, shm: &SharedSlabAllocator) -> SubFrame;
 }
 
-pub struct SubFrame<'a> {
+pub struct SubFrame {
     binning: Binning,
-    payload: &'a [u16],
     shape: Shape2,
+    slot: Slot,
+
+    /// start index in u16
+    start: usize,
+
+    /// end index in u16
+    end: usize,
 }
 
-impl<'a> SubFrame<'a> {
-    pub fn get_payload(&self) -> &'a [u16] {
-        self.payload
+impl SubFrame {
+    // pub fn get_payload(&self) -> &'a [u16] {
+    //     self.payload
+    // }
+    pub fn apply_to_payload(&self, f: impl Fn(&[u16])) {
+        let payload_raw: &[u16] = &bytemuck::cast_slice(self.slot.as_slice())[self.start..self.end];
+        f(payload_raw)
+    }
+
+    pub fn apply_to_payload_raw(&self, f: impl Fn(&[u8])) {
+        let payload_sliced: &[u16] =
+            &bytemuck::cast_slice(self.slot.as_slice())[self.start..self.end];
+        let payload_raw = bytemuck::cast_slice(payload_sliced);
+        f(payload_raw)
+    }
+
+    pub fn apply_to_payload_array(&self, mut f: impl FnMut(ArrayView2<u16>)) {
+        let payload_sliced: &[u16] =
+            &bytemuck::cast_slice(self.slot.as_slice())[self.start..self.end];
+        let view = ArrayView2::from_shape(self.shape, payload_sliced).unwrap();
+        f(view)
     }
 
     pub fn get_binning(&self) -> Binning {
         self.binning
     }
 
-    pub fn as_array(&self) -> ArrayView2<u16> {
-        let view = ArrayView2::from_shape(self.shape, self.get_payload()).unwrap();
-        view
-    }
+    // pub fn as_array(&self) -> ArrayView2<u16> {
+    //     let view = ArrayView2::from_shape(self.shape, self.get_payload()).unwrap();
+    //     view
+    // }
 }
 
 pub struct K2ISFrameForWriting {
@@ -331,7 +360,7 @@ impl K2ISFrameForWriting {
 }
 
 pub struct K2ISFrame {
-    /// the decoded payload of the whole frame
+    /// a reference to the decoded payload of the whole frame
     pub payload: SlotInfo,
 
     subframe_idx: u8,
@@ -351,6 +380,7 @@ impl K2Frame for K2ISFrame {
     const FRAME_HEIGHT: usize = 1860;
 
     type Block = K2ISBlock;
+    type FrameForWriting = K2ISFrameForWriting;
 
     fn get_frame_id(&self) -> u32 {
         self.frame_id
@@ -364,7 +394,7 @@ impl K2Frame for K2ISFrame {
         self.modified_timestamp
     }
 
-    fn get_slot(&self, shm: &SharedSlabAllocator) -> Slot {
+    fn into_slot(self, shm: &SharedSlabAllocator) -> Slot {
         shm.get(self.payload.slot_idx)
     }
 
@@ -394,15 +424,19 @@ impl K2Frame for K2ISFrame {
             Binning::Bin8x => 4,
         } + (index as usize * 66);
         let shape = Self::get_shape_for_binning(binning);
-        let payload_raw = self.get_payload(shm);
+        let slot = shm.get(self.payload.slot_idx);
+        // let payload_raw = bytemuck::cast_slice(slot.as_slice());
+
         let start = shape.1 * skip_rows;
         let end = start + shape.0 * shape.1;
-        let payload = &payload_raw[start..end];
+        // let payload = &payload_raw[start..end];
 
         SubFrame {
             binning: *binning,
-            payload,
+            slot,
             shape,
+            start,
+            end,
         }
     }
 
