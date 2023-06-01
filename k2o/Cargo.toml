@@ -26,6 +26,8 @@ opentelemetry-semantic-conventions = "0.9.0"
 ipc-test = { path = "../ipc_test" }
 shared_memory = "0.12.4"
 bytemuck = "1.12.3"
+tempfile = "3.5.0"
+log = "0.4.18"
 
 [features]
 hdf5 = ["dep:hdf5"]

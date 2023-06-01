@@ -1,11 +1,11 @@
-#![feature(generic_const_exprs)]
 mod bgthread;
 mod shm_helpers;
 
 use ipc_test::SharedSlabAllocator;
-use shm_helpers::{serve_shm_handle, CamClient, FrameRef};
+use shm_helpers::{CamClient, FrameRef};
 use std::{
     panic,
+    path::Path,
     sync::{Arc, Barrier},
     time::{Duration, Instant},
 };
@@ -15,6 +15,7 @@ use bgthread::{AcquisitionRuntime, AddrConfig, RuntimeError};
 
 use k2o::{
     acquisition::AcquisitionResult,
+    block::{K2Block, K2ISBlock},
     events::{AcquisitionParams, AcquisitionSync},
     frame::{K2Frame, K2ISFrame},
     tracing::{get_tracer, init_tracer},
@@ -24,8 +25,6 @@ use k2o::{
 #[cfg(feature = "hdf5")]
 use k2o::write::HDF5WriterBuilder;
 
-use numpy::ndarray::Dim;
-use numpy::{BorrowError, NotContiguousError, PyArray, PyArray2};
 use opentelemetry::{
     trace::{self, SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer},
     Context, ContextGuard,
@@ -119,6 +118,11 @@ fn k2opy(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<CamClient>()?;
     m.add_class::<FrameRef>()?;
 
+    let env = env_logger::Env::default()
+        .filter_or("LIBERTEM_K2IS_LOG_LEVEL", "error")
+        .write_style_or("LIBERTEM_K2IS_LOG_STYLE", "always");
+    env_logger::init_from_env(env);
+
     Ok(())
 }
 
@@ -180,6 +184,7 @@ struct PyAcquisitionParams {
     pub sync: SyncFlags,
     pub writer: Option<PyWriter>,
     pub enable_frame_iterator: bool,
+    pub shm_path: String,
 }
 
 #[pymethods]
@@ -190,12 +195,14 @@ impl PyAcquisitionParams {
         sync: SyncFlags,
         writer: Option<PyWriter>,
         enable_frame_iterator: bool,
+        shm_path: String,
     ) -> Self {
         PyAcquisitionParams {
             size,
             sync,
             writer,
             enable_frame_iterator,
+            shm_path,
         }
     }
 }
@@ -205,46 +212,6 @@ struct PyFrame {
     acquisition_result: Option<AcquisitionResult<K2ISFrame>>,
     frame_idx: u32,
 }
-
-enum IntoArrayError {
-    NotContiguous,
-    BorrowError,
-    DroppedFrame,
-    Sentinel,
-}
-
-impl From<NotContiguousError> for IntoArrayError {
-    fn from(_: NotContiguousError) -> Self {
-        IntoArrayError::NotContiguous
-    }
-}
-
-impl From<BorrowError> for IntoArrayError {
-    fn from(_: BorrowError) -> Self {
-        IntoArrayError::BorrowError
-    }
-}
-
-impl From<IntoArrayError> for PyErr {
-    fn from(e: IntoArrayError) -> Self {
-        match e {
-            IntoArrayError::NotContiguous => {
-                exceptions::PyValueError::new_err("the array must be contiguous")
-            }
-            IntoArrayError::BorrowError => {
-                exceptions::PyRuntimeError::new_err("could not borrow out array")
-            }
-            IntoArrayError::DroppedFrame => {
-                exceptions::PyValueError::new_err("cannot get array for dropped frame")
-            }
-            IntoArrayError::Sentinel => {
-                exceptions::PyValueError::new_err("cannot convert sentinel value into array")
-            }
-        }
-    }
-}
-
-pub type FrameArray1 = PyArray<u16, Dim<[usize; 1]>>;
 
 impl PyFrame {
     fn new(result: AcquisitionResult<K2ISFrame>, frame_idx: u32) -> Self {
@@ -257,52 +224,10 @@ impl PyFrame {
     fn consume_frame_data(&mut self) -> AcquisitionResult<K2ISFrame> {
         self.acquisition_result.take().unwrap()
     }
-
-    fn get_as_array_into_impl(&self, out: &PyArray2<u16>) -> Result<(), IntoArrayError> {
-        let mut out_rw = out.try_readwrite()?;
-        let out_slice = out_rw.as_slice_mut()?;
-        let acquisition_result = self.acquisition_result.as_ref().unwrap();
-        if matches!(
-            &acquisition_result,
-            AcquisitionResult::DroppedFrame(..) | AcquisitionResult::DroppedFrameOutside(..)
-        ) {
-            return Err(IntoArrayError::DroppedFrame);
-        }
-        match acquisition_result.get_frame() {
-            Some(frame_payload) => {
-                out_slice.copy_from_slice(frame_payload.get_payload());
-            }
-            None => {
-                return Err(IntoArrayError::Sentinel);
-            }
-        }
-        Ok(())
-    }
-
-    fn get_array_impl(&self, py: Python) -> Result<Py<FrameArray1>, IntoArrayError> {
-        let frame_data_slice = match &self
-            .acquisition_result
-            .as_ref()
-            .expect("This frame has been consumed")
-            .get_frame()
-        {
-            Some(frame) => frame.get_payload(),
-            None => return Err(IntoArrayError::Sentinel),
-        };
-        // ugh... this does a copy, can we do without!?!?
-        let arr = PyArray::from_slice(py, frame_data_slice);
-        Ok(arr.to_owned())
-    }
 }
 
 #[pymethods]
 impl PyFrame {
-    fn get_array(slf: PyRef<Self>, py: Python) -> PyResult<PyObject> {
-        let arr = slf.get_array_impl(py)?;
-        let arr2d = arr.as_ref(py).reshape([1860, 2048])?;
-        Ok(arr2d.into_py(py))
-    }
-
     fn is_dropped(slf: PyRef<Self>) -> bool {
         matches!(
             &slf.acquisition_result,
@@ -313,18 +238,6 @@ impl PyFrame {
 
     fn get_idx(slf: PyRef<Self>) -> u32 {
         slf.frame_idx
-    }
-
-    fn get_array_into(slf: PyRef<Self>, out: &PyAny) -> PyResult<()> {
-        let out_arr_res: Result<&PyArray2<u16>, _> = out.downcast();
-        if let Ok(out_arr) = out_arr_res {
-            slf.get_as_array_into_impl(out_arr)?;
-            Ok(())
-        } else {
-            Err(exceptions::PyValueError::new_err(
-                "please pass a contiguous 2d u2 array as `out` parameter",
-            ))
-        }
     }
 }
 
@@ -364,12 +277,6 @@ impl From<RuntimeError> for PyErr {
 
 #[pymethods]
 impl Acquisition {
-    fn serve_shm(slf: PyRef<Self>, socket_path: &str) -> PyResult<()> {
-        let handle = slf.shm.get_handle();
-        serve_shm_handle(handle, socket_path);
-        Ok(())
-    }
-
     fn wait_for_start(mut slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
         // TODO: total deadline for initialization?
         // TODO: currently the API can be used wrong, i.e. calling
@@ -504,7 +411,7 @@ impl Acquisition {
             sync,
             binning: k2o::events::Binning::Bin1x,
         };
-        let mut runtime = AcquisitionRuntime::new(
+        let mut runtime = AcquisitionRuntime::new::<{ <K2ISBlock as K2Block>::PACKET_SIZE }>(
             wb,
             &slf.addr_config,
             slf.params.enable_frame_iterator,
@@ -546,6 +453,7 @@ impl Acquisition {
                         return Ok(());
                     }
                     std::thread::sleep(Duration::from_millis(100));
+                    py.check_signals()?;
                 }
                 // deadline exceeded
                 Err(exceptions::PyRuntimeError::new_err(
@@ -601,7 +509,8 @@ impl Cam {
         params: PyAcquisitionParams,
     ) -> PyResult<Acquisition> {
         let _guard = span_from_py(py, "Cam::make_acquisition")?;
-        let shm = SharedSlabAllocator::new(1000, 2048 * 1860 * 2, true).expect("create shm");
+        let path = Path::new(&params.shm_path);
+        let shm = SharedSlabAllocator::new(1000, 2048 * 1860 * 2, true, path).expect("create shm");
         Ok(Acquisition::new(params, &slf.addr_config, shm))
     }
 }

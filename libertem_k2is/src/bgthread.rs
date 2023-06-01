@@ -96,20 +96,19 @@ fn k2_bg_thread<
 
             let asm_events_rx = events.subscribe();
             let asm_ctx = ctx.clone();
-            let asm_shm_handle = shm.get_handle();
+            let asm_shm_handle = shm.get_handle().os_handle;
 
             // assembly main thread:
             s.builder()
                 .name("assembly".to_string())
                 .spawn(move |_| {
                     let asm_shm =
-                        SharedSlabAllocator::connect(asm_shm_handle.fd, &asm_shm_handle.info)
-                            .expect("connect to shm");
+                        SharedSlabAllocator::connect(&asm_shm_handle).expect("connect to shm");
 
                     //set_cpu_affinity(CPU_AFF_ASSEMBLY);
                     //frame_assembler(&assembly_rx, &full_frames_tx);
                     let _guard = asm_ctx.attach();
-                    assembler_main(
+                    assembler_main::<F, B>(
                         &assembly_rx,
                         &full_frames_tx,
                         &recycle_blocks_tx,
@@ -131,9 +130,8 @@ fn k2_bg_thread<
                 .spawn(move |_| {
                     set_cpu_affinity(CPU_AFF_WRITER);
                     let _guard = writer_ctx.attach();
-                    let acq_shm =
-                        SharedSlabAllocator::connect(acq_shm_handle.fd, &acq_shm_handle.info)
-                            .expect("connect to shm");
+                    let acq_shm = SharedSlabAllocator::connect(&acq_shm_handle.os_handle)
+                        .expect("connect to shm");
 
                     acquisition_loop(
                         &w1rx,
@@ -164,7 +162,7 @@ fn k2_bg_thread<
 /// Communication with the background thread(s) is handled via the event bus,
 /// that is, `k2o::events::Events` and `k2o::events::EventReceiver`.
 ///
-pub fn start_bg_thread<F: K2Frame + 'static>(
+pub fn start_bg_thread<F: K2Frame + 'static, const PACKET_SIZE: usize>(
     events: Events,
     writer_builder: Box<dyn WriterBuilder>,
     addr_config: AddrConfig,
@@ -174,19 +172,15 @@ pub fn start_bg_thread<F: K2Frame + 'static>(
     tx_from_writer: Sender<AcquisitionResult<F>>,
 
     shm_handle: SHMHandle,
-) -> JoinHandle<()>
-where
-    [(); F::Block::PACKET_SIZE]:,
-{
+) -> JoinHandle<()> {
     let thread_builder = std::thread::Builder::new();
     let ctx = Context::current();
     thread_builder
         .name("k2_bg_thread".to_string())
         .spawn(move || {
             let _guard = ctx.attach();
-            let shm = SharedSlabAllocator::connect(shm_handle.fd, &shm_handle.info)
-                .expect("connect to shm");
-            k2_bg_thread::<{ F::Block::PACKET_SIZE }, F, F::Block>(
+            let shm = SharedSlabAllocator::connect(&shm_handle.os_handle).expect("connect to shm");
+            k2_bg_thread::<PACKET_SIZE, F, F::Block>(
                 &events,
                 writer_builder,
                 &addr_config,
@@ -248,15 +242,12 @@ impl From<RecvTimeoutError> for RuntimeError {
 }
 
 impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
-    pub fn new(
+    pub fn new<const PACKET_SIZE: usize>(
         writer_builder: Box<dyn WriterBuilder>,
         addr_config: &AddrConfig,
         enable_frame_consumer: bool,
         shm: SHMHandle,
-    ) -> Self
-    where
-        [(); F::Block::PACKET_SIZE]:,
-    {
+    ) -> Self {
         let events: Events = ChannelEventBus::new();
         let pump = MessagePump::new(&events);
         let (main_events_tx, main_events_rx) = pump.get_ext_channels();
@@ -268,10 +259,11 @@ impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
         // 2) "Frame Consumer" enabled or not
         //
         // They are configured by wiring up channels in the correct way.
+        let os_handle = shm.os_handle.clone();
         let bg_thread = if enable_frame_consumer {
             // Frame consumer enabled -> after writing, the writer thread should send the frames
             // to the `tx_frame_consumer` channel:
-            Some(start_bg_thread::<F>(
+            Some(start_bg_thread::<F, PACKET_SIZE>(
                 events,
                 writer_builder,
                 addr_config.clone(),
@@ -309,7 +301,7 @@ impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
             }
         }
 
-        let shm = SharedSlabAllocator::connect(shm.fd, &shm.info).expect("connect to shm");
+        let shm = SharedSlabAllocator::connect(&os_handle).expect("connect to shm");
 
         AcquisitionRuntime {
             bg_thread,
@@ -382,13 +374,7 @@ impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
 
     pub fn get_frame_slot(&mut self, frame: AcquisitionResult<F>) -> Option<usize> {
         let frame_inner = frame.unpack()?;
-
-        // FIXME: this can be done much earlier! after assembly
-        // then explicitly replaced with a frame object that is only a
-        // reference into shm!
-        let slot = frame_inner.writing_done(&mut self.shm);
-
-        Some(slot.slot_idx)
+        Some(frame_inner.into_slot(&self.shm).slot_idx)
     }
 
     pub fn arm(&self, params: AcquisitionParams) -> Result<(), RuntimeError> {

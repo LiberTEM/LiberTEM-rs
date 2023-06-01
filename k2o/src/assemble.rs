@@ -18,12 +18,12 @@ use crate::{
     helpers::{set_cpu_affinity, CPU_AFF_ASSEMBLY},
 };
 
-pub struct PendingFrames<F: FrameForWriting> {
-    pub frames: HashMap<u32, F>,
+pub struct PendingFrames<F: K2Frame> {
+    pub frames: HashMap<u32, F::FrameForWriting>,
     timeout: Duration,
 }
 
-impl<F: FrameForWriting> PendingFrames<F> {
+impl<F: K2Frame> PendingFrames<F> {
     pub fn new() -> Self {
         PendingFrames {
             frames: HashMap::new(),
@@ -34,7 +34,7 @@ impl<F: FrameForWriting> PendingFrames<F> {
     pub fn assign_block<B: K2Block>(&mut self, block: &B, shm: &mut SharedSlabAllocator) {
         let frame = match self.frames.get_mut(&block.get_frame_id()) {
             None => {
-                let frame = F::empty_from_block(block, shm);
+                let frame = F::FrameForWriting::empty_from_block(block, shm);
                 self.frames.insert(block.get_frame_id(), frame);
                 self.frames.get_mut(&block.get_frame_id()).unwrap()
             }
@@ -47,7 +47,7 @@ impl<F: FrameForWriting> PendingFrames<F> {
     /// as we keep the finished data around by default, it's possible to call this function
     /// only for every N received blocks, or only if a certain time has passed, without losing
     /// data (possibly small performance loss because of data locality, if you wait for too long)
-    pub fn retire_finished<E, CB: Fn(F::ReadOnlyFrame) -> Result<(), E>>(
+    pub fn retire_finished<E, CB: Fn(F, &SharedSlabAllocator) -> Result<(), E>>(
         &mut self,
         shm: &mut SharedSlabAllocator,
         cb: CB,
@@ -63,13 +63,13 @@ impl<F: FrameForWriting> PendingFrames<F> {
         for frame_id in to_remove {
             let frame_for_writing = self.frames.remove(&frame_id).unwrap();
             let frame = frame_for_writing.writing_done(shm);
-            cb(frame)?;
+            cb(frame, shm)?;
         }
 
         Ok(())
     }
 
-    pub fn retire_timed_out<E, CB: Fn(F::ReadOnlyFrame) -> Result<(), E>>(
+    pub fn retire_timed_out<E, CB: Fn(F) -> Result<(), E>>(
         &mut self,
         shm: &mut SharedSlabAllocator,
         cb: CB,
@@ -110,7 +110,7 @@ impl<F: FrameForWriting> PendingFrames<F> {
     }
 }
 
-impl<F: FrameForWriting> Default for PendingFrames<F> {
+impl<F: K2Frame> Default for PendingFrames<F> {
     fn default() -> Self {
         Self::new()
     }
@@ -126,9 +126,9 @@ pub enum AssemblyResult<F: K2Frame> {
     AssemblyTimeout { frame: F, frame_id: u32 },
 }
 
-fn assembly_worker<F: FrameForWriting, B: K2Block>(
+fn assembly_worker<F: K2Frame, B: K2Block>(
     blocks_rx: Receiver<B>,
-    frames_tx: Sender<AssemblyResult<F::ReadOnlyFrame>>,
+    frames_tx: Sender<AssemblyResult<F>>,
     recycle_blocks_tx: &Sender<B>,
     stop_event: Arc<AtomicBool>,
     handle_path: &str,
@@ -154,7 +154,7 @@ fn assembly_worker<F: FrameForWriting, B: K2Block>(
             }
         }
 
-        pending.retire_finished(&mut shm, |frame| {
+        pending.retire_finished(&mut shm, |frame, _| {
             if let Err(SendError(_)) = frames_tx.send(AssemblyResult::AssembledFrame(frame)) {
                 // can't retire frames if the other end is disconnected, so we die, too:
                 return Err(AssemblyError::Disconnected);
@@ -162,7 +162,7 @@ fn assembly_worker<F: FrameForWriting, B: K2Block>(
             Ok(())
         })?;
 
-        pending.retire_timed_out(&mut shm, |frame: F::ReadOnlyFrame| {
+        pending.retire_timed_out(&mut shm, |frame: F| {
             let frame_id = frame.get_frame_id();
             if let Err(SendError(_)) =
                 frames_tx.send(AssemblyResult::AssemblyTimeout { frame, frame_id })
@@ -177,9 +177,9 @@ fn assembly_worker<F: FrameForWriting, B: K2Block>(
     Ok(())
 }
 
-pub fn assembler_main<F: FrameForWriting, B: K2Block>(
+pub fn assembler_main<F: K2Frame, B: K2Block>(
     blocks_rx: &Receiver<(B, BlockRouteInfo)>,
-    frames_tx: &Sender<AssemblyResult<F::ReadOnlyFrame>>,
+    frames_tx: &Sender<AssemblyResult<F>>,
     recycle_blocks_tx: &Sender<B>,
     events_rx: EventReceiver,
     shm: SharedSlabAllocator,
@@ -262,6 +262,7 @@ mod tests {
     use crate::block::K2Block;
     use crate::block::K2ISBlock;
     use crate::decode::HEADER_SIZE;
+    use crate::events::Binning;
     use crate::frame::FrameForWriting;
     use crate::frame::K2ISFrame;
     use crate::frame::K2ISFrameForWriting;
@@ -281,7 +282,6 @@ mod tests {
     fn k2frame_assign_blocks_happy_case() {
         let socket_dir = tempdir().unwrap();
         let socket_as_path = socket_dir.into_path().join("stuff.socket");
-        let handle_path = socket_as_path.to_str().unwrap();
 
         const FRAME_ID: u32 = 42;
         let mut ssa = SharedSlabAllocator::new(
@@ -334,10 +334,9 @@ mod tests {
     fn pending_frames_assign_blocks_happy_case() {
         let socket_dir = tempdir().unwrap();
         let socket_as_path = socket_dir.into_path().join("stuff.socket");
-        let handle_path = socket_as_path.to_str().unwrap();
 
         const FRAME_ID: u32 = 42;
-        let mut pending_frames: PendingFrames<K2ISFrameForWriting> = PendingFrames::new();
+        let mut pending_frames: PendingFrames<K2ISFrame> = PendingFrames::new();
         let mut ssa = SharedSlabAllocator::new(
             10,
             K2ISFrame::FRAME_HEIGHT * K2ISFrame::FRAME_WIDTH * std::mem::size_of::<u16>(),
@@ -367,22 +366,21 @@ mod tests {
         assert_eq!(pending_frames.num_unfinished(), 0);
 
         pending_frames
-            .retire_finished(&mut ssa, |frame| {
-                let frame_arr = frame.as_array(&ssa);
-
-                // all slices contain the test data pattern:
-                for y_idx in 0..2 {
-                    for x_idx in 0..128 {
-                        let start_x = x_idx * 16;
-                        let start_y = y_idx * 930;
-
-                        let slice =
-                            frame_arr.slice(s![start_y..start_y + 930, start_x..start_x + 16]);
-                        assert!(payload_view.abs_diff_eq(&slice, 0));
-
-                        println!("{payload_view}");
+            .retire_finished(&mut ssa, |frame, ssa| {
+                let subframe = frame.get_subframe(0, &Binning::Bin1x, ssa);
+                subframe.apply_to_payload_array(|frame_arr| {
+                    // all slices contain the test data pattern:
+                    for y_idx in 0..2 {
+                        for x_idx in 0..128 {
+                            let start_x = x_idx * 16;
+                            let start_y = y_idx * 930;
+                            let slice =
+                                frame_arr.slice(s![start_y..start_y + 930, start_x..start_x + 16]);
+                            assert!(payload_view.abs_diff_eq(&slice, 0));
+                            println!("{payload_view}");
+                        }
                     }
-                }
+                });
 
                 Ok::<_, ()>(())
             })
@@ -393,7 +391,6 @@ mod tests {
     fn assemly_single_block() {
         let socket_dir = tempdir().unwrap();
         let socket_as_path = socket_dir.into_path().join("stuff.socket");
-        let handle_path = socket_as_path.to_str().unwrap();
 
         const FRAME_ID: u32 = 42;
         let mut ssa = SharedSlabAllocator::new(
@@ -403,7 +400,7 @@ mod tests {
             &socket_as_path,
         )
         .expect("create SHM area for testing");
-        let mut pending_frames: PendingFrames<K2ISFrameForWriting> = PendingFrames::new();
+        let mut pending_frames: PendingFrames<K2ISFrame> = PendingFrames::new();
 
         assert_eq!(pending_frames.num_finished(), 0);
         assert_eq!(pending_frames.num_unfinished(), 0);
@@ -422,7 +419,7 @@ mod tests {
         assert_eq!(pending_frames.num_unfinished(), 1);
 
         pending_frames
-            .retire_finished(&mut ssa, |_| -> Result<(), ()> {
+            .retire_finished(&mut ssa, |_, _| -> Result<(), ()> {
                 panic!("this should not be called, as we don't have any finished frames yet");
             })
             .unwrap();
