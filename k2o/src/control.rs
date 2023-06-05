@@ -11,8 +11,9 @@ use crate::{
 ///
 /// Global acquisition state
 ///
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone, Default)]
 pub enum AcquisitionState {
+    #[default]
     Startup,
     Idle,
     Armed {
@@ -32,12 +33,6 @@ pub enum AcquisitionState {
         frame_id: u32,
     },
     Shutdown,
-}
-
-impl Default for AcquisitionState {
-    fn default() -> Self {
-        AcquisitionState::Startup
-    }
 }
 
 ///
