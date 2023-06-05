@@ -13,6 +13,7 @@ pub enum WriteMode {
     HDF5,
 }
 
+/// Test program - arm and perform a single acquisition
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
@@ -32,4 +33,8 @@ pub struct Args {
     /// Disable allocation re-use
     #[clap(short = 'r', long)]
     pub disable_reuse: bool,
+
+    /// Shared memory socket path
+    #[clap(short = 's', long, default_value = "/tmp/k2is-socket-todo")]
+    pub shm_path: String,
 }
