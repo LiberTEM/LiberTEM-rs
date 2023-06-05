@@ -1,10 +1,9 @@
 from contextlib import contextmanager
-import sys
 import logging
 import time
 from typing import (
-    Any, Callable, Generator, Iterable, Iterator, List, Optional,
-    Tuple, TypeVar,
+    Iterable, Optional,
+    Tuple, Type,
 )
 
 import numpy as np
@@ -19,13 +18,89 @@ from libertem.io.dataset.base import (
     DataTile, DataSetMeta, BasePartition, Partition, DataSet, TilingScheme,
 )
 from libertem.corrections.corrset import CorrectionSet
-from libertem_live.detectors.base.acquisition import AcquisitionMixin
+from libertem_live.detectors.base.controller import (
+    AcquisitionController,
+)
+from libertem_live.detectors.base.acquisition import (
+    AcquisitionMixin, AcquisitionProtocol,
+)
+from libertem_live.detectors.base.connection import (
+    PendingAcquisition, DetectorConnection,
+)
+from libertem_live.hooks import Hooks
 
 from k2opy import Cam, Sync, AcquisitionParams, Acquisition, CamClient, Writer
 
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
+
+
+class K2ISPendingAcquisition(PendingAcquisition):
+    def __init__(self):
+        super().__init__()
+
+    @property
+    def nimages(self) -> int:
+        # XXX we don't really know the number of images in the acquisition -
+        # unless the user tells us beforehand.
+        raise NotImplementedError("how should we know this?")
+
+
+class K2ISDetectorConnection(DetectorConnection):
+    def __init__(
+        self,
+        local_addr_top: str,
+        local_addr_bottom: str,
+        # TODO: shm config here
+    ):
+        self._local_addr_top = local_addr_top
+        self._local_addr_bottom = local_addr_bottom
+        self._connect()
+
+    def _connect(self):
+        cam = Cam(
+            local_addr_top=self._local_addr_top,
+            local_addr_bottom=self._local_addr_bottom,
+        )
+        self._conn = cam
+
+    def wait_for_acquisition(self, timeout: Optional[float] = None) -> Optional[PendingAcquisition]:
+        # XXX: we don't know how many frames there will be in the acquisition
+        # (see `K2ISPendingAcquisition` comment above)
+        raise NotImplementedError()
+
+    def get_conn_impl(self):
+        return self._conn
+
+    def close(self):
+        self._conn.close()
+        self._conn = None
+
+    def reconnect(self):
+        if self._conn is not None:
+            self.close()
+        self._connect()
+
+    def __enter__(self):
+        if self._conn is None:
+            self._connect()
+        return self
+
+    def get_acquisition_cls(self) -> Type[AcquisitionProtocol]:
+        return K2Acquisition
+
+
+class K2ISConnectionBuilder:
+    def open(
+        self,
+        local_addr_top: str,
+        local_addr_bottom: str,
+    ):
+        return K2ISDetectorConnection(
+            local_addr_top=local_addr_top,
+            local_addr_bottom=local_addr_bottom,
+        )
 
 
 FramesIter = Iterable[Tuple[np.ndarray, int]]
@@ -62,11 +137,13 @@ def get_frames(request_queue, socket_path: str) -> FramesIter:
 
 
 class K2CommHandler(TaskCommHandler):
-    def __init__(self, aq: Acquisition):
+    def __init__(self, aq: Acquisition, conn: K2ISDetectorConnection):
         self._aq = aq
+        self._conn = conn
 
     def handle_task(self, task: TaskProtocol, queue: WorkerQueue):
         aq = self._aq
+        conn = self._conn
 
         with tracer.start_as_current_span("K2CommHandler.handle_task") as span:
             put_time = 0.0
@@ -80,7 +157,6 @@ class K2CommHandler(TaskCommHandler):
                 "libertem.partition.start_idx": start_idx,
                 "libertem.partition.end_idx": end_idx,
             })
-            chunk_size = 64
             current_idx = start_idx
             while current_idx < end_idx:
                 t0 = time.perf_counter()
@@ -114,7 +190,7 @@ class K2CommHandler(TaskCommHandler):
 
     def start(self):
         socket_path = "/tmp/k2is-socket-todo"
-        self._aq.serve_shm(socket_path)
+        pass
 
     def done(self):
         pass
@@ -131,49 +207,40 @@ class K2Acquisition(AcquisitionMixin, DataSet):
         The local IPv4 address where we receive data on (top part)
     local_addr_bottom
         The local IPv4 address where we receive data on (bottom part)
-
     nav_shape
         The number of scan positions as a 2-tuple :code:`(height, width)`
-    sync_mode
-
-    trigger : function
-        See :meth:`~libertem_live.api.LiveContext.prepare_acquisition`
-        and :ref:`trigger` for details!
     frames_per_partition
         A tunable for configuring the feedback rate - more frames per partition
-        means slower feedback, but less computational overhead. Might need to be tuned
-        to adapt to the dwell time.
+        means slower feedback, possibly less computational overhead, but also
+        less parallelism. Might need to be tuned to adapt to the dwell time.
     '''
     def __init__(
         self,
-        local_addr_top: str,
-        local_addr_bottom: str,
-        nav_shape: Tuple[int, ...],
-        sync_mode: Sync,
-        trigger=lambda aq: None,
-        frames_per_partition: int = 128,
-    ):
-        super().__init__(trigger=trigger)
-        try:
-            import k2opy  # NOQA
-        except ImportError:
-            if sys.version_info < (3, 7):
-                raise RuntimeError(
-                    "K2Acquisition needs at least Python 3.7"
-                )
-            else:
-                raise RuntimeError(
-                    "K2Acquisition has additional dependencies; "
-                    "please run `pip install libertem-live[k2]` "
-                    "to install them."
-                )
+        conn: K2ISDetectorConnection,
 
-        self._local_addrs = (local_addr_top, local_addr_bottom)
-        self._nav_shape = nav_shape
+        hooks: Optional[Hooks] = None,
+
+        # in passive mode, we get this:
+        pending_aq: Optional[K2ISPendingAcquisition] = None,
+
+        controller: Optional[AcquisitionController] = None,
+
+        nav_shape: Optional[Tuple[int, ...]] = None,
+
+        frames_per_partition: Optional[int] = None,
+    ):
+        super().__init__(
+            conn=conn,
+            nav_shape=nav_shape,
+            frames_per_partition=frames_per_partition,
+            controller=controller,
+            pending_aq=pending_aq,
+            hooks=hooks,
+        )
         self._sig_shape: Tuple[int, ...] = ()
         self._acq_state: Optional[AcquisitionParams] = None
         self._frames_per_partition = min(frames_per_partition, prod(nav_shape))
-        self._sync_mode = sync_mode
+        self._sync_mode = Sync.Immediately
 
     def initialize(self, executor) -> "DataSet":
         dtype = np.uint16
@@ -207,23 +274,21 @@ class K2Acquisition(AcquisitionMixin, DataSet):
     @contextmanager
     def acquire(self):
         with tracer.start_as_current_span('acquire') as span:
-            cam = Cam(
-                local_addr_top=self._local_addrs[0],
-                local_addr_bottom=self._local_addrs[1],
-            )
             nimages = prod(self.shape.nav)
             # writer = Writer(
             #     method="direct",
             #     filename="/cachedata/alex/bar.raw",
             # )
             writer = None
+            socket_path = "/tmp/k2is-socket-todo"
             aqp = AcquisitionParams(
                 size=nimages,
                 sync=self._sync_mode,
                 writer=writer,
                 enable_frame_iterator=True,
+                shm_path=socket_path,
             )
-            aq = cam.make_acquisition(aqp)
+            aq = self._conn.get_conn_impl().make_acquisition(aqp)
             try:
                 self._acq_state = aq
                 aq.arm()
@@ -231,10 +296,6 @@ class K2Acquisition(AcquisitionMixin, DataSet):
                 span.add_event("K2Acquisition.acquire:arm")
 
                 try:
-                    # this triggers, either via API or via HW trigger (in which case we
-                    # don't need to do anything in the trigger function):
-                    with tracer.start_as_current_span("K2Acquisition.trigger"):
-                        self.trigger()
                     aq.wait_for_start()
                     t0 = time.time()
                     yield
@@ -287,6 +348,7 @@ class K2Acquisition(AcquisitionMixin, DataSet):
         assert self._acq_state is not None
         return K2CommHandler(
             aq=self._acq_state,
+            conn=self._conn,
         )
 
 
@@ -377,7 +439,7 @@ class K2LivePartition(Partition):
                 buf_idx = 0
         logger.debug("LivePartition.get_tiles: end of method")
 
-    def get_tiles(self, tiling_scheme, dest_dtype="float32", roi=None):
+    def get_tiles(self, tiling_scheme, dest_dtype="float32", roi=None, array_backend=None):
         yield from self._get_tiles_fullframe(tiling_scheme, dest_dtype, roi)
 
     def __repr__(self):
