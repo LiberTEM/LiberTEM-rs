@@ -310,7 +310,7 @@ class WSServer:
                 aq = self.ctx.make_acquisition(
                     conn=self.conn,
                     pending_aq=pending_aq,
-                    frames_per_partition=256,
+                    frames_per_partition=25,
                 )
                 last_update = 0
                 try:
