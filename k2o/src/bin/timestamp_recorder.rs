@@ -62,7 +62,11 @@ fn start_threads<
             let recycle_clone_rx = recycle_blocks_rx.clone();
             let recycle_clone_tx = recycle_blocks_tx.clone();
             let events_rx = events.subscribe();
-            let local_addr = "192.168.10.99".to_string();
+            let local_addr = if sector_id < 4 {
+                "192.168.10.99".to_string()
+            } else {
+                "192.168.10.98".to_string()
+            };
 
             s.builder()
                 .name(format!("recv-decode-{}", sector_id))
@@ -96,7 +100,7 @@ fn start_threads<
 
         let mut stats: HashMap<u32, Vec<Instant>, _> = HashMap::new();
 
-        while let Ok((block, _)) = decoded_rx.recv_timeout(Duration::from_secs(10)) {
+        while let Ok((block, _)) = decoded_rx.recv_timeout(Duration::from_secs(60)) {
             let ts = block.get_decoded_timestamp();
             let frame_id = block.get_frame_id();
             stats
