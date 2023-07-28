@@ -191,7 +191,8 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
 
     let ctx = Context::current();
 
-    for _ in 0..128 {
+    // warmup for the block queue:
+    for _ in 0..512 {
         recycle_blocks_tx.send(B::empty(0)).unwrap();
     }
 

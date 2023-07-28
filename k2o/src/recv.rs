@@ -66,6 +66,8 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
             Ok(_) => {}                    // unknown event in the channel, just continue.
         }
 
+        // no matter the current state, we receive the UDP packets and read them
+        // into a buffer:
         match socket.recv_from(&mut buf) {
             Ok((number_of_bytes, _src_addr)) => {
                 assert_eq!(number_of_bytes, B::PACKET_SIZE);
@@ -75,6 +77,8 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
             Err(_) => panic!("recv_from failed"),
         }
 
+        // if we are not armed for acquisition, we don't decode the buffer into
+        // a block:
         if state == RecvState::Idle {
             continue;
         }
@@ -111,6 +115,10 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
                 let l = assembly_channel.len();
                 if l > 400 && l % 100 == 0 {
                     println!("assembly_channel is backed up, len={l} sector={sector_id}");
+                }
+                if l > 10000 {
+                    // make sure we don't consume all available memory:
+                    panic!("too many blocks in assembly_channel, bailing out");
                 }
                 assembly_channel.send((block, route_info)).unwrap();
             }

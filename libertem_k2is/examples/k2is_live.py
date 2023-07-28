@@ -1,9 +1,10 @@
 from contextlib import contextmanager
+import os
 import logging
 import time
 from typing import (
     Iterable, Optional,
-    Tuple, Type,
+    Tuple, Type, Dict, Any,
 )
 
 import numpy as np
@@ -52,10 +53,15 @@ class K2ISDetectorConnection(DetectorConnection):
         self,
         local_addr_top: str,
         local_addr_bottom: str,
+        sync_mode=Sync.WaitForSync,  # or `Sync.Immediately`
+        file_pattern: Optional[str] = None,  # must contain one %d pattern for sequence number
         # TODO: shm config here
     ):
         self._local_addr_top = local_addr_top
         self._local_addr_bottom = local_addr_bottom
+        self._sync_mode = sync_mode
+        self._file_pattern = file_pattern
+
         self._connect()
 
     def _connect(self):
@@ -240,7 +246,6 @@ class K2Acquisition(AcquisitionMixin, DataSet):
         self._sig_shape: Tuple[int, ...] = ()
         self._acq_state: Optional[AcquisitionParams] = None
         self._frames_per_partition = min(frames_per_partition, prod(nav_shape))
-        self._sync_mode = Sync.Immediately
 
     def initialize(self, executor) -> "DataSet":
         dtype = np.uint16
@@ -271,19 +276,41 @@ class K2Acquisition(AcquisitionMixin, DataSet):
     def get_correction_data(self):
         return CorrectionSet()
 
+    def _get_filename(self, pattern: str, values: Dict[str, Any]) -> str:
+        assert "%" in pattern
+        seq = 1
+        all_values = {}
+        all_values.update(values)
+        all_values['seq'] = seq
+        path = pattern % all_values
+        while os.path.exists(path):
+            seq += 1
+            all_values['seq'] = seq
+            path = pattern % all_values
+        return path
+
     @contextmanager
     def acquire(self):
         with tracer.start_as_current_span('acquire') as span:
             nimages = prod(self.shape.nav)
-            # writer = Writer(
-            #     method="direct",
-            #     filename="/cachedata/alex/bar.raw",
-            # )
-            writer = None
+
+            file_pattern = self._conn._file_pattern
+            if file_pattern is None:
+                writer = None
+            else:
+                filename = self._get_filename(file_pattern, {
+                    'nav_shape': "x".join(
+                        [str(part) for part in self.shape.nav]
+                    ),
+                })
+                writer = Writer(
+                    method="direct",
+                    filename=filename,
+                )
             socket_path = "/tmp/k2is-socket-todo"
             aqp = AcquisitionParams(
                 size=nimages,
-                sync=self._sync_mode,
+                sync=self._conn._sync_mode,
                 writer=writer,
                 enable_frame_iterator=True,
                 shm_path=socket_path,

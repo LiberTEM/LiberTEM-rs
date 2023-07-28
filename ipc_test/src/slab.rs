@@ -174,6 +174,16 @@ impl SharedSlabAllocator {
         let free_list_ptr = unsafe { ptr.offset(Self::MUTEX_SIZE.try_into().unwrap()) };
 
         let (_lock, bg_thread) = if init_structures {
+            if true {
+                let full_slice = unsafe { from_raw_parts_mut(ptr, slab_info.total_size) };
+                for i in full_slice.iter_mut() {
+                    *i = 0xFF;
+                }
+                for i in full_slice.iter_mut() {
+                    *i = 0;
+                }
+            }
+
             let (lock, used_size) = unsafe { Mutex::new(ptr, free_list_ptr).unwrap() };
 
             if used_size > Self::MUTEX_SIZE {
