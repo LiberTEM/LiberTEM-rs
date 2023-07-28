@@ -119,27 +119,30 @@ def get_frames(request_queue, socket_path: str) -> FramesIter:
     """
     while True:
         cam_client = CamClient(socket_path)
-        with request_queue.get() as msg:
-            header, payload_empty = msg
-            header_type = header["type"]
-            if header_type == "FRAMES":
-                idx = header['idx']
-                span = trace.get_current_span()
-                span.add_event("frame", {"slot": header['slot'], "idx": header["idx"]})
-                frame_ref = cam_client.get_frame_ref(header['slot'])
-                mv = frame_ref.get_memoryview()
-                payload = np.frombuffer(mv, dtype=np.uint16).reshape((1860, 2048))
-                yield (payload, idx)
-                del payload
-                del mv
-                del frame_ref
-                cam_client.done(header['slot'])
-            elif header_type == "END_PARTITION":
-                return
-            else:
-                raise RuntimeError(
-                    f"invalid header type {header['type']}; FRAME or END_PARTITION expected"
-                )
+        try:
+            with request_queue.get() as msg:
+                header, payload_empty = msg
+                header_type = header["type"]
+                if header_type == "FRAMES":
+                    idx = header['idx']
+                    span = trace.get_current_span()
+                    span.add_event("frame", {"slot": header['slot'], "idx": header["idx"]})
+                    frame_ref = cam_client.get_frame_ref(header['slot'])
+                    mv = frame_ref.get_memoryview()
+                    payload = np.frombuffer(mv, dtype=np.uint16).reshape((1860, 2048))
+                    yield (payload, idx)
+                    del payload
+                    del mv
+                    del frame_ref
+                    cam_client.done(header['slot'])
+                elif header_type == "END_PARTITION":
+                    return
+                else:
+                    raise RuntimeError(
+                        f"invalid header type {header['type']}; FRAME or END_PARTITION expected"
+                    )
+        finally:
+            cam_client.stop()
 
 
 class K2CommHandler(TaskCommHandler):
@@ -414,7 +417,7 @@ class K2LivePartition(Partition):
         assert len(tiling_scheme) == 1
         logger.debug("reading up to frame idx %d for this partition", self._end_idx)
         to_read = self._end_idx - self._start_idx
-        depth = tiling_scheme.depth
+        depth = tiling_scheme.depth + 4
         buf = np.zeros((depth,) + tiling_scheme[0].shape, dtype=dest_dtype)
         buf_idx = 0
         tile_start = self._start_idx

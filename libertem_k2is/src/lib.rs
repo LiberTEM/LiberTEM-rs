@@ -250,7 +250,7 @@ struct Acquisition {
 
     // FIXME: assumes IS mode currently
     runtime: Option<AcquisitionRuntime<K2ISFrame>>,
-    shm: SharedSlabAllocator,
+    shm: Option<SharedSlabAllocator>,
 }
 
 impl Acquisition {
@@ -263,7 +263,7 @@ impl Acquisition {
             params,
             addr_config: addr_config.clone(),
             runtime: None,
-            shm,
+            shm: Some(shm),
         }
     }
 }
@@ -411,12 +411,18 @@ impl Acquisition {
             sync,
             binning: k2o::events::Binning::Bin1x,
         };
-        let mut runtime = AcquisitionRuntime::new::<{ <K2ISBlock as K2Block>::PACKET_SIZE }>(
-            wb,
-            &slf.addr_config,
-            slf.params.enable_frame_iterator,
-            slf.shm.get_handle(),
-        );
+        let mut runtime = if let Some(shm) = &slf.shm {
+            AcquisitionRuntime::new::<{ <K2ISBlock as K2Block>::PACKET_SIZE }>(
+                wb,
+                &slf.addr_config,
+                slf.params.enable_frame_iterator,
+                shm.get_handle(),
+            )
+        } else {
+            return Err(exceptions::PyRuntimeError::new_err(
+                "invalid state - no shared memory connection available",
+            ));
+        };
         if runtime.arm(p).is_err() {
             return Err(exceptions::PyRuntimeError::new_err(
                 "connection to background thread lost",
@@ -450,6 +456,7 @@ impl Acquisition {
                 let deadline = Instant::now() + timeout;
                 while Instant::now() < deadline {
                     if runtime.try_join().is_some() {
+                        slf.shm.take();
                         return Ok(());
                     }
                     std::thread::sleep(Duration::from_millis(100));
@@ -510,7 +517,7 @@ impl Cam {
     ) -> PyResult<Acquisition> {
         let _guard = span_from_py(py, "Cam::make_acquisition")?;
         let path = Path::new(&params.shm_path);
-        let shm = SharedSlabAllocator::new(1000, 2048 * 1860 * 2, true, path).expect("create shm");
+        let shm = SharedSlabAllocator::new(2000, 2048 * 1860 * 2, true, path).expect("create shm");
         Ok(Acquisition::new(params, &slf.addr_config, shm))
     }
 }
