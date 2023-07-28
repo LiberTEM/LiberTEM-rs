@@ -9,13 +9,14 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender};
 use ipc_test::SharedSlabAllocator;
+use log::{error, info};
 use opentelemetry::Context;
 
 use crate::{
     block::{BlockRouteInfo, K2Block},
     events::{EventMsg, EventReceiver},
     frame::{FrameForWriting, K2Frame},
-    helpers::{set_cpu_affinity, CPU_AFF_ASSEMBLY},
+    helpers::{make_realtime, set_cpu_affinity, CPU_AFF_ASSEMBLY},
 };
 
 pub struct PendingFrames<F: K2Frame> {
@@ -135,6 +136,11 @@ fn assembly_worker<F: K2Frame, B: K2Block>(
 ) -> Result<(), AssemblyError> {
     let mut pending: PendingFrames<F> = PendingFrames::new();
     let mut shm = SharedSlabAllocator::connect(handle_path).expect("connect to SHM");
+
+    match make_realtime(5) {
+        Ok(_) => info!("successfully enabled realtime priority"),
+        Err(e) => error!("failed to set realtime priority: {e:?}"),
+    }
 
     loop {
         match blocks_rx.recv_timeout(Duration::from_millis(100)) {

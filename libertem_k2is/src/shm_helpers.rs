@@ -25,7 +25,7 @@ impl FrameRef {
 
 #[pyclass]
 pub struct CamClient {
-    shm: SharedSlabAllocator,
+    shm: Option<SharedSlabAllocator>,
 }
 
 #[pymethods]
@@ -33,13 +33,19 @@ impl CamClient {
     #[new]
     fn new(socket_path: &str) -> Self {
         let shm = SharedSlabAllocator::connect(socket_path).expect("connect to shm");
-        CamClient { shm }
+        CamClient { shm: Some(shm) }
     }
 
     fn get_frame_ref(&self, py: Python, slot: usize) -> FrameRef {
         // FIXME: crimes below. need to verify safety, and define the rules that the
         // Python side needs to follow
-        let slot_r: Slot = self.shm.get(slot);
+
+        let slot_r: Slot = match &self.shm {
+            Some(shm) => shm.get(slot),
+            None => {
+                panic!("we are stopped");
+            }
+        };
         let mv = unsafe {
             PyMemoryView_FromMemory(
                 slot_r.ptr as *mut i8,
@@ -57,6 +63,15 @@ impl CamClient {
     }
 
     fn done(mut slf: PyRefMut<Self>, slot_idx: usize) {
-        slf.shm.free_idx(slot_idx)
+        match &mut slf.shm {
+            Some(shm) => shm.free_idx(slot_idx),
+            None => {
+                panic!("we are stopped");
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        self.shm.take();
     }
 }

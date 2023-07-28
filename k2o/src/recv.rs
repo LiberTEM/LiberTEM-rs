@@ -1,11 +1,12 @@
-use std::{io::ErrorKind, time::Duration};
+use std::{cmp, io::ErrorKind, time::Duration};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use log::{error, info};
 
 use crate::{
     block::{BlockRouteInfo, K2Block},
     events::{AcquisitionSync, EventBus, EventMsg, EventReceiver, Events},
-    helpers::{set_cpu_affinity, CPU_AFF_DECODE_START},
+    helpers::{make_realtime, set_cpu_affinity, CPU_AFF_DECODE_START},
     net::create_mcast_socket,
 };
 
@@ -40,6 +41,11 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
 ) {
     let socket = create_mcast_socket(port, "225.1.1.1", &local_addr);
     let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
+
+    match make_realtime(50) {
+        Ok(_) => info!("successfully enabled realtime priority"),
+        Err(e) => error!("failed to set realtime priority: {e:?}"),
+    }
 
     socket
         .set_read_timeout(Some(Duration::from_millis(10)))
