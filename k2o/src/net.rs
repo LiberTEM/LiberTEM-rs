@@ -25,5 +25,5 @@ pub fn create_mcast_socket(port: u32, group: &str, local: &str) -> UdpSocket {
         .join_multicast_v4(&group_addr, &local_addr)
         .expect("could not join multicast group");
 
-    return socket;
+    socket
 }
