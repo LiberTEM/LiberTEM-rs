@@ -3,14 +3,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use clap::Parser;
 use crossbeam_channel::unbounded;
 use k2o::{
-    block::{BlockRouteInfo, K2Block, K2ISBlock},
+    block::{BlockRouteInfo, K2Block, K2ISBlock, K2SummitBlock},
     events::{
         AcquisitionParams, AcquisitionSize, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
         Events,
     },
-    frame::{K2Frame, K2ISFrame},
     recv::recv_decode_loop,
 };
 
@@ -45,10 +45,10 @@ fn std_deviation(data: &[u128]) -> Option<f32> {
 
 fn start_threads<
     const PACKET_SIZE: usize, // FIXME: use B::PACKET_SIZE here
-    F: K2Frame,
     B: K2Block,
 >(
     events: &Events,
+    duration: u64,
 ) {
     let ids = 0..=7u8;
 
@@ -100,7 +100,9 @@ fn start_threads<
 
         let mut stats: HashMap<u32, Vec<Instant>, _> = HashMap::new();
 
-        while let Ok((block, _)) = decoded_rx.recv_timeout(Duration::from_secs(60)) {
+        let deadline = Instant::now() + Duration::from_secs(duration);
+
+        while let Ok((block, _)) = decoded_rx.recv_timeout(Duration::from_millis(500)) {
             let ts = block.get_decoded_timestamp();
             let frame_id = block.get_frame_id();
             stats
@@ -108,6 +110,10 @@ fn start_threads<
                 .and_modify(|timestamps| timestamps.push(ts))
                 .or_insert_with(|| vec![ts]);
             recycle_blocks_tx.send(block).unwrap();
+
+            if Instant::now() > deadline {
+                break;
+            }
         }
 
         events.send(&EventMsg::Shutdown);
@@ -135,6 +141,7 @@ fn start_threads<
                 let max_instant = timestamps.iter().max().unwrap();
                 max_instant.duration_since(*min_instant).as_secs_f32()
             })
+            .filter(|ts| *ts != 0.0)
             .collect();
 
         println!("frame times: {:?}", frame_times);
@@ -170,8 +177,33 @@ fn start_threads<
     .unwrap();
 }
 
+#[derive(clap::ArgEnum, Clone, Copy, Debug)]
+pub enum Mode {
+    IS,
+    Summit,
+}
+
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+pub struct Args {
+    /// Camera mode
+    #[clap(short, long, arg_enum, default_value = "is")]
+    pub mode: Mode,
+
+    /// Duration to run the experiment, in seconds
+    #[clap(short, long, default_value = "10")]
+    pub duration: u64,
+}
+
 pub fn main() {
     let events: Events = ChannelEventBus::new();
 
-    start_threads::<{ K2ISBlock::PACKET_SIZE }, K2ISFrame, K2ISBlock>(&events);
+    let args = Args::parse();
+
+    match args.mode {
+        Mode::IS => start_threads::<{ K2ISBlock::PACKET_SIZE }, K2ISBlock>(&events, args.duration),
+        Mode::Summit => {
+            start_threads::<{ K2SummitBlock::PACKET_SIZE }, K2SummitBlock>(&events, args.duration)
+        }
+    }
 }

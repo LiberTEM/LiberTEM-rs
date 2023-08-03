@@ -1,4 +1,4 @@
-use std::{cmp, io::ErrorKind, time::Duration};
+use std::{io::ErrorKind, time::Duration};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use log::{error, info};
@@ -53,9 +53,11 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
 
     let mut state = RecvState::Idle;
 
-    println!("listening on {local_addr}:{port} for sector {sector_id}");
+    println!("Listening on {local_addr}:{port} for sector {sector_id}");
 
-    set_cpu_affinity(CPU_AFF_DECODE_START + sector_id as usize);
+    let aff = CPU_AFF_DECODE_START + sector_id as usize;
+    println!("Pinning to CPU {aff} for sector {sector_id}");
+    set_cpu_affinity(aff);
 
     loop {
         match events_rx.try_recv() {
