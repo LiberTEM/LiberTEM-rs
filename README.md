@@ -19,3 +19,8 @@ code in submodules. After cloning, remember to enable pre-commit hooks using
 - `libertem_asi_tpx3`: A Rust+Python library for receiving sparse array streams from Amsterdam Scientific Instruments CheeTah TPX3 detectors.
 - `libertem_dectris`: This is a Python package for efficiently receiving data from DECTRIS detectors with the zeromq interface.
 - `playegui`: `egui`-based prototype for efficient on-line visualization of 4D STEM reconstructions
+
+
+## License
+
+All crates are made available under the MIT license, if not specified otherwise.
