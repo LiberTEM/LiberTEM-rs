@@ -157,9 +157,10 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
         let op_frames = sel.recv(self.channel);
 
         let frame_shape = F::get_shape_for_binning(&self.params.binning);
+        let pixel_size_bytes = F::get_pixel_size_bytes();
         let mut writer: Box<dyn Writer> = self
             .writer_builder
-            .open_for_writing(&self.params.size, &frame_shape, std::mem::size_of::<u16>())
+            .open_for_writing(&self.params.size, &frame_shape, pixel_size_bytes)
             .expect("failed to open for writing");
         writer
             .resize(PRE_ALLOC_CHUNKS)
@@ -246,7 +247,8 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
         {
             let out_frame_idx_base = frame_idx * F::get_num_subframes(&self.params.binning);
             let frame_shape = F::get_shape_for_binning(&self.params.binning);
-            let frame_size_bytes = frame_shape.0 * frame_shape.1 * std::mem::size_of::<u16>(); // assumes u16 data
+            let pixel_size_bytes = F::get_pixel_size_bytes();
+            let frame_size_bytes = frame_shape.0 * frame_shape.1 * pixel_size_bytes;
             for subframe_idx in frame.subframe_indexes(&self.params.binning) {
                 let subframe = frame.get_subframe(subframe_idx, &self.params.binning, self.shm);
                 writer.write_frame(&subframe, out_frame_idx_base + subframe_idx);

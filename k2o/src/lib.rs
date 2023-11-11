@@ -7,6 +7,8 @@ pub mod decode;
 pub mod dio;
 pub mod events;
 pub mod frame;
+pub mod frame_is;
+pub mod frame_summit;
 pub mod helpers;
 pub mod net;
 pub mod ordering;

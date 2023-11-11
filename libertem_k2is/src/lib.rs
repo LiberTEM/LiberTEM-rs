@@ -17,7 +17,9 @@ use k2o::{
     acquisition::AcquisitionResult,
     block::{K2Block, K2ISBlock},
     events::{AcquisitionParams, AcquisitionSync},
-    frame::{K2Frame, K2ISFrame},
+    frame::K2Frame,
+    frame_is::K2ISFrame,
+    frame_summit::K2SummitFrame,
     tracing::{get_tracer, init_tracer},
     write::{DirectWriterBuilder, MMapWriterBuilder, WriterBuilder},
 };

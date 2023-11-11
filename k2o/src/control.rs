@@ -146,6 +146,7 @@ impl StateTracker {
                         params: params.clone(),
                     }),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
+                    EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
                 }
             }
             AcquisitionState::Armed { params } => {
@@ -185,6 +186,7 @@ impl StateTracker {
                     EventMsg::AcquisitionEnded => Ok(AcquisitionState::Idle),
                     EventMsg::CancelAcquisition => Ok(AcquisitionState::Idle),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
+                    EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
                 }
             }
             AcquisitionState::AcquisitionStarted { params, frame_id } => {
@@ -228,6 +230,7 @@ impl StateTracker {
                     }),
                     EventMsg::CancelAcquisition => Ok(AcquisitionState::Idle),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
+                    EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
                 }
             }
             AcquisitionState::AcquisitionFinishing {
@@ -271,6 +274,7 @@ impl StateTracker {
                     EventMsg::CancelAcquisition => Ok(AcquisitionState::Idle),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
                     EventMsg::ProcessingDone => Ok(AcquisitionState::Idle),
+                    EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
                 }
             }
         }

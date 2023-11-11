@@ -20,7 +20,7 @@ pub trait K2Block: Send {
     fn empty(first_frame_id: u32) -> Self;
     fn get_flags(&self) -> u8;
     fn sync_is_set(&self) -> bool {
-        return (self.get_flags() & 0x01) == 0x01;
+        (self.get_flags() & 0x01) == 0x01
     }
     fn get_sector_width(&self) -> u16;
     fn get_sector_height(&self) -> u16;
@@ -29,15 +29,16 @@ pub trait K2Block: Send {
     fn get_x_end(&self) -> u16;
     fn get_y_end(&self) -> u16;
     fn get_x_offset(&self) -> u16 {
-        return self.get_sector_width() * (self.get_sector_id() as u16);
+        self.get_sector_width() * (self.get_sector_id() as u16)
     }
     fn get_frame_id(&self) -> u32;
     fn get_sector_id(&self) -> u8;
     fn get_decoded_timestamp(&self) -> Instant;
-    fn validate(&self) -> ();
+    fn validate(&self);
 }
 
 // #[derive(Clone, Copy)]
+#[derive(Debug)]
 pub struct K2ISBlock {
     sync: u32, // should be constant 0xFFFF0055
     // padding1: [u8; 4],
@@ -78,7 +79,7 @@ impl K2ISBlock {
     /// NOTE: only meant for testing!
     pub fn empty_for_pos(x: u16, y: u16, frame_id: u32) -> K2ISBlock {
         let payload: Vec<u16> = vec![0; Self::DECODED_SIZE];
-        return K2ISBlock {
+        K2ISBlock {
             sync: 0xFFFF0055,
             version: 1,
             flags: 0x01,
@@ -94,15 +95,15 @@ impl K2ISBlock {
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
-        };
+        }
     }
 
     /// return a block for the given input data and specified position
     /// NOTE: not optimized for performance - creates a copy of the data
     /// only use for testing!
-    pub fn from_vec_and_pos(data: &Vec<u16>, x: u16, y: u16, frame_id: u32) -> K2ISBlock {
+    pub fn from_vec_and_pos(data: &[u16], x: u16, y: u16, frame_id: u32) -> K2ISBlock {
         let payload = data.to_vec(); // create an owned copy here
-        return K2ISBlock {
+        K2ISBlock {
             sync: 0xFFFF0055,
             version: 1,
             flags: 0x01,
@@ -118,7 +119,7 @@ impl K2ISBlock {
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
-        };
+        }
     }
 }
 
@@ -131,9 +132,9 @@ impl K2Block for K2ISBlock {
         // println!("{}", payload.len());
         // payload.fill(0);
         // println!("{}", payload.len());
-        decode::<{ Self::PACKET_SIZE }>(&bytes[..], &mut payload);
+        decode::<{ Self::PACKET_SIZE }>(bytes, &mut payload);
 
-        return K2ISBlock {
+        K2ISBlock {
             sync: decode_u32(&bytes[0..4]),
             version: bytes[8],
             flags: bytes[9],
@@ -149,11 +150,11 @@ impl K2Block for K2ISBlock {
             payload,
             sector_id,
             decode_timestamp: Instant::now(),
-        };
+        }
     }
 
     fn replace_with(&mut self, bytes: &[u8], sector_id: u8) {
-        decode::<{ Self::PACKET_SIZE }>(&bytes[..], &mut self.payload);
+        decode::<{ Self::PACKET_SIZE }>(bytes, &mut self.payload);
 
         self.sync = decode_u32(&bytes[0..4]);
         self.version = bytes[8];
@@ -176,18 +177,18 @@ impl K2Block for K2ISBlock {
         let width = self.pixel_x_end - self.pixel_x_start + 1;
         let view =
             ArrayView::from_shape((height as usize, width as usize), &self.payload[..]).unwrap();
-        return view;
+        view
     }
 
     fn as_vec(&self) -> &Vec<u16> {
-        return &self.payload;
+        &self.payload
     }
 
     /// return a dummy block, matching IS specs
     /// NOTE: only meant for testing!
     fn empty(first_frame_id: u32) -> Self {
         let payload: Vec<u16> = vec![0; Self::DECODED_SIZE];
-        return K2ISBlock {
+        K2ISBlock {
             sync: 0xFFFF0055,
             version: 1,
             flags: 0x01,
@@ -203,43 +204,43 @@ impl K2Block for K2ISBlock {
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
-        };
+        }
     }
 
     fn get_flags(&self) -> u8 {
-        return self.flags;
+        self.flags
     }
 
     fn get_sector_width(&self) -> u16 {
-        return self.width;
+        self.width
     }
 
     fn get_sector_height(&self) -> u16 {
-        return self.height;
+        self.height
     }
 
     fn get_x_start(&self) -> u16 {
-        return self.pixel_x_start;
+        self.pixel_x_start
     }
 
     fn get_y_start(&self) -> u16 {
-        return self.pixel_y_start;
+        self.pixel_y_start
     }
 
     fn get_x_end(&self) -> u16 {
-        return self.pixel_x_end;
+        self.pixel_x_end
     }
 
     fn get_y_end(&self) -> u16 {
-        return self.pixel_y_end;
+        self.pixel_y_end
     }
 
     fn get_frame_id(&self) -> u32 {
-        return self.frame_id;
+        self.frame_id
     }
 
     fn get_sector_id(&self) -> u8 {
-        return self.sector_id;
+        self.sector_id
     }
 
     const PACKET_SIZE: usize = 0x5758;
@@ -251,15 +252,16 @@ impl K2Block for K2ISBlock {
     const BLOCKS_PER_SECTOR: u8 = 32;
 
     fn get_decoded_timestamp(&self) -> Instant {
-        return self.decode_timestamp;
+        self.decode_timestamp
     }
 
-    fn validate(&self) -> () {
+    fn validate(&self) {
         assert_eq!(self.sync, 0xFFFF0055);
         assert_eq!(self.block_size, 0x5758)
     }
 }
 
+#[derive(Debug)]
 pub struct K2SummitBlock {
     sync: u32, // should be constant 0xFFFF0055
     // padding1: [u8; 4],
@@ -298,7 +300,7 @@ pub struct K2SummitBlock {
 impl K2SummitBlock {
     pub fn empty(frame_id: u32) -> Self {
         let payload: Vec<u16> = vec![0; Self::DECODED_SIZE];
-        return Self {
+        Self {
             sync: 0xFFFF0055,
             version: 1,
             flags: 0x01,
@@ -314,7 +316,7 @@ impl K2SummitBlock {
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
-        };
+        }
     }
 }
 
@@ -324,9 +326,9 @@ impl K2Block for K2SummitBlock {
         // FIXME: use MaybeUninit stuff from nightly?
         let mut payload = vec![0; Self::DECODED_SIZE];
 
-        decode_u16_vec::<{ Self::PACKET_SIZE }>(&bytes, &mut payload);
+        decode_u16_vec::<{ Self::PACKET_SIZE }>(bytes, &mut payload);
 
-        return Self {
+        Self {
             sync: decode_u32(&bytes[0..4]),
             version: bytes[8],
             flags: bytes[9],
@@ -342,11 +344,11 @@ impl K2Block for K2SummitBlock {
             payload,
             sector_id,
             decode_timestamp: Instant::now(),
-        };
+        }
     }
 
     fn replace_with(&mut self, bytes: &[u8], sector_id: u8) {
-        decode_u16_vec::<{ Self::PACKET_SIZE }>(&bytes, &mut self.payload);
+        decode_u16_vec::<{ Self::PACKET_SIZE }>(bytes, &mut self.payload);
 
         self.sync = decode_u32(&bytes[0..4]);
         self.version = bytes[8];
@@ -369,85 +371,85 @@ impl K2Block for K2SummitBlock {
         let width = self.pixel_x_end - self.pixel_x_start + 1;
         let view =
             ArrayView::from_shape((height as usize, width as usize), &self.payload[..]).unwrap();
-        return view;
+        view
     }
 
     fn as_vec(&self) -> &Vec<u16> {
-        return &self.payload;
+        &self.payload
     }
 
     /// return a dummy block
     /// NOTE: only meant for testing!
     fn empty(first_frame_id: u32) -> Self {
         let payload: Vec<u16> = vec![0; Self::DECODED_SIZE];
-        return K2SummitBlock {
+        K2SummitBlock {
             sync: 0xFFFF0055,
             version: 1,
             flags: 0x01,
             block_count: 0,
-            width: 256,
-            height: 1860,
+            width: 512,
+            height: 3840,
             frame_id: first_frame_id,
             pixel_x_start: 0,
             pixel_y_start: 0,
-            pixel_x_end: 15,
-            pixel_y_end: 929,
-            block_size: 0x5758,
+            pixel_x_end: 31,
+            pixel_y_end: 767,
+            block_size: 0xc028,
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
-        };
+        }
     }
 
     fn get_flags(&self) -> u8 {
-        return self.flags;
+        self.flags
     }
 
     fn get_sector_width(&self) -> u16 {
-        return self.width;
+        self.width
     }
 
     fn get_sector_height(&self) -> u16 {
-        return self.height;
+        self.height
     }
 
     fn get_x_start(&self) -> u16 {
-        return self.pixel_x_start;
+        self.pixel_x_start
     }
 
     fn get_y_start(&self) -> u16 {
-        return self.pixel_y_start;
+        self.pixel_y_start
     }
 
     fn get_x_end(&self) -> u16 {
-        return self.pixel_x_end;
+        self.pixel_x_end
     }
 
     fn get_y_end(&self) -> u16 {
-        return self.pixel_y_end;
+        self.pixel_y_end
     }
 
     fn get_frame_id(&self) -> u32 {
-        return self.frame_id;
+        self.frame_id
     }
 
     fn get_sector_id(&self) -> u8 {
-        return self.sector_id;
+        self.sector_id
     }
 
     fn get_decoded_timestamp(&self) -> Instant {
-        return self.decode_timestamp;
+        self.decode_timestamp
     }
 
     const PACKET_SIZE: usize = 0xc028;
-    const DECODED_SIZE: usize = Self::PACKET_SIZE;
+    const DECODED_SIZE: usize = 0xc000;
     const BLOCK_WIDTH: usize = 32;
     const BLOCK_HEIGHT: usize = 768;
     const SECTOR_WIDTH: usize = 512;
     const SECTOR_HEIGHT: usize = 3840;
-    const BLOCKS_PER_SECTOR: u8 = 80;
+    const BLOCKS_PER_SECTOR: u8 = 80; // 3840/768 = 5; 512/32 = 16
 
-    fn validate(&self) -> () {
+    fn validate(&self) {
         assert_eq!(self.sync, 0xFFFF0055);
         assert_eq!(self.block_size as usize, Self::PACKET_SIZE);
     }
@@ -466,10 +468,10 @@ pub struct BlockRouteInfo {
 
 impl BlockRouteInfo {
     pub fn new<B: K2Block>(block: &B) -> BlockRouteInfo {
-        return BlockRouteInfo {
+        BlockRouteInfo {
             frame_id: block.get_frame_id(),
             sector_id: block.get_sector_id(),
-        };
+        }
     }
     pub fn get_frame_id(&self) -> u32 {
         self.frame_id

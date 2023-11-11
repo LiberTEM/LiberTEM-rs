@@ -19,7 +19,8 @@ use k2o::control::control_loop;
 use k2o::events::{AcquisitionParams, AcquisitionSize, AcquisitionSync, Events, MessagePump};
 use k2o::events::{ChannelEventBus, EventBus, EventMsg};
 use k2o::frame::K2Frame;
-use k2o::frame::K2ISFrame;
+use k2o::frame_is::K2ISFrame;
+use k2o::frame_summit::K2SummitFrame;
 // use k2o::frame::K2SummitFrame;
 use k2o::helpers::CPU_AFF_WRITER;
 use k2o::helpers::{recv_and_get_init, set_cpu_affinity};
@@ -48,7 +49,8 @@ fn start_threads<
     // make sure this is created before the other threads are started, so we don't
     // miss any events!
     let shm_path = Path::new(&args.shm_path);
-    let shm = SharedSlabAllocator::new(1000, 2048 * 1860 * 2, true, shm_path).expect("create shm");
+    let slot_size: usize = F::get_size_bytes();
+    let shm = SharedSlabAllocator::new(1000, slot_size, true, shm_path).expect("create shm");
 
     crossbeam::scope(|s| {
         let (assembly_tx, assembly_rx) = unbounded::<(B, BlockRouteInfo)>();
@@ -173,9 +175,10 @@ fn start_threads<
 
         events.send(&EventMsg::Arm {
             params: AcquisitionParams {
-                size: AcquisitionSize::NumFrames(1800),
+                size: AcquisitionSize::NumFrames(40),
                 // size: AcquisitionSize::Continuous,
-                sync: AcquisitionSync::WaitForSync,
+                // sync: AcquisitionSync::WaitForSync,
+                sync: AcquisitionSync::Immediately,
                 binning: k2o::events::Binning::Bin1x,
             },
         });

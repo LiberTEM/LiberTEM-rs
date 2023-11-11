@@ -224,6 +224,11 @@ pub enum EventMsg {
     /// this successfully finishes the acquisition.
     CancelAcquisition,
 
+    /// Generic fatal acquisition error
+    AcquisitionError {
+        msg: String,
+    },
+
     Shutdown,
 }
 
