@@ -50,9 +50,7 @@ impl<F: K2Frame> PartialEq for FrameWithIdx<F> {
 
 impl<F: K2Frame> PartialOrd for FrameWithIdx<F> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.get_frame()
-            .get_frame_id()
-            .partial_cmp(&other.get_frame().get_frame_id())
+        Some(self.cmp(other))
     }
 }
 
