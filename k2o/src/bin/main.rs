@@ -26,6 +26,7 @@ use k2o::helpers::{recv_and_get_init, set_cpu_affinity};
 use k2o::recv::recv_decode_loop;
 use k2o::tracing::init_tracer;
 use k2o::write::{DirectWriterBuilder, MMapWriterBuilder, WriterBuilder};
+use log::info;
 use tokio::runtime::Runtime;
 
 #[global_allocator]
@@ -152,14 +153,14 @@ fn start_threads<
                             Ok(AcquisitionResult::DoneAborted { .. })
                             | Ok(AcquisitionResult::DoneSuccess { .. })
                             | Ok(AcquisitionResult::DoneError) => {
-                                eprintln!("retire thread closing");
+                                info!("retire thread closing");
                                 break;
                             }
                             Err(RecvTimeoutError::Timeout) => {
                                 continue;
                             }
                             Err(RecvTimeoutError::Disconnected) => {
-                                eprintln!("retire thread closing");
+                                info!("retire thread closing");
                                 break;
                             }
                         }
@@ -188,6 +189,11 @@ pub fn main() {
     let args = Args::parse();
     let thread_builder = std::thread::Builder::new();
 
+    let env = env_logger::Env::default()
+        .filter_or("LIBERTEM_K2IS_LOG_LEVEL", "info")
+        .write_style_or("LIBERTEM_K2IS_LOG_STYLE", "always");
+    env_logger::init_from_env(env);
+
     // for waiting until tracing is initialized:
     let barrier = Arc::new(Barrier::new(2));
     let barrier_bg = Arc::clone(&barrier);
@@ -212,7 +218,7 @@ pub fn main() {
 
     let mode = match args.mode {
         None => {
-            println!("auto-initializing mode...");
+            info!("auto-initializing mode...");
             let packet_size = recv_and_get_init() as usize;
             match packet_size {
                 K2ISBlock::PACKET_SIZE => Mode::IS,
@@ -223,13 +229,13 @@ pub fn main() {
         Some(mode) => mode,
     };
 
-    println!("writing to {}", args.write_to);
+    info!("writing to {}", args.write_to);
     let events: Events = ChannelEventBus::new();
     let pump = MessagePump::new(&events);
 
     match mode {
         Mode::IS => {
-            println!("IS mode...");
+            info!("IS mode...");
             start_threads::<{ K2ISBlock::PACKET_SIZE }, K2ISFrame, K2ISBlock>(
                 &args,
                 &events,
@@ -237,11 +243,12 @@ pub fn main() {
             );
         }
         Mode::Summit => {
-            panic!("panic!");
-            // println!("Summit mode...");
-            // start_threads::<{ K2SummitBlock::PACKET_SIZE }, K2SummitFrame, K2SummitBlock>(
-            //     &args, &events,
-            // );
+            info!("Summit mode...");
+            start_threads::<{ K2SummitBlock::PACKET_SIZE }, K2SummitFrame, K2SummitBlock>(
+                &args,
+                &events,
+                &Some(pump),
+            );
         }
     }
 }
