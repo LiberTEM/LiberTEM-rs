@@ -214,8 +214,8 @@ impl SharedSlabAllocator {
                 data_ptr: free_list_ptr,
             };
             let j = std::thread::spawn(move || {
-                let b = b;
-                let _mtx = unsafe { Mutex::from_existing(b.mutex_ptr, b.data_ptr) };
+                let b2 = b;
+                let _mtx = unsafe { Mutex::from_existing(b2.mutex_ptr, b2.data_ptr) };
                 // we are done initializing...
                 init_chan_s.send(()).unwrap();
                 // so we just keep the mutex open and wait until we are cleaned up:
