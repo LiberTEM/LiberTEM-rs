@@ -35,6 +35,6 @@ pub struct Args {
     pub disable_reuse: bool,
 
     /// Shared memory socket path
-    #[clap(short = 's', long, default_value = "/tmp/k2is-socket-todo")]
+    #[clap(short = 's', long, default_value = "/run/user/1000/k2is-shm-socket")]
     pub shm_path: String,
 }

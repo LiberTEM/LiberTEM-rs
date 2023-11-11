@@ -39,7 +39,7 @@ pub const HEADER_SIZE: usize = 40;
 /// * `bytes` - the bytes that should be decoded. Should be `PACKET_SIZE` long (`0x5758` or `0xc028`)
 /// * `out` - the slice where the decoded integers should be written to. Should be `DECODED_SIZE` long (`14880`).
 ///
-pub fn decode<const PACKET_SIZE: usize>(bytes: &[u8], out: &mut [u16]) -> () {
+pub fn decode<const PACKET_SIZE: usize>(bytes: &[u8], out: &mut [u16]) {
     // make sure input/output are bounded to PACKET_SIZE and DECODED_SIZE
     //const DECODED_SIZE: usize = (PACKET_SIZE - HEADER_SIZE) * 2 / 3;
     let input = &bytes[..PACKET_SIZE];
@@ -72,8 +72,7 @@ pub fn decode_map<D, F, const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
     bytes: &[u8],
     out: &mut [D],
     f: F,
-) -> ()
-where
+) where
     F: Fn(u16) -> D,
 {
     // make sure input/output are bounded to PACKET_SIZE and DECODED_SIZE
@@ -106,8 +105,7 @@ where
 pub fn decode_converted<D, const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
     bytes: &[u8],
     out: &mut [D],
-) -> ()
-where
+) where
     u16: AsPrimitive<D>,
     D: Copy + 'static,
 {
@@ -142,7 +140,7 @@ where
 pub fn decode_unrolled<const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
     bytes: &[u8],
     out: &mut [u16],
-) -> () {
+) {
     let in_chunk_size = 3 * 3 * 16;
     let out_chunk_size = 3 * 2 * 16;
 
@@ -157,10 +155,10 @@ pub fn decode_unrolled<const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
 
     if true {
         assert_eq!(bytes.len() % PACKET_SIZE, 0);
-        assert_eq!(&decoded.len() % DECODED_SIZE, 0);
+        assert_eq!(decoded.len() % DECODED_SIZE, 0);
 
         assert_eq!((bytes.len() - HEADER_SIZE) % in_chunk_size, 0);
-        assert_eq!(&decoded.len() % out_chunk_size, 0);
+        assert_eq!(decoded.len() % out_chunk_size, 0);
     }
 
     let in_chunks_outer = input[HEADER_SIZE..].chunks_exact(in_chunk_size);
@@ -182,22 +180,22 @@ pub fn decode_unrolled<const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
 }
 
 pub fn decode_u32(bytes: &[u8]) -> u32 {
-    return u32::from_be_bytes(bytes.try_into().unwrap());
+    u32::from_be_bytes(bytes.try_into().unwrap())
 }
 
 pub fn decode_u16(bytes: &[u8]) -> u16 {
-    return u16::from_be_bytes(bytes.try_into().unwrap());
+    u16::from_be_bytes(bytes.try_into().unwrap())
 }
 
-pub fn decode_u16_vec<const PACKET_SIZE: usize>(bytes: &[u8], out: &mut Vec<u16>) {
+pub fn decode_u16_vec<const PACKET_SIZE: usize>(bytes: &[u8], out: &mut [u16]) {
     for i in 0..(PACKET_SIZE - HEADER_SIZE) / 2 {
-        let in_bytes = &bytes[i * 2..i * 2 + 2];
-        out[i] = decode_u16(&in_bytes);
+        let in_bytes = &bytes[HEADER_SIZE + i * 2..HEADER_SIZE + i * 2 + 2];
+        out[i] = decode_u16(in_bytes);
     }
 }
 
 pub fn decode_packet_size(bytes: &[u8]) -> u32 {
-    return decode_u32(&bytes[36..40]);
+    decode_u32(&bytes[36..40])
 }
 
 /// Encode the u16 values from `inp` into 12 bit "little endian" encoding.
@@ -207,7 +205,7 @@ pub fn decode_packet_size(bytes: &[u8]) -> u32 {
 /// * `inp` - The input integers
 /// * `out` - A mutable byte slice where the encoded values will be written
 ///
-pub fn encode(inp: &Vec<u16>, out: &mut [u8]) -> () {
+pub fn encode(inp: &Vec<u16>, out: &mut [u8]) {
     // pre-condition: out_chunks should have no remainder
     assert_eq!(out.len() % 3, 0);
     // pre-condition: output size should be 3/2 of input size
@@ -245,7 +243,7 @@ mod tests {
     fn make_test_data() -> Vec<u16> {
         let mut original_values: Vec<u16> = Vec::new();
         original_values.extend((0u16..=0xFFF).cycle().take(DECODED_SIZE));
-        return original_values;
+        original_values
     }
 
     #[test]
@@ -253,8 +251,8 @@ mod tests {
         let mut original_values: Vec<u16> = Vec::new();
         original_values.extend([0xABC, 0xDEF].iter().copied());
         let mut encoded: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
-        let mut encoded_used = &mut encoded[40..43];
-        encode(&original_values, &mut encoded_used);
+        let encoded_used = &mut encoded[40..43];
+        encode(&original_values, encoded_used);
 
         println!("{:03X?}", &original_values);
         println!("{:02X?}", &encoded_used);
@@ -272,8 +270,8 @@ mod tests {
         let original_values = make_test_data();
 
         let mut encoded: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
-        let mut encoded_used = &mut encoded[40..];
-        encode(&original_values, &mut encoded_used);
+        let encoded_used = &mut encoded[40..];
+        encode(&original_values, encoded_used);
 
         println!("{:03X?}", &original_values[..16]); // arbitrary cut-off
         println!("{:02X?}", &encoded_used[..24]); // not-so-arbitrary cut-off
@@ -291,8 +289,8 @@ mod tests {
         let original_values = make_test_data();
 
         let mut encoded: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
-        let mut encoded_used = &mut encoded[40..];
-        encode(&original_values, &mut encoded_used);
+        let encoded_used = &mut encoded[40..];
+        encode(&original_values, encoded_used);
 
         println!("{:03X?}", &original_values);
         println!("{:02X?}", &encoded_used);
@@ -310,8 +308,8 @@ mod tests {
         let original_values = make_test_data();
 
         let mut encoded: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
-        let mut encoded_used = &mut encoded[40..];
-        encode(&original_values, &mut encoded_used);
+        let encoded_used = &mut encoded[40..];
+        encode(&original_values, encoded_used);
 
         println!("{:03X?}", &original_values);
         println!("{:02X?}", &encoded_used);
@@ -329,8 +327,8 @@ mod tests {
         let original_values = make_test_data();
 
         let mut encoded: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
-        let mut encoded_used = &mut encoded[40..];
-        encode(&original_values, &mut encoded_used);
+        let encoded_used = &mut encoded[40..];
+        encode(&original_values, encoded_used);
 
         println!("{:03X?}", &original_values);
         println!("{:02X?}", &encoded_used);
@@ -349,8 +347,8 @@ mod tests {
         let original_values = make_test_data();
 
         let mut encoded: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
-        let mut encoded_used = &mut encoded[40..];
-        encode(&original_values, &mut encoded_used);
+        let encoded_used = &mut encoded[40..];
+        encode(&original_values, encoded_used);
 
         println!("{:03X?}", &original_values);
         println!("{:02X?}", &encoded_used);

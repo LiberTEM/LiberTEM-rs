@@ -128,7 +128,12 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
                     // make sure we don't consume all available memory:
                     panic!("too many blocks in assembly_channel, bailing out");
                 }
-                assembly_channel.send((block, route_info)).unwrap();
+                if assembly_channel.send((block, route_info)).is_err() {
+                    events.send(&EventMsg::AcquisitionError {
+                        msg: "failed to send to assembly threads".to_string(),
+                    });
+                    break;
+                }
             }
             RecvState::Idle | RecvState::WaitForSync => {
                 // recycle blocks directly if we don't forward them to the frame

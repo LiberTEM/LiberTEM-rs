@@ -237,7 +237,11 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
                 Ok((block, block_route)) => {
                     let frame_id = block_route.get_frame_id();
                     let chan = worker_channels[(frame_id as usize) % pool_size].clone();
-                    chan.send(block).unwrap();
+                    if chan.send(block).is_err() {
+                        eprintln!("assembly thread died, stopping");
+                        stop_event.store(true, Ordering::Relaxed);
+                        break;
+                    }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     stop_event.store(true, Ordering::Relaxed);
@@ -271,8 +275,8 @@ mod tests {
     use crate::decode::HEADER_SIZE;
     use crate::events::Binning;
     use crate::frame::FrameForWriting;
-    use crate::frame::K2ISFrame;
-    use crate::frame::K2ISFrameForWriting;
+    use crate::frame_is::K2ISFrame;
+    use crate::frame_is::K2ISFrameForWriting;
 
     use super::K2Frame;
 
