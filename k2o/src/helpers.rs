@@ -1,5 +1,6 @@
 use std::{cmp, fs::File, os::unix::prelude::AsRawFd, time::Duration};
 
+use log::info;
 use ndarray::Ix;
 use nix::{
     fcntl::{fallocate, FallocateFlags},
@@ -40,7 +41,7 @@ pub fn preallocate(filename: &str, bytes_per_frame: usize, num_frames: usize, mo
         .write(true)
         .open(filename)
         .unwrap();
-    let length = bytes_per_frame * num_frames as usize;
+    let length = bytes_per_frame * num_frames;
     let mut flags = FallocateFlags::empty();
     if mode == AllocateMode::AllocateOnly {
         flags.insert(FallocateFlags::FALLOC_FL_KEEP_SIZE);
@@ -65,7 +66,7 @@ pub fn recv_single<const PACKET_SIZE: usize, B: K2Block>(sector_id: u8) -> B {
     let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
     let (number_of_bytes, _src_addr) = socket.recv_from(&mut buf).expect("recv_from failed");
     assert_eq!(number_of_bytes, PACKET_SIZE);
-    return B::from_bytes(&buf, sector_id);
+    B::from_bytes(&buf, sector_id)
 }
 
 ///
@@ -75,12 +76,17 @@ pub fn recv_and_get_init() -> u32 {
     // finding the PACKET_SIZE: we just have a look at the first packet from the first sector
     // we can't use the normal decoding in K2ISBlock.from_bytes here, because *drumroll* we don't know
     // the size yet :)
-    const PORT: u32 = 2001;
-    let socket = create_mcast_socket(PORT, "225.1.1.1", "192.168.10.99");
+    const PORT: u32 = 2005;
+    let group = "225.1.1.1";
+    let local = "192.168.10.99";
+    let socket = create_mcast_socket(PORT, group, local);
+    info!("created multicast socket for group {group} local {local} port {PORT}");
     let mut buf: [u8; HEADER_SIZE] = [0; HEADER_SIZE];
     let (number_of_bytes, _src_addr) = socket.recv_from(&mut buf).expect("recv_from failed");
+    info!("got initial packet");
+    info!("initial packet: {buf:?}");
     assert_eq!(number_of_bytes, HEADER_SIZE);
-    return decode_packet_size(&buf);
+    decode_packet_size(&buf)
 }
 
 pub fn make_realtime(prio: u32) -> Result<u32, Box<dyn std::error::Error>> {
