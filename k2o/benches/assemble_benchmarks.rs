@@ -5,7 +5,7 @@ use criterion::Throughput;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use k2o::block::K2Block;
-use k2o::block::K2ISBlock;
+use k2o::block_is::K2ISBlock;
 use k2o::frame::K2Frame;
 use k2o::frame_is::K2ISFrame;
 

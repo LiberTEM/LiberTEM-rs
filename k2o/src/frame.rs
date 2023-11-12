@@ -1,10 +1,9 @@
 use std::{ops::Range, time::Instant};
 
 use ipc_test::{SharedSlabAllocator, Slot};
-use log::info;
 use ndarray::{s, ArrayView2, ArrayViewMut2};
 
-use crate::{block::K2Block, events::Binning, helpers::Shape2};
+use crate::{block::K2Block, events::Binning, helpers::Shape2, result_frame::ResultFrame};
 
 pub trait FrameForWriting: Sized {
     const FRAME_WIDTH: usize;
@@ -144,7 +143,7 @@ pub trait FrameForWriting: Sized {
     }
 }
 
-pub trait K2Frame: Send + Sized {
+pub trait K2Frame: Send + Sized + ResultFrame {
     const FRAME_WIDTH: usize;
     const FRAME_HEIGHT: usize;
 

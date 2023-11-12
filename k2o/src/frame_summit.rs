@@ -3,10 +3,12 @@ use std::{ops::Range, time::Instant};
 use ipc_test::{SharedSlabAllocator, SlotForWriting, SlotInfo};
 
 use crate::{
-    block::{K2Block, K2SummitBlock},
+    block::K2Block,
+    block_summit::K2SummitBlock,
     events::Binning,
     frame::{FrameForWriting, K2Frame, SubFrame},
     helpers::Shape2,
+    result_frame::ResultFrame,
 };
 
 pub struct K2SummitFrame {
@@ -189,3 +191,5 @@ impl K2Frame for K2SummitFrame {
         shm.get(self.payload.slot_idx)
     }
 }
+
+impl ResultFrame for K2SummitFrame {}

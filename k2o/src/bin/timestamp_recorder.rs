@@ -6,7 +6,9 @@ use std::{
 use clap::Parser;
 use crossbeam_channel::unbounded;
 use k2o::{
-    block::{BlockRouteInfo, K2Block, K2ISBlock, K2SummitBlock},
+    block::{BlockRouteInfo, K2Block},
+    block_is::K2ISBlock,
+    block_summit::K2SummitBlock,
     events::{
         AcquisitionParams, AcquisitionSize, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
         Events,

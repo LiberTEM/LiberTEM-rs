@@ -4,10 +4,12 @@ use ipc_test::{SharedSlabAllocator, Slot, SlotForWriting, SlotInfo};
 use itertools::Itertools;
 
 use crate::{
-    block::{K2Block, K2ISBlock},
+    block::K2Block,
+    block_is::K2ISBlock,
     events::Binning,
     frame::{FrameForWriting, K2Frame, SubFrame},
     helpers::Shape2,
+    result_frame::ResultFrame,
 };
 
 pub struct K2ISFrameForWriting {
@@ -224,3 +226,5 @@ impl K2Frame for K2ISFrame {
         }
     }
 }
+
+impl ResultFrame for K2ISFrame {}

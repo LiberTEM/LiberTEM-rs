@@ -11,6 +11,7 @@ use k2o::events::{AcquisitionParams, ChannelEventBus, EventBus, EventMsg, Events
 use k2o::frame::K2Frame;
 use k2o::helpers::{set_cpu_affinity, CPU_AFF_WRITER};
 use k2o::recv::recv_decode_loop;
+use k2o::result_frame::ResultFrame;
 use k2o::tracing::get_tracer;
 use k2o::write::WriterBuilder;
 use opentelemetry::trace::Tracer;
@@ -198,17 +199,6 @@ pub struct AcquisitionRuntime<F: K2Frame> {
     main_events_tx: Sender<EventMsg>,
     main_events_rx: Receiver<EventMsg>,
 
-    //
-    // To be able to have a circular data flow, we need to have access to two
-    // channels:
-    //
-    // 1) Receiving frames after they have been written to disk
-    // 2) Sending frames back into circulation (basically "deallocating" them)
-    //
-    // As we can't easily reach into the data structures created in the
-    // background thread, we create them outside and pass the other end of the
-    // channel down.
-    // FIXME: make these generic over frame type!
     /// This is where an "external" frame consumer gets their frames:
     rx_writer_to_consumer: Receiver<AcquisitionResult<F>>,
 
@@ -412,7 +402,7 @@ impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
             while !join_handle.is_finished() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(100));
             }
-            return if !join_handle.is_finished() {
+            if !join_handle.is_finished() {
                 self.bg_thread = Some(join_handle);
                 Err(RuntimeError::Timeout)
             } else {
@@ -420,7 +410,7 @@ impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
                     .join()
                     .expect("could not join background thread!");
                 Ok(())
-            };
+            }
         } else {
             Ok(()) // join on non-running thread is not an error
         }

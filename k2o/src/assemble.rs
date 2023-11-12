@@ -271,7 +271,7 @@ mod tests {
 
     use crate::assemble::PendingFrames;
     use crate::block::K2Block;
-    use crate::block::K2ISBlock;
+    use crate::block_is::K2ISBlock;
     use crate::decode::HEADER_SIZE;
     use crate::events::Binning;
     use crate::frame::FrameForWriting;

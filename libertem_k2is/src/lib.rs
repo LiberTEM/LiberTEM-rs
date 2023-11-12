@@ -15,7 +15,8 @@ use bgthread::{AcquisitionRuntime, AddrConfig, RuntimeError};
 
 use k2o::{
     acquisition::AcquisitionResult,
-    block::{K2Block, K2ISBlock},
+    block::K2Block,
+    block_is::K2ISBlock,
     events::{AcquisitionParams, AcquisitionSync},
     frame::K2Frame,
     frame_is::K2ISFrame,
