@@ -1,7 +1,7 @@
 use std::{io::ErrorKind, time::Duration};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
-use log::{error, info};
+use log::{error, info, warn};
 
 use crate::{
     block::{BlockRouteInfo, K2Block},
@@ -53,16 +53,16 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
 
     let mut state = RecvState::Idle;
 
-    println!("Listening on {local_addr}:{port} for sector {sector_id}");
+    info!("Listening on {local_addr}:{port} for sector {sector_id}");
 
     let aff = CPU_AFF_DECODE_START + sector_id as usize;
-    println!("Pinning to CPU {aff} for sector {sector_id}");
+    info!("Pinning to CPU {aff} for sector {sector_id}");
     set_cpu_affinity(aff);
 
     loop {
         match events_rx.try_recv() {
             Ok(EventMsg::ArmSectors { params }) => {
-                println!("sector {sector_id} waiting for acquisition");
+                info!("sector {sector_id} waiting for acquisition");
                 state = match params.sync {
                     AcquisitionSync::Immediately => RecvState::WaitForNext,
                     AcquisitionSync::WaitForSync => RecvState::WaitForSync,
@@ -122,11 +122,11 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
                 let route_info = BlockRouteInfo::new(&block);
                 let l = assembly_channel.len();
                 if l > 400 && l % 100 == 0 {
-                    println!("assembly_channel is backed up, len={l} sector={sector_id}");
+                    warn!("assembly_channel is backed up, len={l} sector={sector_id}");
                 }
                 if l > 10000 {
                     // make sure we don't consume all available memory:
-                    panic!("too many blocks in assembly_channel, bailing out");
+                    error!("too many blocks in assembly_channel, bailing out");
                 }
                 if assembly_channel.send((block, route_info)).is_err() {
                     events.send(&EventMsg::AcquisitionError {

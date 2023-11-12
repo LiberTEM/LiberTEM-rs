@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvError, Select, SelectedOperation, Sender};
 use human_bytes::human_bytes;
 use ipc_test::SharedSlabAllocator;
+use log::{info, warn};
 use opentelemetry::{
     global,
     trace::{self, TraceContextExt, Tracer},
@@ -326,8 +327,8 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                 String::from("")
             }
         };
-        println!("frame counter={} frame_id={} dropped={} dropped_outside={}, latency first block -> frame written={:?} channel.len()={} write throughput={}/s fps={}",
-                self.counter, frame.get_frame_id(), self.dropped, self.dropped_outside, latency, channel_size, throughput, fps);
+        info!("frame counter={} frame_id={} dropped={} dropped_outside={}, latency first block -> frame written={:?} channel.len()={} write throughput={}/s fps={}",
+               self.counter, frame.get_frame_id(), self.dropped, self.dropped_outside, latency, channel_size, throughput, fps);
 
         self.ref_ts = Instant::now();
         self.ref_bytes_written = 0;
@@ -393,7 +394,7 @@ pub fn acquisition_loop<F: K2Frame>(
                                         frame_id,
                                         params: params.clone(),
                                     });
-                                    println!("acquisition started, first frame_id = {}", frame_id);
+                                    info!("acquisition started, first frame_id = {}", frame_id);
 
                                     Context::current()
                                         .span()
@@ -408,7 +409,7 @@ pub fn acquisition_loop<F: K2Frame>(
                                         frame_id,
                                     );
                                     let write_result = fh.handle_frames();
-                                    eprintln!("handle_frames done.");
+                                    info!("handle_frames done.");
                                     events.send(&EventMsg::AcquisitionEnded {});
                                     Context::current()
                                         .span()
@@ -437,7 +438,7 @@ pub fn acquisition_loop<F: K2Frame>(
                                     frame_id: _,
                                 } => {
                                     // we are only interested in the event from the first sector that starts the acquisition:
-                                    println!(
+                                    warn!(
                                         "ignoring AcuisitionStartedSector in AcquisitionStarted state"
                                     );
                                 }

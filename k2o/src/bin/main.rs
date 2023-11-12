@@ -13,15 +13,15 @@ use k2o::acquisition::{acquisition_loop, AcquisitionResult};
 use k2o::args::{Args, Mode, WriteMode};
 use k2o::assemble::{assembler_main, AssemblyResult};
 use k2o::block::BlockRouteInfo;
-use k2o::block::K2SummitBlock;
-use k2o::block::{K2Block, K2ISBlock};
+use k2o::block::K2Block;
+use k2o::block_is::K2ISBlock;
+use k2o::block_summit::K2SummitBlock;
 use k2o::control::control_loop;
 use k2o::events::{AcquisitionParams, AcquisitionSize, AcquisitionSync, Events, MessagePump};
 use k2o::events::{ChannelEventBus, EventBus, EventMsg};
 use k2o::frame::K2Frame;
 use k2o::frame_is::K2ISFrame;
 use k2o::frame_summit::K2SummitFrame;
-// use k2o::frame::K2SummitFrame;
 use k2o::helpers::CPU_AFF_WRITER;
 use k2o::helpers::{recv_and_get_init, set_cpu_affinity};
 use k2o::recv::recv_decode_loop;
@@ -34,7 +34,7 @@ use tokio::runtime::Runtime;
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 fn start_threads<
-    const PACKET_SIZE: usize, // FIXME: use B::PACKET_SIZE here
+    const PACKET_SIZE: usize, // FIXME: use B::PACKET_SIZE instead
     F: K2Frame,
     B: K2Block,
 >(
@@ -50,7 +50,10 @@ fn start_threads<
     // miss any events!
     let shm_path = Path::new(&args.shm_path);
     let slot_size: usize = F::get_size_bytes();
+
+    info!("Initializing shared memory...");
     let shm = SharedSlabAllocator::new(1000, slot_size, true, shm_path).expect("create shm");
+    info!("Shared memory initialized.");
 
     crossbeam::scope(|s| {
         let (assembly_tx, assembly_rx) = unbounded::<(B, BlockRouteInfo)>();
@@ -175,10 +178,10 @@ fn start_threads<
 
         events.send(&EventMsg::Arm {
             params: AcquisitionParams {
-                size: AcquisitionSize::NumFrames(40),
+                size: AcquisitionSize::NumFrames(1300),
                 // size: AcquisitionSize::Continuous,
-                // sync: AcquisitionSync::WaitForSync,
-                sync: AcquisitionSync::Immediately,
+                sync: AcquisitionSync::WaitForSync,
+                // sync: AcquisitionSync::Immediately,
                 binning: k2o::events::Binning::Bin1x,
             },
         });

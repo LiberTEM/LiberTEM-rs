@@ -5,6 +5,7 @@ use std::{
 };
 
 use crossbeam_channel::{unbounded, Receiver, SendError, Sender};
+use log::info;
 
 pub trait EventBus<T: Clone + Debug> {
     /// Send `msg` to all subscribers
@@ -45,7 +46,7 @@ impl<T: Clone + Debug> EventBus<T> for ChannelEventBus<T> {
     }
 
     fn send(&self, msg: &T) {
-        println!("Event: {:?}", msg);
+        info!("Event: {:?}", msg);
         // FIXME: don't panic
         for (tx, _) in self.channels.lock().unwrap().iter() {
             tx.send(msg.clone()).unwrap();

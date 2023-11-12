@@ -1,7 +1,7 @@
 extern crate crossbeam;
 extern crate crossbeam_channel;
 
-use k2o::block::{K2Block, K2ISBlock};
+use k2o::{block::K2Block, block_is::K2ISBlock};
 use std::net::Ipv4Addr;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -35,7 +35,7 @@ async fn create_mcast_socket_tokio(port: u32, group: &str, local: &str) -> tokio
             );
         });
 
-    return socket;
+    socket
 }
 
 pub async fn recv_decode_loop<const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
@@ -46,7 +46,7 @@ pub async fn recv_decode_loop<const PACKET_SIZE: usize, const DECODED_SIZE: usiz
     let join_handles = ids.map(|id| {
         let port: u32 = 2001 + id;
         // let cpu = (10 + id) as usize;
-        return tokio::spawn(async move {
+        tokio::spawn(async move {
             /*let mut cpu_set = CpuSet::new();
             cpu_set.set(cpu).expect("could not set CPU affinity!");
             nix::sched::sched_setaffinity(Pid::from_raw(0), &cpu_set)
@@ -76,7 +76,7 @@ pub async fn recv_decode_loop<const PACKET_SIZE: usize, const DECODED_SIZE: usiz
                 */
             }
             // return (); // not really, because it will never execute because of the infinite loop above
-        });
+        })
     });
     return Vec::from_iter(join_handles);
 }
