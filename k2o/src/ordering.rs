@@ -3,21 +3,24 @@ use std::{
     collections::{BinaryHeap, HashSet},
 };
 
-use crate::{acquisition::AcquisitionResult, frame::K2Frame};
+use crate::{
+    acquisition::AcquisitionResult,
+    frame::{GenericFrame, K2Frame},
+};
 
-pub enum FrameOrderingResult<F: K2Frame> {
+pub enum FrameOrderingResult {
     Buffered,
     Dropped,
-    NextFrame(FrameWithIdx<F>),
+    NextFrame(FrameWithIdx),
 }
 
-pub enum FrameWithIdx<F: K2Frame> {
-    Frame(F, u32),
-    DroppedFrame(F, u32),
+pub enum FrameWithIdx {
+    Frame(GenericFrame, u32),
+    DroppedFrame(GenericFrame, u32),
 }
 
-impl<F: K2Frame> Into<AcquisitionResult<F>> for FrameWithIdx<F> {
-    fn into(self) -> AcquisitionResult<F> {
+impl Into<AcquisitionResult<GenericFrame>> for FrameWithIdx {
+    fn into(self) -> AcquisitionResult<GenericFrame> {
         match self {
             FrameWithIdx::Frame(frame, frame_idx) => AcquisitionResult::Frame(frame, frame_idx),
             FrameWithIdx::DroppedFrame(frame, frame_idx) => {
@@ -27,8 +30,8 @@ impl<F: K2Frame> Into<AcquisitionResult<F>> for FrameWithIdx<F> {
     }
 }
 
-impl<F: K2Frame> FrameWithIdx<F> {
-    fn get_frame(&self) -> &F {
+impl FrameWithIdx {
+    fn get_frame(&self) -> &GenericFrame {
         match self {
             FrameWithIdx::Frame(frame, _idx) => frame,
             FrameWithIdx::DroppedFrame(frame, _idx) => frame,
@@ -42,21 +45,21 @@ impl<F: K2Frame> FrameWithIdx<F> {
     }
 }
 
-impl<F: K2Frame> PartialEq for FrameWithIdx<F> {
+impl PartialEq for FrameWithIdx {
     fn eq(&self, other: &Self) -> bool {
         self.get_frame().get_frame_id() == other.get_frame().get_frame_id()
     }
 }
 
-impl<F: K2Frame> PartialOrd for FrameWithIdx<F> {
+impl PartialOrd for FrameWithIdx {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<F: K2Frame> Eq for FrameWithIdx<F> {}
+impl Eq for FrameWithIdx {}
 
-impl<F: K2Frame> Ord for FrameWithIdx<F> {
+impl Ord for FrameWithIdx {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.get_frame()
             .get_frame_id()
@@ -64,7 +67,7 @@ impl<F: K2Frame> Ord for FrameWithIdx<F> {
     }
 }
 
-impl<F: K2Frame> FrameOrderingResult<F> {
+impl FrameOrderingResult {
     pub fn is_frame(&self) -> bool {
         matches!(self, Self::NextFrame(..))
     }
@@ -78,13 +81,13 @@ impl<F: K2Frame> FrameOrderingResult<F> {
     }
 }
 
-pub struct FrameOrdering<F: K2Frame> {
-    frame_buffer: BinaryHeap<Reverse<FrameWithIdx<F>>>,
+pub struct FrameOrdering {
+    frame_buffer: BinaryHeap<Reverse<FrameWithIdx>>,
     next_expected_frame_idx: u32,
     dropped_idxs: HashSet<u32>,
 }
 
-impl<F: K2Frame> FrameOrdering<F> {
+impl FrameOrdering {
     // 100 => ~200ms of frames, so should be enough such that if we are unlucky
     // and miss two frames in a 100ms window, we still don't have to re-allocate
     const DEFAULT_CAPACITY: usize = 100;
@@ -97,7 +100,7 @@ impl<F: K2Frame> FrameOrdering<F> {
         }
     }
 
-    pub fn handle_frame(&mut self, frame_w_idx: FrameWithIdx<F>) -> FrameOrderingResult<F> {
+    pub fn handle_frame(&mut self, frame_w_idx: FrameWithIdx) -> FrameOrderingResult {
         let expected_frame_idx = self.next_expected_frame_idx;
 
         // frame indices can be repeated, in case we drop a frame and later a
@@ -119,7 +122,7 @@ impl<F: K2Frame> FrameOrdering<F> {
         }
     }
 
-    pub fn maybe_get_next_frame(&mut self) -> Option<FrameWithIdx<F>> {
+    pub fn maybe_get_next_frame(&mut self) -> Option<FrameWithIdx> {
         // cases:
         // 1) `self.frame_buffer` is empty -> no next frame
         // 2) `self.frame_buffer` is non-empty and starts the expected frame -> emit first frame
@@ -144,7 +147,7 @@ impl<F: K2Frame> FrameOrdering<F> {
 
     /// Insert `frame` into the buffer at the correct position. Will panic if
     /// this `FrameOrdering` instance is not compacted.
-    fn insert_sorted(&mut self, frame_w_idx: FrameWithIdx<F>) {
+    fn insert_sorted(&mut self, frame_w_idx: FrameWithIdx) {
         self.frame_buffer.push(Reverse(frame_w_idx));
     }
 

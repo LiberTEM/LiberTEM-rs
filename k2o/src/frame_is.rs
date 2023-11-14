@@ -7,9 +7,8 @@ use crate::{
     block::K2Block,
     block_is::K2ISBlock,
     events::Binning,
-    frame::{FrameForWriting, K2Frame, SubFrame},
+    frame::{FrameForWriting, GenericFrame, K2Frame, SubFrame},
     helpers::Shape2,
-    result_frame::ResultFrame,
 };
 
 pub struct K2ISFrameForWriting {
@@ -117,7 +116,8 @@ impl FrameForWriting for K2ISFrameForWriting {
     }
 
     fn get_payload(&self) -> &[u16] {
-        todo!("return type? Slot, which the called can convert to a slice?")
+        let slot_as_u16: &[u16] = bytemuck::cast_slice(self.payload.as_slice());
+        slot_as_u16
     }
 }
 
@@ -165,20 +165,12 @@ impl K2Frame for K2ISFrame {
     type Block = K2ISBlock;
     type FrameForWriting = K2ISFrameForWriting;
 
-    fn get_frame_id(&self) -> u32 {
-        self.frame_id
-    }
-
     fn get_created_timestamp(&self) -> Instant {
         self.created_timestamp
     }
 
     fn get_modified_timestamp(&self) -> Instant {
         self.modified_timestamp
-    }
-
-    fn into_slot(self, shm: &SharedSlabAllocator) -> Slot {
-        shm.get(self.payload.slot_idx)
     }
 
     fn get_shape_for_binning(binning: &Binning) -> Shape2 {
@@ -225,6 +217,26 @@ impl K2Frame for K2ISFrame {
             Binning::Bin8x => 4,
         }
     }
-}
 
-impl ResultFrame for K2ISFrame {}
+    fn into_generic(self) -> GenericFrame {
+        GenericFrame::new(
+            self.payload,
+            self.frame_id,
+            self.created_timestamp,
+            self.modified_timestamp,
+        )
+    }
+
+    fn into_slot(self, shm: &SharedSlabAllocator) -> Slot {
+        shm.get(self.payload.slot_idx)
+    }
+
+    fn free_payload(self, shm: &mut SharedSlabAllocator) {
+        let slot_r = self.into_slot(shm);
+        shm.free_idx(slot_r.slot_idx);
+    }
+
+    fn get_frame_id(&self) -> u32 {
+        self.frame_id
+    }
+}

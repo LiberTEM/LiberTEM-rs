@@ -6,17 +6,20 @@ use ipc_test::{SHMHandle, SharedSlabAllocator};
 use k2o::acquisition::{acquisition_loop, frame_in_acquisition, AcquisitionResult};
 use k2o::assemble::{assembler_main, AssemblyResult};
 use k2o::block::{BlockRouteInfo, K2Block};
+use k2o::block_is::K2ISBlock;
+use k2o::block_summit::K2SummitBlock;
 use k2o::control::{control_loop, AcquisitionState, StateError, StateTracker};
 use k2o::events::{AcquisitionParams, ChannelEventBus, EventBus, EventMsg, Events, MessagePump};
-use k2o::frame::K2Frame;
+use k2o::frame::{GenericFrame, K2Frame};
+use k2o::frame_is::K2ISFrame;
+use k2o::frame_summit::K2SummitFrame;
 use k2o::helpers::{set_cpu_affinity, CPU_AFF_WRITER};
+use k2o::params::Mode;
 use k2o::recv::recv_decode_loop;
-use k2o::result_frame::ResultFrame;
 use k2o::tracing::get_tracer;
 use k2o::write::WriterBuilder;
 use opentelemetry::trace::Tracer;
 use opentelemetry::{global, Context};
-
 #[derive(Debug, Clone)]
 pub struct AddrConfig {
     top: String,
@@ -53,7 +56,7 @@ fn k2_bg_thread<
     writer_builder: Box<dyn WriterBuilder>,
     addr_config: &AddrConfig,
     pump: MessagePump,
-    writer_dest_channel: Sender<AcquisitionResult<F>>, // either going to the consumer, or back to the assembly
+    writer_dest_channel: Sender<AcquisitionResult<GenericFrame>>, // either going to the consumer, or back to the assembly
     shm: SharedSlabAllocator,
 ) {
     let tracer = get_tracer();
@@ -170,7 +173,7 @@ pub fn start_bg_thread<F: K2Frame + 'static, const PACKET_SIZE: usize>(
     pump: MessagePump,
 
     // Channel from the writer to the next frame consumer
-    tx_from_writer: Sender<AcquisitionResult<F>>,
+    tx_from_writer: Sender<AcquisitionResult<GenericFrame>>,
 
     shm_handle: SHMHandle,
 ) -> JoinHandle<()> {
@@ -193,14 +196,14 @@ pub fn start_bg_thread<F: K2Frame + 'static, const PACKET_SIZE: usize>(
         .expect("failed to start k2 background thread")
 }
 
-pub struct AcquisitionRuntime<F: K2Frame> {
+pub struct AcquisitionRuntime {
     // bg_thread is an Option so we are able to join by moving out of it
     bg_thread: Option<JoinHandle<()>>,
     main_events_tx: Sender<EventMsg>,
     main_events_rx: Receiver<EventMsg>,
 
     /// This is where an "external" frame consumer gets their frames:
-    rx_writer_to_consumer: Receiver<AcquisitionResult<F>>,
+    rx_writer_to_consumer: Receiver<AcquisitionResult<GenericFrame>>,
 
     enable_frame_consumer: bool,
 
@@ -231,18 +234,20 @@ impl From<RecvTimeoutError> for RuntimeError {
     }
 }
 
-impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
+impl AcquisitionRuntime {
     pub fn new<const PACKET_SIZE: usize>(
         writer_builder: Box<dyn WriterBuilder>,
         addr_config: &AddrConfig,
         enable_frame_consumer: bool,
         shm: SHMHandle,
+        mode: Mode,
     ) -> Self {
         let events: Events = ChannelEventBus::new();
         let pump = MessagePump::new(&events);
         let (main_events_tx, main_events_rx) = pump.get_ext_channels();
 
-        let (tx_writer_to_consumer, rx_writer_to_consumer) = unbounded::<AcquisitionResult<F>>();
+        let (tx_writer_to_consumer, rx_writer_to_consumer) =
+            unbounded::<AcquisitionResult<GenericFrame>>();
 
         // Two main configuration options:
         // 1) Writer enabled or not (currently can't disable writer)
@@ -252,15 +257,28 @@ impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
         let os_handle = shm.os_handle.clone();
         let bg_thread = if enable_frame_consumer {
             // Frame consumer enabled -> after writing, the writer thread should send the frames
-            // to the `tx_frame_consumer` channel:
-            Some(start_bg_thread::<F, PACKET_SIZE>(
-                events,
-                writer_builder,
-                addr_config.clone(),
-                pump,
-                tx_writer_to_consumer,
-                shm,
-            ))
+            // to the `tx_frame_consumer` channel
+            match mode {
+                Mode::IS => Some(start_bg_thread::<K2ISFrame, { K2ISBlock::PACKET_SIZE }>(
+                    events,
+                    writer_builder,
+                    addr_config.clone(),
+                    pump,
+                    tx_writer_to_consumer,
+                    shm,
+                )),
+                Mode::Summit => Some(start_bg_thread::<
+                    K2SummitFrame,
+                    { K2SummitBlock::PACKET_SIZE },
+                >(
+                    events,
+                    writer_builder,
+                    addr_config.clone(),
+                    pump,
+                    tx_writer_to_consumer,
+                    shm,
+                )),
+            }
         } else {
             // Directly recycle after writing:
             todo!("implement a tx_writer_to_consumer that just frees the shm");
@@ -328,7 +346,7 @@ impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
         )
     }
 
-    pub fn get_next_frame(&self) -> Result<AcquisitionResult<F>, RuntimeError> {
+    pub fn get_next_frame(&self) -> Result<AcquisitionResult<GenericFrame>, RuntimeError> {
         // FIXME: can we make this a non-issue somehow?
         if !self.enable_frame_consumer {
             return Err(RuntimeError::ConfigurationError);
@@ -349,7 +367,10 @@ impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
         Ok(acquisition_result)
     }
 
-    pub fn frame_done(&mut self, frame: AcquisitionResult<F>) -> Result<(), RuntimeError> {
+    pub fn frame_done(
+        &mut self,
+        frame: AcquisitionResult<GenericFrame>,
+    ) -> Result<(), RuntimeError> {
         // TODO: keep track of which frames we have seen here, and once we have
         // seen all of them, send `EventMsg::ProcesingDone`
         if !self.enable_frame_consumer {
@@ -362,7 +383,7 @@ impl<F: K2Frame + 'static> AcquisitionRuntime<F> {
         Ok(())
     }
 
-    pub fn get_frame_slot(&mut self, frame: AcquisitionResult<F>) -> Option<usize> {
+    pub fn get_frame_slot(&mut self, frame: AcquisitionResult<GenericFrame>) -> Option<usize> {
         let frame_inner = frame.unpack()?;
         Some(frame_inner.into_slot(&self.shm).slot_idx)
     }

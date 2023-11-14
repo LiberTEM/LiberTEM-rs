@@ -6,16 +6,13 @@ use crate::{
     block::K2Block,
     block_summit::K2SummitBlock,
     events::Binning,
-    frame::{FrameForWriting, K2Frame, SubFrame},
+    frame::{FrameForWriting, GenericFrame, K2Frame, SubFrame},
     helpers::Shape2,
-    result_frame::ResultFrame,
 };
 
 pub struct K2SummitFrame {
     /// the decoded payload of the whole frame
     pub payload: SlotInfo,
-
-    subframe_idx: u8,
 
     /// the frame id as received
     pub frame_id: u32,
@@ -132,7 +129,6 @@ impl FrameForWriting for K2SummitFrameForWriting {
         let slot_info = shm.writing_done(self.payload);
         K2SummitFrame {
             payload: slot_info,
-            subframe_idx: self.subframe_idx,
             frame_id: self.frame_id,
             created_timestamp: self.created_timestamp,
             modified_timestamp: self.modified_timestamp,
@@ -175,10 +171,6 @@ impl K2Frame for K2SummitFrame {
 
     type FrameForWriting = K2SummitFrameForWriting;
 
-    fn get_frame_id(&self) -> u32 {
-        self.frame_id
-    }
-
     fn get_created_timestamp(&self) -> Instant {
         self.created_timestamp
     }
@@ -190,6 +182,22 @@ impl K2Frame for K2SummitFrame {
     fn into_slot(self, shm: &SharedSlabAllocator) -> ipc_test::Slot {
         shm.get(self.payload.slot_idx)
     }
-}
 
-impl ResultFrame for K2SummitFrame {}
+    fn free_payload(self, shm: &mut SharedSlabAllocator) {
+        let slot_r = self.into_slot(shm);
+        shm.free_idx(slot_r.slot_idx);
+    }
+
+    fn get_frame_id(&self) -> u32 {
+        self.frame_id
+    }
+
+    fn into_generic(self) -> GenericFrame {
+        GenericFrame::new(
+            self.payload,
+            self.frame_id,
+            self.created_timestamp,
+            self.modified_timestamp,
+        )
+    }
+}
