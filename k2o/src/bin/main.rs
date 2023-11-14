@@ -10,12 +10,12 @@ use clap::Parser;
 use crossbeam_channel::{unbounded, RecvTimeoutError};
 use ipc_test::SharedSlabAllocator;
 use k2o::acquisition::{acquisition_loop, AcquisitionResult};
-use k2o::args::{Args, Mode, WriteMode};
 use k2o::assemble::{assembler_main, AssemblyResult};
 use k2o::block::BlockRouteInfo;
 use k2o::block::K2Block;
 use k2o::block_is::K2ISBlock;
 use k2o::block_summit::K2SummitBlock;
+use k2o::cli_args::{Args, Mode, WriteMode};
 use k2o::control::control_loop;
 use k2o::events::{AcquisitionParams, AcquisitionSize, AcquisitionSync, Events, MessagePump};
 use k2o::events::{ChannelEventBus, EventBus, EventMsg};
@@ -178,10 +178,10 @@ fn start_threads<
 
         events.send(&EventMsg::Arm {
             params: AcquisitionParams {
-                size: AcquisitionSize::NumFrames(1300),
+                size: AcquisitionSize::NumFrames(40),
                 // size: AcquisitionSize::Continuous,
-                sync: AcquisitionSync::WaitForSync,
-                // sync: AcquisitionSync::Immediately,
+                //sync: AcquisitionSync::WaitForSync,
+                sync: AcquisitionSync::Immediately,
                 binning: k2o::events::Binning::Bin1x,
             },
         });

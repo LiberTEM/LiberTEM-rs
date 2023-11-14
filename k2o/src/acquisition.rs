@@ -14,7 +14,7 @@ use crate::{
     assemble::AssemblyResult,
     control::AcquisitionState,
     events::{AcquisitionParams, AcquisitionSize, EventBus, EventMsg, EventReceiver, Events},
-    frame::K2Frame,
+    frame::{GenericFrame, K2Frame},
     ordering::{FrameOrdering, FrameOrderingResult, FrameWithIdx},
     tracing::get_tracer,
     write::{Writer, WriterBuilder},
@@ -28,7 +28,7 @@ enum HandleFramesResult {
     Shutdown,
 }
 
-pub enum AcquisitionResult<F: K2Frame> {
+pub enum AcquisitionResult<F> {
     Frame(F, u32),
     DroppedFrame(F, u32),
     DroppedFrameOutside(F),
@@ -37,7 +37,7 @@ pub enum AcquisitionResult<F: K2Frame> {
     DoneError, // some possibly unhandled error happened, we don't know a lot here...
 }
 
-impl<F: K2Frame> AcquisitionResult<F> {
+impl<F> AcquisitionResult<F> {
     pub fn unpack(self) -> Option<F> {
         match self {
             AcquisitionResult::Frame(f, _) => Some(f),
@@ -78,22 +78,24 @@ pub fn frame_in_acquisition(
     }
 }
 
-fn next_hop_ordered<F: K2Frame>(
-    ordering: &mut FrameOrdering<F>,
-    next_hop_tx: &Sender<AcquisitionResult<F>>,
-    result: FrameWithIdx<F>,
+fn next_hop_ordered(
+    ordering: &mut FrameOrdering,
+    next_hop_tx: &Sender<AcquisitionResult<GenericFrame>>,
+    result: FrameWithIdx,
 ) {
     match ordering.handle_frame(result) {
         FrameOrderingResult::Dropped => {}
         FrameOrderingResult::Buffered => {}
         FrameOrderingResult::NextFrame(result) => {
-            next_hop_tx.send(result.into()).unwrap();
+            let result: AcquisitionResult<GenericFrame> = result.into();
+            next_hop_tx.send(result).unwrap();
         }
     }
 
     // possibly send out buffered frames:
     while let Some(buffered_result) = ordering.maybe_get_next_frame() {
-        next_hop_tx.send(buffered_result.into()).unwrap();
+        let buffered_result: AcquisitionResult<GenericFrame> = buffered_result.into();
+        next_hop_tx.send(buffered_result).unwrap();
     }
 }
 
@@ -105,13 +107,13 @@ fn next_hop_ordered<F: K2Frame>(
 
 struct FrameHandler<'a, F: K2Frame> {
     channel: &'a Receiver<AssemblyResult<F>>,
-    next_hop_tx: &'a Sender<AcquisitionResult<F>>,
+    next_hop_tx: &'a Sender<AcquisitionResult<GenericFrame>>,
     events_rx: &'a EventReceiver,
     writer_builder: &'a dyn WriterBuilder,
     shm: &'a mut SharedSlabAllocator,
     params: AcquisitionParams,
     ref_frame_id: u32,
-    ordering: FrameOrdering<F>,
+    ordering: FrameOrdering,
 
     counter: usize,
     dropped: usize,
@@ -124,7 +126,7 @@ struct FrameHandler<'a, F: K2Frame> {
 impl<'a, F: K2Frame> FrameHandler<'a, F> {
     fn new(
         channel: &'a Receiver<AssemblyResult<F>>,
-        next_hop_tx: &'a Sender<AcquisitionResult<F>>,
+        next_hop_tx: &'a Sender<AcquisitionResult<GenericFrame>>,
         events_rx: &'a EventReceiver,
         writer_builder: &'a dyn WriterBuilder,
         shm: &'a mut SharedSlabAllocator,
@@ -267,7 +269,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                     if self.counter % 100 != 0 {
                         self.print_stats(&frame);
                     }
-                    let result = FrameWithIdx::Frame(frame, frame_idx);
+                    let result = FrameWithIdx::Frame(frame.into_generic(), frame_idx);
                     next_hop_ordered(&mut self.ordering, self.next_hop_tx, result);
                     self.ordering.dump_if_nonempty();
                     assert!(self.ordering.is_empty());
@@ -276,7 +278,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                     });
                 }
             }
-            let result = FrameWithIdx::Frame(frame, frame_idx);
+            let result = FrameWithIdx::Frame(frame.into_generic(), frame_idx);
             next_hop_ordered(&mut self.ordering, self.next_hop_tx, result);
             None
         } else {
@@ -295,7 +297,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
             );
             self.dropped += 1;
             self.counter += 1;
-            let result = FrameWithIdx::DroppedFrame(frame, frame_idx);
+            let result = FrameWithIdx::DroppedFrame(frame.into_generic(), frame_idx);
             next_hop_ordered(&mut self.ordering, self.next_hop_tx, result);
         } else {
             ctx.span().add_event(
@@ -344,7 +346,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
 
 pub fn acquisition_loop<F: K2Frame>(
     channel: &Receiver<AssemblyResult<F>>,
-    next_hop_tx: &Sender<AcquisitionResult<F>>,
+    next_hop_tx: &Sender<AcquisitionResult<GenericFrame>>,
     events_rx: &EventReceiver,
     events: &Events,
     writer_builder: Box<dyn WriterBuilder>,

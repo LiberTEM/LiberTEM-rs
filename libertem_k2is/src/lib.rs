@@ -18,9 +18,10 @@ use k2o::{
     block::K2Block,
     block_is::K2ISBlock,
     events::{AcquisitionParams, AcquisitionSync},
-    frame::K2Frame,
+    frame::{GenericFrame, K2Frame},
     frame_is::K2ISFrame,
     frame_summit::K2SummitFrame,
+    params::Mode,
     tracing::{get_tracer, init_tracer},
     write::{DirectWriterBuilder, MMapWriterBuilder, WriterBuilder},
 };
@@ -115,6 +116,7 @@ fn k2opy(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Acquisition>()?;
     m.add_class::<Cam>()?;
     m.add_class::<SyncFlags>()?;
+    m.add_class::<PyMode>()?;
     m.add_class::<PyAcquisitionParams>()?;
     m.add_class::<PyWriter>()?;
 
@@ -141,6 +143,32 @@ impl From<SyncFlags> for AcquisitionSync {
         match sf {
             SyncFlags::WaitForSync => AcquisitionSync::WaitForSync,
             SyncFlags::Immediately => AcquisitionSync::Immediately,
+        }
+    }
+}
+
+#[pyclass(name = "Mode")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum PyMode {
+    #[default]
+    IS,
+    Summit,
+}
+
+impl From<Mode> for PyMode {
+    fn from(value: Mode) -> Self {
+        match value {
+            Mode::IS => PyMode::IS,
+            Mode::Summit => PyMode::Summit,
+        }
+    }
+}
+
+impl Into<Mode> for PyMode {
+    fn into(self) -> Mode {
+        match self {
+            PyMode::IS => Mode::IS,
+            PyMode::Summit => Mode::Summit,
         }
     }
 }
@@ -185,6 +213,7 @@ impl PyWriter {
 struct PyAcquisitionParams {
     pub size: Option<u32>,
     pub sync: SyncFlags,
+    pub mode: PyMode,
     pub writer: Option<PyWriter>,
     pub enable_frame_iterator: bool,
     pub shm_path: String,
@@ -197,6 +226,7 @@ impl PyAcquisitionParams {
         size: Option<u32>,
         sync: SyncFlags,
         writer: Option<PyWriter>,
+        mode: Option<PyMode>,
         enable_frame_iterator: bool,
         shm_path: String,
     ) -> Self {
@@ -204,6 +234,7 @@ impl PyAcquisitionParams {
             size,
             sync,
             writer,
+            mode: mode.unwrap_or_default(),
             enable_frame_iterator,
             shm_path,
         }
@@ -212,19 +243,19 @@ impl PyAcquisitionParams {
 
 #[pyclass(name = "Frame")]
 struct PyFrame {
-    acquisition_result: Option<AcquisitionResult<K2ISFrame>>,
+    acquisition_result: Option<AcquisitionResult<GenericFrame>>,
     frame_idx: u32,
 }
 
 impl PyFrame {
-    fn new(result: AcquisitionResult<K2ISFrame>, frame_idx: u32) -> Self {
+    fn new(result: AcquisitionResult<GenericFrame>, frame_idx: u32) -> Self {
         PyFrame {
             acquisition_result: Some(result),
             frame_idx,
         }
     }
 
-    fn consume_frame_data(&mut self) -> AcquisitionResult<K2ISFrame> {
+    fn consume_frame_data(&mut self) -> AcquisitionResult<GenericFrame> {
         self.acquisition_result.take().unwrap()
     }
 }
@@ -251,8 +282,7 @@ struct Acquisition {
     params: PyAcquisitionParams,
     addr_config: AddrConfig,
 
-    // FIXME: assumes IS mode currently
-    runtime: Option<AcquisitionRuntime<K2ISFrame>>,
+    runtime: Option<AcquisitionRuntime>,
     shm: Option<SharedSlabAllocator>,
 }
 
@@ -333,7 +363,7 @@ impl Acquisition {
                                 {
                                     return Ok(Some(PyFrame::new(result, frame_idx)));
                                 } else {
-                                    let frame_id = result.get_frame().unwrap().frame_id;
+                                    let frame_id = result.get_frame().unwrap().get_frame_id();
                                     println!("recycling frame {frame_id}");
                                     runtime.frame_done(result)?;
                                 }
@@ -390,7 +420,12 @@ impl Acquisition {
         }
     }
 
-    fn get_frame_shape(_slf: PyRef<Self>) {}
+    fn get_frame_shape(&self) -> (usize, usize) {
+        match self.params.mode {
+            PyMode::IS => (1860, 2048),
+            PyMode::Summit => (3840, 4096),
+        }
+    }
 
     ///
     /// Start the receiver. Starts receiver threads and, if configured,
@@ -414,12 +449,14 @@ impl Acquisition {
             sync,
             binning: k2o::events::Binning::Bin1x,
         };
+        let mode = slf.params.mode;
         let mut runtime = if let Some(shm) = &slf.shm {
             AcquisitionRuntime::new::<{ <K2ISBlock as K2Block>::PACKET_SIZE }>(
                 wb,
                 &slf.addr_config,
                 slf.params.enable_frame_iterator,
                 shm.get_handle(),
+                mode.into(),
             )
         } else {
             return Err(exceptions::PyRuntimeError::new_err(
@@ -520,7 +557,11 @@ impl Cam {
     ) -> PyResult<Acquisition> {
         let _guard = span_from_py(py, "Cam::make_acquisition")?;
         let path = Path::new(&params.shm_path);
-        let shm = SharedSlabAllocator::new(2000, 2048 * 1860 * 2, true, path).expect("create shm");
+        let (num_slots, slot_size) = match params.mode {
+            PyMode::IS => (2000, 2048 * 1860 * 2),
+            PyMode::Summit => (500, 4096 * 3840 * 2),
+        };
+        let shm = SharedSlabAllocator::new(num_slots, slot_size, true, path).expect("create shm");
         Ok(Acquisition::new(params, &slf.addr_config, shm))
     }
 }

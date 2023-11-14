@@ -1,9 +1,9 @@
 use std::{ops::Range, time::Instant};
 
-use ipc_test::{SharedSlabAllocator, Slot};
+use ipc_test::{SharedSlabAllocator, Slot, SlotInfo};
 use ndarray::{s, ArrayView2, ArrayViewMut2};
 
-use crate::{block::K2Block, events::Binning, helpers::Shape2, result_frame::ResultFrame};
+use crate::{block::K2Block, events::Binning, helpers::Shape2};
 
 pub trait FrameForWriting: Sized {
     const FRAME_WIDTH: usize;
@@ -143,13 +143,15 @@ pub trait FrameForWriting: Sized {
     }
 }
 
-pub trait K2Frame: Send + Sized + ResultFrame {
+pub trait K2Frame: Send {
     const FRAME_WIDTH: usize;
     const FRAME_HEIGHT: usize;
 
     type Block: K2Block;
     type FrameForWriting: FrameForWriting<ReadOnlyFrame = Self>;
 
+    fn into_slot(self, shm: &SharedSlabAllocator) -> Slot;
+    fn free_payload(self, shm: &mut SharedSlabAllocator);
     fn get_frame_id(&self) -> u32;
     fn get_created_timestamp(&self) -> Instant;
     fn get_modified_timestamp(&self) -> Instant;
@@ -160,21 +162,7 @@ pub trait K2Frame: Send + Sized + ResultFrame {
         Self::FRAME_WIDTH * Self::FRAME_HEIGHT * Self::get_pixel_size_bytes()
     }
 
-    fn free_payload(self, shm: &mut SharedSlabAllocator) {
-        let slot_r = self.into_slot(shm);
-        shm.free_idx(slot_r.slot_idx);
-    }
-
-    fn into_slot(self, smh: &SharedSlabAllocator) -> Slot;
-
-    // fn as_array(&self, shm: &SharedSlabAllocator) -> ArrayView2<u16> {
-    //     let view = ArrayView2::from_shape(
-    //         (Self::FRAME_HEIGHT, Self::FRAME_WIDTH),
-    //         self.get_payload(shm),
-    //     )
-    //     .unwrap();
-    //     view
-    // }
+    fn into_generic(self) -> GenericFrame;
 
     fn get_shape_for_binning(binning: &Binning) -> Shape2;
     fn get_num_subframes(binning: &Binning) -> u32;
@@ -205,9 +193,6 @@ impl SubFrame {
         }
     }
 
-    // pub fn get_payload(&self) -> &'a [u16] {
-    //     self.payload
-    // }
     pub fn apply_to_payload(&self, f: impl Fn(&[u16])) {
         let payload_raw: &[u16] = &bytemuck::cast_slice(self.slot.as_slice())[self.start..self.end];
         f(payload_raw)
@@ -230,9 +215,49 @@ impl SubFrame {
     pub fn get_binning(&self) -> Binning {
         self.binning
     }
+}
 
-    // pub fn as_array(&self) -> ArrayView2<u16> {
-    //     let view = ArrayView2::from_shape(self.shape, self.get_payload()).unwrap();
-    //     view
-    // }
+/// Once decoding, assembly etc. is finished we convert to this generic
+/// frame type for downstream processing
+pub struct GenericFrame {
+    /// a reference to the decoded payload of the whole frame
+    pub payload: SlotInfo,
+
+    /// the frame id as received
+    pub frame_id: u32,
+
+    /// when the first block was received, to handle dropped packets
+    pub created_timestamp: Instant,
+
+    /// when the last block was received, to handle dropped packets
+    pub modified_timestamp: Instant,
+}
+
+impl GenericFrame {
+    pub fn new(
+        payload: SlotInfo,
+        frame_id: u32,
+        created_timestamp: Instant,
+        modified_timestamp: Instant,
+    ) -> GenericFrame {
+        GenericFrame {
+            payload,
+            frame_id,
+            created_timestamp,
+            modified_timestamp,
+        }
+    }
+
+    pub fn get_frame_id(&self) -> u32 {
+        self.frame_id
+    }
+
+    pub fn into_slot(self, shm: &SharedSlabAllocator) -> Slot {
+        shm.get(self.payload.slot_idx)
+    }
+
+    pub fn free_payload(self, shm: &mut SharedSlabAllocator) {
+        let slot_r = self.into_slot(shm);
+        shm.free_idx(slot_r.slot_idx);
+    }
 }
