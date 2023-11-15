@@ -3,6 +3,8 @@ use std::ffi::c_int;
 use ipc_test::{SharedSlabAllocator, Slot};
 use pyo3::{ffi::PyMemoryView_FromMemory, prelude::*, FromPyPointer};
 
+use crate::span_from_py;
+
 #[allow(non_upper_case_globals)]
 const PyBUF_READ: c_int = 0x100; // somehow not exported by pyo3? oh no...
 
@@ -31,9 +33,10 @@ pub struct CamClient {
 #[pymethods]
 impl CamClient {
     #[new]
-    fn new(socket_path: &str) -> Self {
+    fn new(socket_path: &str, py: Python) -> PyResult<Self> {
+        let _guard = span_from_py(py, "CamClient::new")?;
         let shm = SharedSlabAllocator::connect(socket_path).expect("connect to shm");
-        CamClient { shm: Some(shm) }
+        Ok(CamClient { shm: Some(shm) })
     }
 
     fn get_frame_ref(&self, py: Python, slot: usize) -> FrameRef {

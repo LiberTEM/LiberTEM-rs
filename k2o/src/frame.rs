@@ -25,17 +25,27 @@ pub trait FrameForWriting: Sized {
         Self::FRAME_WIDTH * Self::FRAME_HEIGHT * std::mem::size_of::<u16>()
     }
 
-    fn empty(frame_id: u32, shm: &mut SharedSlabAllocator) -> Self {
-        Self::empty_with_timestamp::<Self::Block>(frame_id, &Instant::now(), shm)
+    fn empty(frame_id: u32, shm: &mut SharedSlabAllocator, acquisition_id: usize) -> Self {
+        Self::empty_with_timestamp::<Self::Block>(frame_id, &Instant::now(), shm, acquisition_id)
     }
 
-    fn empty_from_block<B: K2Block>(block: &B, shm: &mut SharedSlabAllocator) -> Self {
-        Self::empty_with_timestamp::<B>(block.get_frame_id(), &block.get_decoded_timestamp(), shm)
+    fn empty_from_block<B: K2Block>(
+        block: &B,
+        shm: &mut SharedSlabAllocator,
+        acquisition_id: usize,
+    ) -> Self {
+        Self::empty_with_timestamp::<B>(
+            block.get_frame_id(),
+            &block.get_decoded_timestamp(),
+            shm,
+            acquisition_id,
+        )
     }
     fn empty_with_timestamp<B: K2Block>(
         frame_id: u32,
         ts: &Instant,
         shm: &mut SharedSlabAllocator,
+        acquisition_id: usize,
     ) -> Self;
 
     fn writing_done(self, shm: &mut SharedSlabAllocator) -> Self::ReadOnlyFrame;
@@ -141,6 +151,8 @@ pub trait FrameForWriting: Sized {
         // update "mtime"
         self.set_modified_timestamp(&Instant::now());
     }
+
+    fn get_acquisition_id(&self) -> usize;
 }
 
 pub trait K2Frame: Send {
@@ -168,6 +180,43 @@ pub trait K2Frame: Send {
     fn get_num_subframes(binning: &Binning) -> u32;
     fn subframe_indexes(&self, binning: &Binning) -> Range<u32>;
     fn get_subframe(&self, index: u32, binning: &Binning, shm: &SharedSlabAllocator) -> SubFrame;
+    fn get_acquisition_id(&self) -> usize;
+
+    /// to grab an independent copy of only some metadata of the frame
+    fn get_meta(&self) -> FrameMeta {
+        FrameMeta {
+            acquisition_id: self.get_acquisition_id(),
+            frame_id: self.get_frame_id(),
+            created_timestamp: self.get_created_timestamp(),
+        }
+    }
+}
+
+pub struct FrameMeta {
+    acquisition_id: usize,
+    frame_id: u32,
+    created_timestamp: Instant,
+}
+
+impl FrameMeta {
+    pub fn new(acquisition_id: usize, frame_id: u32, created_timestamp: Instant) -> Self {
+        Self {
+            acquisition_id,
+            frame_id,
+            created_timestamp,
+        }
+    }
+    pub fn get_acquisition_id(&self) -> usize {
+        self.acquisition_id
+    }
+
+    pub fn get_created_timestamp(&self) -> Instant {
+        self.created_timestamp
+    }
+
+    pub fn get_frame_id(&self) -> u32 {
+        self.frame_id
+    }
 }
 
 pub struct SubFrame {
@@ -231,6 +280,9 @@ pub struct GenericFrame {
 
     /// when the last block was received, to handle dropped packets
     pub modified_timestamp: Instant,
+
+    /// Acquisition id/generation
+    pub acquisition_id: usize,
 }
 
 impl GenericFrame {
@@ -239,12 +291,14 @@ impl GenericFrame {
         frame_id: u32,
         created_timestamp: Instant,
         modified_timestamp: Instant,
+        acquisition_id: usize,
     ) -> GenericFrame {
         GenericFrame {
             payload,
             frame_id,
             created_timestamp,
             modified_timestamp,
+            acquisition_id,
         }
     }
 

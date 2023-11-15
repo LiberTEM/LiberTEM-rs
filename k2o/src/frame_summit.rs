@@ -22,6 +22,9 @@ pub struct K2SummitFrame {
 
     /// when the last block was received, to handle dropped packets
     pub modified_timestamp: Instant,
+
+    /// Acquisition id/generation
+    pub acquisition_id: usize,
 }
 
 pub struct K2SummitFrameForWriting {
@@ -41,6 +44,9 @@ pub struct K2SummitFrameForWriting {
 
     /// when the last block was received, to handle dropped packets
     pub modified_timestamp: Instant,
+
+    /// Acquisition id/generation
+    pub acquisition_id: usize,
 }
 
 impl K2SummitFrameForWriting {}
@@ -70,6 +76,7 @@ impl FrameForWriting for K2SummitFrameForWriting {
         frame_id: u32,
         ts: &Instant,
         shm: &mut SharedSlabAllocator,
+        acquisition_id: usize,
     ) -> Self {
         let mut payload = shm.get_mut().expect("get free SHM slot");
         assert!(payload.size >= Self::FRAME_WIDTH * Self::FRAME_HEIGHT);
@@ -93,6 +100,7 @@ impl FrameForWriting for K2SummitFrameForWriting {
             created_timestamp: *ts,
             modified_timestamp: Instant::now(),
             subframe_idx: 0,
+            acquisition_id,
         }
     }
 
@@ -132,7 +140,12 @@ impl FrameForWriting for K2SummitFrameForWriting {
             frame_id: self.frame_id,
             created_timestamp: self.created_timestamp,
             modified_timestamp: self.modified_timestamp,
+            acquisition_id: self.acquisition_id,
         }
+    }
+
+    fn get_acquisition_id(&self) -> usize {
+        self.acquisition_id
     }
 }
 
@@ -198,6 +211,11 @@ impl K2Frame for K2SummitFrame {
             self.frame_id,
             self.created_timestamp,
             self.modified_timestamp,
+            self.acquisition_id,
         )
+    }
+
+    fn get_acquisition_id(&self) -> usize {
+        self.acquisition_id
     }
 }

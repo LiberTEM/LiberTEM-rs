@@ -9,7 +9,7 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender};
 use ipc_test::SharedSlabAllocator;
-use log::{error, info};
+use log::{debug, error, info};
 use opentelemetry::Context;
 
 use crate::{
@@ -28,19 +28,32 @@ impl<F: K2Frame> PendingFrames<F> {
     pub fn new() -> Self {
         PendingFrames {
             frames: HashMap::new(),
-            timeout: Duration::from_millis(100),
+            timeout: Duration::from_millis(5),
         }
     }
 
     pub fn assign_block<B: K2Block>(&mut self, block: &B, shm: &mut SharedSlabAllocator) {
         let frame = match self.frames.get_mut(&block.get_frame_id()) {
             None => {
-                let frame = F::FrameForWriting::empty_from_block(block, shm);
+                let frame =
+                    F::FrameForWriting::empty_from_block(block, shm, block.get_acquisition_id());
                 self.frames.insert(block.get_frame_id(), frame);
                 self.frames.get_mut(&block.get_frame_id()).unwrap()
             }
             Some(frame) => frame,
         };
+        // in case we have an existing frame, the acquisition id must match
+        // (which is always the case if we allocate a new FrameForWriting):
+        if frame.get_acquisition_id() != block.get_acquisition_id() {
+            debug!(
+                "dropping block; block acquisition id {} != frame acquisition id {} (frame id {})",
+                block.get_acquisition_id(),
+                frame.get_acquisition_id(),
+                frame.get_frame_id(),
+            );
+            // the block is from a different acquisition, drop it.
+            return;
+        }
         frame.assign_block(block);
     }
 
@@ -199,7 +212,7 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
 
     // warmup for the block queue:
     for _ in 0..512 {
-        recycle_blocks_tx.send(B::empty(0)).unwrap();
+        recycle_blocks_tx.send(B::empty(0, 0)).unwrap();
     }
 
     crossbeam::scope(|s| {
@@ -302,7 +315,7 @@ mod tests {
             &socket_as_path,
         )
         .expect("create SHM area for testing");
-        let mut frame: K2ISFrameForWriting = K2ISFrameForWriting::empty(FRAME_ID, &mut ssa);
+        let mut frame: K2ISFrameForWriting = K2ISFrameForWriting::empty(FRAME_ID, &mut ssa, 0);
 
         assert!(!frame.is_finished());
 
@@ -315,7 +328,7 @@ mod tests {
                 let start_y = y_idx * 930;
 
                 let block: K2ISBlock =
-                    K2ISBlock::from_vec_and_pos(payload, start_x, start_y, FRAME_ID);
+                    K2ISBlock::from_vec_and_pos(payload, start_x, start_y, FRAME_ID, 0);
                 frame.assign_block(&block);
             }
         }
@@ -368,7 +381,7 @@ mod tests {
                 let start_y = y_idx * 930;
 
                 let block: K2ISBlock =
-                    K2ISBlock::from_vec_and_pos(payload, start_x, start_y, FRAME_ID);
+                    K2ISBlock::from_vec_and_pos(payload, start_x, start_y, FRAME_ID, 0);
                 pending_frames.assign_block(&block, &mut ssa);
             }
         }
@@ -421,7 +434,7 @@ mod tests {
         let start_x = 2032;
         let start_y = 930;
 
-        let block: K2ISBlock = K2ISBlock::from_vec_and_pos(payload, start_x, start_y, FRAME_ID);
+        let block: K2ISBlock = K2ISBlock::from_vec_and_pos(payload, start_x, start_y, FRAME_ID, 0);
         assert_eq!(block.get_x_end(), 2047);
         assert_eq!(block.get_y_end(), 1859);
         pending_frames.assign_block(&block, &mut ssa);

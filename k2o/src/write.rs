@@ -13,12 +13,14 @@ use log::{info, trace};
 use memmap2::{MmapMut, MmapOptions};
 use ndarray::s;
 use ndarray_npy::{write_zeroed_npy, ViewMutNpyExt};
+use opentelemetry::trace::Tracer;
 
 use crate::{
     dio::open_direct,
     events::AcquisitionSize,
     frame::SubFrame,
     helpers::{preallocate, AllocateMode, Shape2, Shape3},
+    tracing::get_tracer,
 };
 
 #[derive(Debug)]
@@ -107,12 +109,15 @@ impl Writer for DirectWriter {
     }
 
     fn resize(&mut self, num_frames: usize) -> Result<(), WriterError> {
-        preallocate(
-            &self.filename,
-            self.frame_size_bytes,
-            num_frames,
-            AllocateMode::AllocateOnly,
-        );
+        let tracer = get_tracer();
+        tracer.in_span("DirectWriter::resize", |_cx| {
+            preallocate(
+                &self.filename,
+                self.frame_size_bytes,
+                num_frames,
+                AllocateMode::AllocateOnly,
+            );
+        });
         Ok(())
     }
 }
@@ -185,19 +190,22 @@ impl Writer for MMapWriter {
     }
 
     fn resize(&mut self, num_frames: usize) -> Result<(), WriterError> {
-        preallocate(
-            &self.filename,
-            self.frame_size_bytes,
-            num_frames,
-            AllocateMode::ZeroFill,
-        );
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.filename)
-            .unwrap();
-        let mmap = unsafe { MmapOptions::new().map_mut(&file).unwrap() };
-        self.mmap = mmap;
+        let tracer = get_tracer();
+        tracer.in_span("MMapWriter::resize", |_cx| {
+            preallocate(
+                &self.filename,
+                self.frame_size_bytes,
+                num_frames,
+                AllocateMode::ZeroFill,
+            );
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.filename)
+                .unwrap();
+            let mmap = unsafe { MmapOptions::new().map_mut(&file).unwrap() };
+            self.mmap = mmap;
+        });
         Ok(())
     }
 }
@@ -325,14 +333,8 @@ impl Writer for NoopWriter {
 pub struct NoopWriterBuilder {}
 
 impl NoopWriterBuilder {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Default for NoopWriterBuilder {
-    fn default() -> Self {
-        Self::new()
+    pub fn new() -> Box<Self> {
+        Box::new(Self {})
     }
 }
 

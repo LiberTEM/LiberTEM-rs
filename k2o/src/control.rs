@@ -1,6 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::TryRecvError;
+use log::{debug, info};
 use opentelemetry::trace::{TraceContextExt, Tracer};
 
 use crate::{
@@ -18,12 +19,16 @@ pub enum AcquisitionState {
     Idle,
     Armed {
         params: AcquisitionParams,
+        /// The current acquisition id
+        acquisition_id: usize,
     },
     /// Current receiving data
     AcquisitionStarted {
         params: AcquisitionParams,
         /// The reference frame id for this acquisition
         frame_id: u32,
+        /// The current acquisition id
+        acquisition_id: usize,
     },
     /// No longer receiving new data, but still processing
     /// (=> there is still data in the queues)
@@ -31,6 +36,8 @@ pub enum AcquisitionState {
         params: AcquisitionParams,
         /// The reference frame id for this acquisition
         frame_id: u32,
+        /// The current acquisition id
+        acquisition_id: usize,
     },
     Shutdown,
 }
@@ -113,6 +120,7 @@ impl StateTracker {
                     EventMsg::AcquisitionStartedSector {
                         sector_id: _,
                         frame_id: _,
+                        acquisition_id: _,
                     } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
@@ -120,76 +128,103 @@ impl StateTracker {
                     EventMsg::AcquisitionStarted {
                         frame_id: _,
                         params: _,
+                        acquisition_id: _,
                     } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
-                    EventMsg::ArmSectors { params: _ } => Err(StateError::InvalidTransition {
+                    EventMsg::ArmSectors {
+                        params: _,
+                        acquisition_id: _,
+                    } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
-                    EventMsg::AcquisitionEnded => Err(StateError::InvalidTransition {
+                    EventMsg::AcquisitionEnded { .. } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
-                    EventMsg::CancelAcquisition => Err(StateError::InvalidTransition {
+                    EventMsg::CancelAcquisition { .. } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
-                    EventMsg::ProcessingDone => Err(StateError::InvalidTransition {
+                    EventMsg::ProcessingDone { .. } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }), // should only come in AcquisitionFinishing state
 
                     // valid transitions:
-                    EventMsg::Arm { params } => Ok(AcquisitionState::Armed {
+                    EventMsg::Arm {
+                        params,
+                        acquisition_id,
+                    } => Ok(AcquisitionState::Armed {
                         params: params.clone(),
+                        acquisition_id: *acquisition_id,
                     }),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
                     EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
                 }
             }
-            AcquisitionState::Armed { params } => {
+            AcquisitionState::Armed {
+                params,
+                acquisition_id,
+            } => {
                 match event {
                     // invalid transitions:
                     EventMsg::Init => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
-                    EventMsg::Arm { params: _ } => Err(StateError::InvalidTransition {
+                    EventMsg::Arm {
+                        params: _,
+                        acquisition_id: _,
+                    } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
-                    EventMsg::ProcessingDone => Err(StateError::InvalidTransition {
+                    EventMsg::ProcessingDone { .. } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }), // should only come in AcquisitionFinishing state
 
                     // valid transitions to self:
-                    EventMsg::ArmSectors { params } => Ok(AcquisitionState::Armed {
+                    EventMsg::ArmSectors {
+                        params,
+                        acquisition_id,
+                    } => Ok(AcquisitionState::Armed {
                         params: params.clone(),
+                        acquisition_id: *acquisition_id,
                     }),
                     EventMsg::AcquisitionStartedSector {
                         sector_id: _,
                         frame_id: _,
+                        acquisition_id,
                     } => Ok(AcquisitionState::Armed {
                         params: params.clone(),
+                        acquisition_id: *acquisition_id,
                     }),
 
                     // valid transitions:
-                    EventMsg::AcquisitionStarted { frame_id, params } => {
-                        Ok(AcquisitionState::AcquisitionStarted {
-                            params: params.clone(),
-                            frame_id: *frame_id,
-                        })
-                    }
-                    EventMsg::AcquisitionEnded => Ok(AcquisitionState::Idle),
-                    EventMsg::CancelAcquisition => Ok(AcquisitionState::Idle),
+                    EventMsg::AcquisitionStarted {
+                        frame_id,
+                        params,
+                        acquisition_id,
+                    } => Ok(AcquisitionState::AcquisitionStarted {
+                        params: params.clone(),
+                        frame_id: *frame_id,
+                        acquisition_id: *acquisition_id,
+                    }),
+                    EventMsg::AcquisitionEnded { acquisition_id: _ } => Ok(AcquisitionState::Idle),
+                    EventMsg::CancelAcquisition { acquisition_id: _ } => Ok(AcquisitionState::Idle),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
                     EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
                 }
             }
-            AcquisitionState::AcquisitionStarted { params, frame_id } => {
+            AcquisitionState::AcquisitionStarted {
+                params,
+                frame_id,
+                acquisition_id,
+            } => {
                 match event {
                     // invalid transitions:
                     EventMsg::Init => Err(StateError::InvalidTransition {
@@ -199,19 +234,26 @@ impl StateTracker {
                     EventMsg::AcquisitionStarted {
                         frame_id: _,
                         params: _,
+                        acquisition_id: _,
                     } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }), // should only come in Armed state
-                    EventMsg::Arm { params: _ } => Err(StateError::InvalidTransition {
+                    EventMsg::Arm {
+                        params: _,
+                        acquisition_id: _,
+                    } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }), // should only come in Idle state
-                    EventMsg::ArmSectors { params: _ } => Err(StateError::InvalidTransition {
+                    EventMsg::ArmSectors {
+                        params: _,
+                        acquisition_id: _,
+                    } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }), // should only come in Armed state
-                    EventMsg::ProcessingDone => Err(StateError::InvalidTransition {
+                    EventMsg::ProcessingDone { .. } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }), // should only come in AcquisitionFinishing state
@@ -220,15 +262,20 @@ impl StateTracker {
                     EventMsg::AcquisitionStartedSector {
                         sector_id: _,
                         frame_id: _,
+                        acquisition_id: _,
                     } => Ok(AcquisitionState::AcquisitionStarted {
                         params: params.clone(),
                         frame_id: *frame_id,
+                        acquisition_id: *acquisition_id,
                     }),
-                    EventMsg::AcquisitionEnded => Ok(AcquisitionState::AcquisitionFinishing {
-                        params: params.clone(),
-                        frame_id: *frame_id,
-                    }),
-                    EventMsg::CancelAcquisition => Ok(AcquisitionState::Idle),
+                    EventMsg::AcquisitionEnded { acquisition_id } => {
+                        Ok(AcquisitionState::AcquisitionFinishing {
+                            params: params.clone(),
+                            frame_id: *frame_id,
+                            acquisition_id: *acquisition_id,
+                        })
+                    }
+                    EventMsg::CancelAcquisition { acquisition_id } => Ok(AcquisitionState::Idle),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
                     EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
                 }
@@ -236,6 +283,7 @@ impl StateTracker {
             AcquisitionState::AcquisitionFinishing {
                 params: _,
                 frame_id: _,
+                acquisition_id: acquisition_id_outer,
             } => {
                 match event {
                     // invalid transitions:
@@ -246,6 +294,7 @@ impl StateTracker {
                     EventMsg::AcquisitionStartedSector {
                         sector_id: _,
                         frame_id: _,
+                        acquisition_id: _,
                     } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
@@ -253,27 +302,34 @@ impl StateTracker {
                     EventMsg::AcquisitionStarted {
                         frame_id: _,
                         params: _,
+                        acquisition_id: _,
                     } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
-                    EventMsg::Arm { params: _ } => Err(StateError::InvalidTransition {
+                    EventMsg::Arm {
+                        params: _,
+                        acquisition_id: _,
+                    } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
-                    EventMsg::ArmSectors { params: _ } => Err(StateError::InvalidTransition {
+                    EventMsg::ArmSectors {
+                        params: _,
+                        acquisition_id: _,
+                    } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
-                    EventMsg::AcquisitionEnded => Err(StateError::InvalidTransition {
+                    EventMsg::AcquisitionEnded { .. } => Err(StateError::InvalidTransition {
                         from: self.state.clone(),
                         msg: event.clone(),
                     }),
 
                     // valid transitions:
-                    EventMsg::CancelAcquisition => Ok(AcquisitionState::Idle),
+                    EventMsg::CancelAcquisition { acquisition_id: _ } => Ok(AcquisitionState::Idle),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
-                    EventMsg::ProcessingDone => Ok(AcquisitionState::Idle),
+                    EventMsg::ProcessingDone { acquisition_id: _ } => Ok(AcquisitionState::Idle),
                     EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
                 }
             }
@@ -284,7 +340,7 @@ impl StateTracker {
         let next_state = self.next_state(msg)?;
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         if next_state != self.state {
-            println!(
+            debug!(
                 "StateTracker:\n   old={:?}\n   event={:?}\n   -> {:?}\n   ts={:?}",
                 self.state, msg, next_state, ts,
             );

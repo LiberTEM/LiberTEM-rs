@@ -1,7 +1,7 @@
 use std::{io::ErrorKind, time::Duration};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 use crate::{
     block::{BlockRouteInfo, K2Block},
@@ -17,18 +17,39 @@ enum RecvState {
 
     /// Receiving and decoding blocks, but not passing them on downstream to assembly,
     /// goes to `Receiving` state once a block with sync flag has been received
-    WaitForSync,
+    WaitForSync { acquisition_id: usize },
 
     /// Start receiving and decoding at the next block, regardless of sync status
-    WaitForNext,
+    WaitForNext { acquisition_id: usize },
 
     /// Recveicing and decoding packets, and sending the decoded packets down
     /// the pipeline
-    Receiving,
+    Receiving { acquisition_id: usize },
+}
+
+fn block_for_bytes<B: K2Block>(
+    buf: &[u8],
+    chan: &Receiver<B>,
+    acquisition_id: usize,
+    sector_id: u8,
+) -> B {
+    let block: B = {
+        let maybe_block = chan.try_recv();
+        match maybe_block {
+            Err(_) => B::from_bytes(buf, sector_id, acquisition_id),
+            Ok(mut b) => {
+                b.replace_with(buf, sector_id, acquisition_id);
+                b
+            }
+        }
+    };
+    block.validate();
+    block
 }
 
 /// receive and decode a block from the specified sector, and send it to the
 /// central assembly thread
+#[allow(clippy::too_many_arguments)]
 pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
     sector_id: u8,
     port: u32,
@@ -61,11 +82,14 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
 
     loop {
         match events_rx.try_recv() {
-            Ok(EventMsg::ArmSectors { params }) => {
-                info!("sector {sector_id} waiting for acquisition");
+            Ok(EventMsg::ArmSectors {
+                params,
+                acquisition_id,
+            }) => {
+                debug!("sector {sector_id} waiting for acquisition {acquisition_id}");
                 state = match params.sync {
-                    AcquisitionSync::Immediately => RecvState::WaitForNext,
-                    AcquisitionSync::WaitForSync => RecvState::WaitForSync,
+                    AcquisitionSync::Immediately => RecvState::WaitForNext { acquisition_id },
+                    AcquisitionSync::WaitForSync => RecvState::WaitForSync { acquisition_id },
                 };
             }
             Ok(EventMsg::Shutdown {}) => break,
@@ -91,34 +115,39 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
             continue;
         }
 
-        let block: B = {
-            let maybe_block = recycle_blocks_rx.try_recv();
-            match maybe_block {
-                Err(_) => B::from_bytes(&buf, sector_id),
-                Ok(mut b) => {
-                    b.replace_with(&buf, sector_id);
-                    b
+        match state {
+            RecvState::WaitForNext { acquisition_id } => {
+                let block = block_for_bytes(&buf, recycle_blocks_rx, acquisition_id, sector_id);
+                events.send(&EventMsg::AcquisitionStartedSector {
+                    sector_id,
+                    frame_id: block.get_frame_id(),
+                    acquisition_id,
+                });
+                state = RecvState::Receiving { acquisition_id };
+            }
+            RecvState::WaitForSync { acquisition_id } => {
+                let block = block_for_bytes(&buf, recycle_blocks_rx, acquisition_id, sector_id);
+                if block.sync_is_set() {
+                    events.send(&EventMsg::AcquisitionStartedSector {
+                        sector_id,
+                        frame_id: block.get_frame_id(),
+                        acquisition_id,
+                    });
+                    state = RecvState::Receiving { acquisition_id };
+                } else {
+                    let block = block_for_bytes(&buf, recycle_blocks_rx, acquisition_id, sector_id);
+                    // recycle blocks directly if we don't forward them to the frame
+                    // assembly thread:
+                    recycle_blocks_tx.send(block).unwrap();
+
+                    // FIXME: this is an opportunity to de-allocate
+                    // memory, if we had buffered "too much" beforehand.
+                    // Add a "high watermark" queue fill level and only recycle
+                    // blocks if we are below.
                 }
             }
-        };
-        block.validate();
-
-        match state {
-            RecvState::WaitForNext => {
-                events.send(&EventMsg::AcquisitionStartedSector {
-                    sector_id,
-                    frame_id: block.get_frame_id(),
-                });
-                state = RecvState::Receiving;
-            }
-            RecvState::WaitForSync if block.sync_is_set() => {
-                events.send(&EventMsg::AcquisitionStartedSector {
-                    sector_id,
-                    frame_id: block.get_frame_id(),
-                });
-                state = RecvState::Receiving;
-            }
-            RecvState::Receiving => {
+            RecvState::Receiving { acquisition_id } => {
+                let block = block_for_bytes(&buf, recycle_blocks_rx, acquisition_id, sector_id);
                 let route_info = BlockRouteInfo::new(&block);
                 let l = assembly_channel.len();
                 if l > 400 && l % 100 == 0 {
@@ -135,15 +164,10 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
                     break;
                 }
             }
-            RecvState::Idle | RecvState::WaitForSync => {
-                // recycle blocks directly if we don't forward them to the frame
-                // assembly thread:
+            RecvState::Idle => {
+                // we use a "fake" acquisition id here, because there is no acquisition running:
+                let block = block_for_bytes(&buf, recycle_blocks_rx, 0, sector_id);
                 recycle_blocks_tx.send(block).unwrap();
-
-                // FIXME: this is an opportunity to de-allocate
-                // memory, if we had buffered "too much" beforehand.
-                // Add a "high watermark" queue fill level and only recycle
-                // blocks if we are below.
             }
         }
     }

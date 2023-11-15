@@ -41,10 +41,11 @@ pub struct K2SummitBlock {
     sector_id: u8,   // not part of the actual data received, added as "metadata"
     decode_timestamp: Instant,
     // TODO: receive timestamp as an Instant
+    acquisition_id: usize,
 }
 
 impl K2SummitBlock {
-    pub fn empty(frame_id: u32) -> Self {
+    pub fn empty(frame_id: u32, acquisition_id: usize) -> Self {
         let payload: Vec<u16> = vec![0; Self::DECODED_SIZE];
         Self {
             sync: 0xFFFF0055,
@@ -62,12 +63,13 @@ impl K2SummitBlock {
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
+            acquisition_id,
         }
     }
 }
 
 impl K2Block for K2SummitBlock {
-    fn from_bytes(bytes: &[u8], sector_id: u8) -> Self {
+    fn from_bytes(bytes: &[u8], sector_id: u8, acquisition_id: usize) -> Self {
         // FIXME: we don't really need to initialize the vector, as it will be overwritten by `decode` just below...
         // FIXME: use MaybeUninit stuff from nightly?
         let mut payload = vec![0; Self::DECODED_SIZE];
@@ -90,10 +92,11 @@ impl K2Block for K2SummitBlock {
             payload,
             sector_id,
             decode_timestamp: Instant::now(),
+            acquisition_id,
         }
     }
 
-    fn replace_with(&mut self, bytes: &[u8], sector_id: u8) {
+    fn replace_with(&mut self, bytes: &[u8], sector_id: u8, acquisition_id: usize) {
         decode_u16_vec::<{ Self::PACKET_SIZE }>(bytes, &mut self.payload);
 
         self.sync = decode_u32(&bytes[0..4]);
@@ -110,6 +113,7 @@ impl K2Block for K2SummitBlock {
         self.block_size = decode_u32(&bytes[36..40]);
         self.sector_id = sector_id;
         self.decode_timestamp = Instant::now();
+        self.acquisition_id = acquisition_id;
     }
 
     fn as_array(&self) -> ArrayBase<ViewRepr<&u16>, Dim<[usize; 2]>> {
@@ -126,7 +130,7 @@ impl K2Block for K2SummitBlock {
 
     /// return a dummy block
     /// NOTE: only meant for testing!
-    fn empty(first_frame_id: u32) -> Self {
+    fn empty(first_frame_id: u32, acquisition_id: usize) -> Self {
         let payload: Vec<u16> = vec![0; Self::DECODED_SIZE];
         K2SummitBlock {
             sync: 0xFFFF0055,
@@ -144,6 +148,7 @@ impl K2Block for K2SummitBlock {
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
+            acquisition_id,
         }
     }
 
@@ -198,5 +203,9 @@ impl K2Block for K2SummitBlock {
     fn validate(&self) {
         assert_eq!(self.sync, 0xFFFF0055);
         assert_eq!(self.block_size as usize, Self::PACKET_SIZE);
+    }
+
+    fn get_acquisition_id(&self) -> usize {
+        self.acquisition_id
     }
 }

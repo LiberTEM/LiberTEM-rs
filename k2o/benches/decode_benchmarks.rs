@@ -152,7 +152,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let in_chunks = input.chunks_exact(PACKET_SIZE);
 
                 for chunk in in_chunks {
-                    K2ISBlock::from_bytes(black_box(chunk), 0);
+                    K2ISBlock::from_bytes(black_box(chunk), 0, 0);
                 }
             })
         },

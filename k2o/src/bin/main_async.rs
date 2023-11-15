@@ -62,7 +62,7 @@ pub async fn recv_decode_loop<const PACKET_SIZE: usize, const DECODED_SIZE: usiz
                 let (number_of_bytes, _src_addr) =
                     socket.recv_from(&mut buf).await.expect("recv_from failed");
                 assert_eq!(number_of_bytes, PACKET_SIZE);
-                let block: K2ISBlock = K2ISBlock::from_bytes(&buf, id as u8);
+                let block: K2ISBlock = K2ISBlock::from_bytes(&buf, id as u8, 0);
                 block.validate();
                 channel.send(block).await;
                 /*

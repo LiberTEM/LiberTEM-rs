@@ -1,5 +1,7 @@
 use clap::Parser;
 
+use crate::events::WriterType;
+
 #[derive(clap::ArgEnum, Clone, Copy, Debug)]
 pub enum Mode {
     IS,
@@ -11,6 +13,19 @@ pub enum WriteMode {
     Direct,
     MMAP,
     HDF5,
+}
+
+impl Into<WriterType> for WriteMode {
+    fn into(self) -> WriterType {
+        match self {
+            WriteMode::Direct => WriterType::Direct,
+            WriteMode::MMAP => WriterType::Mmap,
+            #[cfg(not(feature = "hdf5"))]
+            WriteMode::HDF5 => panic!("hdf5 not supported"),
+            #[cfg(feature = "hdf5")]
+            WriteMode::HDF5 => WriterType::HDF5,
+        }
+    }
 }
 
 /// Test program - arm and perform a single acquisition

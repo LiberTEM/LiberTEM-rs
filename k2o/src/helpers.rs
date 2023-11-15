@@ -66,7 +66,7 @@ pub fn recv_single<const PACKET_SIZE: usize, B: K2Block>(sector_id: u8) -> B {
     let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
     let (number_of_bytes, _src_addr) = socket.recv_from(&mut buf).expect("recv_from failed");
     assert_eq!(number_of_bytes, PACKET_SIZE);
-    B::from_bytes(&buf, sector_id)
+    B::from_bytes(&buf, sector_id, 0)
 }
 
 ///

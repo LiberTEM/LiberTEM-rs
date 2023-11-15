@@ -14,10 +14,11 @@ use k2o::frame::{GenericFrame, K2Frame};
 use k2o::frame_is::K2ISFrame;
 use k2o::frame_summit::K2SummitFrame;
 use k2o::helpers::{set_cpu_affinity, CPU_AFF_WRITER};
-use k2o::params::Mode;
+use k2o::params::CameraMode;
 use k2o::recv::recv_decode_loop;
 use k2o::tracing::get_tracer;
 use k2o::write::WriterBuilder;
+use log::{debug, info};
 use opentelemetry::trace::Tracer;
 use opentelemetry::{global, Context};
 #[derive(Debug, Clone)]
@@ -53,7 +54,6 @@ fn k2_bg_thread<
     B: K2Block,
 >(
     events: &Events,
-    writer_builder: Box<dyn WriterBuilder>,
     addr_config: &AddrConfig,
     pump: MessagePump,
     writer_dest_channel: Sender<AcquisitionResult<GenericFrame>>, // either going to the consumer, or back to the assembly
@@ -142,7 +142,6 @@ fn k2_bg_thread<
                         &writer_dest_channel,
                         &writer_events_rx,
                         events,
-                        writer_builder,
                         acq_shm,
                     );
                 })
@@ -168,7 +167,6 @@ fn k2_bg_thread<
 ///
 pub fn start_bg_thread<F: K2Frame + 'static, const PACKET_SIZE: usize>(
     events: Events,
-    writer_builder: Box<dyn WriterBuilder>,
     addr_config: AddrConfig,
     pump: MessagePump,
 
@@ -186,7 +184,6 @@ pub fn start_bg_thread<F: K2Frame + 'static, const PACKET_SIZE: usize>(
             let shm = SharedSlabAllocator::connect(&shm_handle.os_handle).expect("connect to shm");
             k2_bg_thread::<PACKET_SIZE, F, F::Block>(
                 &events,
-                writer_builder,
                 &addr_config,
                 pump,
                 tx_from_writer,
@@ -194,22 +191,6 @@ pub fn start_bg_thread<F: K2Frame + 'static, const PACKET_SIZE: usize>(
             );
         })
         .expect("failed to start k2 background thread")
-}
-
-pub struct AcquisitionRuntime {
-    // bg_thread is an Option so we are able to join by moving out of it
-    bg_thread: Option<JoinHandle<()>>,
-    main_events_tx: Sender<EventMsg>,
-    main_events_rx: Receiver<EventMsg>,
-
-    /// This is where an "external" frame consumer gets their frames:
-    rx_writer_to_consumer: Receiver<AcquisitionResult<GenericFrame>>,
-
-    enable_frame_consumer: bool,
-
-    state_tracker: StateTracker,
-
-    shm: SharedSlabAllocator,
 }
 
 #[derive(Debug)]
@@ -234,13 +215,46 @@ impl From<RecvTimeoutError> for RuntimeError {
     }
 }
 
+pub enum UpdateStateResult {
+    DidUpdate,
+    NoNewMessage,
+}
+
+/// The `AcquisitionRuntime` starts and communicates with a background thread,
+/// keeps track of the state via the `StateTracker`, and owns the shared memory
+/// area.
+///
+/// This runtime is kept alive over multiple acquisitions, and as such the
+/// parameters (like IS/Summit mode, network settings, shm socket path, frame
+/// iterator settings) cannot be changed without restarting the runtime.
+///
+/// It is possible to change per-acquisition settings, though, like filename and
+/// file writer settings, number of frames for the acquisition, and the camera
+/// sync mode.
+pub struct AcquisitionRuntime {
+    // bg_thread is an Option so we are able to join by moving out of it
+    bg_thread: Option<JoinHandle<()>>,
+    main_events_tx: Sender<EventMsg>,
+    main_events_rx: Receiver<EventMsg>,
+
+    /// This is where an "external" frame consumer gets their frames:
+    rx_writer_to_consumer: Receiver<AcquisitionResult<GenericFrame>>,
+
+    enable_frame_consumer: bool,
+
+    state_tracker: StateTracker,
+
+    shm: SharedSlabAllocator,
+
+    current_acquisition_id: usize,
+}
+
 impl AcquisitionRuntime {
-    pub fn new<const PACKET_SIZE: usize>(
-        writer_builder: Box<dyn WriterBuilder>,
+    pub fn new(
         addr_config: &AddrConfig,
         enable_frame_consumer: bool,
         shm: SHMHandle,
-        mode: Mode,
+        mode: CameraMode,
     ) -> Self {
         let events: Events = ChannelEventBus::new();
         let pump = MessagePump::new(&events);
@@ -259,20 +273,18 @@ impl AcquisitionRuntime {
             // Frame consumer enabled -> after writing, the writer thread should send the frames
             // to the `tx_frame_consumer` channel
             match mode {
-                Mode::IS => Some(start_bg_thread::<K2ISFrame, { K2ISBlock::PACKET_SIZE }>(
+                CameraMode::IS => Some(start_bg_thread::<K2ISFrame, { K2ISBlock::PACKET_SIZE }>(
                     events,
-                    writer_builder,
                     addr_config.clone(),
                     pump,
                     tx_writer_to_consumer,
                     shm,
                 )),
-                Mode::Summit => Some(start_bg_thread::<
+                CameraMode::Summit => Some(start_bg_thread::<
                     K2SummitFrame,
                     { K2SummitBlock::PACKET_SIZE },
                 >(
                     events,
-                    writer_builder,
                     addr_config.clone(),
                     pump,
                     tx_writer_to_consumer,
@@ -290,7 +302,8 @@ impl AcquisitionRuntime {
         // We currently don't wait for all threads, but that's fine, as it's
         // most important that the receiver for control messages is already
         // listening, as events are buffered in a channel:
-        loop {
+        let tracer = get_tracer();
+        tracer.in_span("AcquisitionRuntime wait_for_init", |_cx| loop {
             match main_events_rx.recv_timeout(Duration::from_millis(5000)) {
                 Ok(msg) => match state_tracker.set_state_from_msg(&msg) {
                     Ok(AcquisitionState::Idle) => {
@@ -307,7 +320,7 @@ impl AcquisitionRuntime {
                 }
                 Err(RecvTimeoutError::Disconnected) => panic!("error while waiting for init event"),
             }
-        }
+        });
 
         let shm = SharedSlabAllocator::connect(&os_handle).expect("connect to shm");
 
@@ -319,20 +332,21 @@ impl AcquisitionRuntime {
             enable_frame_consumer,
             state_tracker,
             shm,
+            current_acquisition_id: 0,
         }
     }
 
     /// Receive at most one event from the event bus and update the state
-    pub fn update_state(&mut self) {
+    pub fn update_state(&mut self) -> UpdateStateResult {
         match self.main_events_rx.try_recv() {
             Ok(msg) => match self.state_tracker.set_state_from_msg(&msg) {
-                Ok(_) => {}
+                Ok(_) => UpdateStateResult::DidUpdate,
                 Err(StateError::InvalidTransition { from, msg }) => {
                     panic!("invalid state transition: from={from:?} msg={msg:?}")
                 }
             },
             Err(TryRecvError::Disconnected) => panic!("lost connection to background thread"),
-            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Empty) => UpdateStateResult::NoNewMessage,
         }
     }
 
@@ -356,14 +370,22 @@ impl AcquisitionRuntime {
             .recv_timeout(Duration::from_millis(100))?;
         // FIXME! frames are not yet ordered by index
         // so sentinels can come out of order (ugh!)
-        if matches!(
-            acquisition_result,
-            AcquisitionResult::DoneSuccess { .. }
-                | AcquisitionResult::DoneError { .. }
-                | AcquisitionResult::DoneAborted { .. }
-        ) {
-            self.main_events_tx.send(EventMsg::ProcessingDone)?;
-        }
+        match acquisition_result {
+            AcquisitionResult::DoneSuccess {
+                acquisition_id,
+                dropped: _,
+            }
+            | AcquisitionResult::DoneShuttingDown { acquisition_id }
+            | AcquisitionResult::DoneAborted {
+                acquisition_id,
+                dropped: _,
+            } => {
+                self.main_events_tx
+                    .send(EventMsg::ProcessingDone { acquisition_id })?;
+                debug!("AcquisitionRuntime::get_next_frame: {acquisition_result:?}");
+            }
+            _ => {}
+        };
         Ok(acquisition_result)
     }
 
@@ -388,9 +410,17 @@ impl AcquisitionRuntime {
         Some(frame_inner.into_slot(&self.shm).slot_idx)
     }
 
-    pub fn arm(&self, params: AcquisitionParams) -> Result<(), RuntimeError> {
-        self.main_events_tx.send(EventMsg::Arm { params })?;
+    pub fn arm(&mut self, params: AcquisitionParams) -> Result<(), RuntimeError> {
+        self.current_acquisition_id += 1;
+        self.main_events_tx.send(EventMsg::Arm {
+            params,
+            acquisition_id: self.current_acquisition_id,
+        })?;
         Ok(())
+    }
+
+    pub fn get_current_acquisition_id(&self) -> usize {
+        self.current_acquisition_id
     }
 
     pub fn stop(&mut self) -> Result<(), RuntimeError> {
@@ -443,11 +473,15 @@ impl AcquisitionRuntime {
     {
         let deadline = Instant::now() + timeout;
         loop {
-            self.update_state();
+            let update_result = self.update_state();
             if pred(self) {
                 return Some(());
             }
-            std::thread::sleep(Duration::from_millis(10));
+            // only sleep if there was no new message, so we can handle
+            // storms of events efficiently here:
+            if matches!(update_result, UpdateStateResult::NoNewMessage) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
             if Instant::now() > deadline {
                 return None;
             }
@@ -461,11 +495,14 @@ impl AcquisitionRuntime {
 
     /// Wait until the arm command succeeded, returning `()` for success and `None` for timeout.
     pub fn wait_for_arm(&mut self, timeout: Duration) -> Option<()> {
-        println!("wait_for_arm");
+        debug!("wait_for_arm");
         self.wait_predicate(timeout, |slf| {
             matches!(
                 slf.state_tracker.state,
-                AcquisitionState::Armed { params: _ }
+                AcquisitionState::Armed {
+                    params: _,
+                    acquisition_id: _
+                }
             )
         })
     }
@@ -476,7 +513,8 @@ impl AcquisitionRuntime {
                 slf.state_tracker.state,
                 AcquisitionState::AcquisitionStarted {
                     params: _,
-                    frame_id: _
+                    frame_id: _,
+                    acquisition_id: _,
                 }
             )
         })
@@ -490,12 +528,23 @@ impl AcquisitionRuntime {
         let (params, ref_frame_id) = match &self.state_tracker.state {
             AcquisitionState::Startup
             | AcquisitionState::Idle
-            | AcquisitionState::Armed { params: _ }
+            | AcquisitionState::Armed {
+                params: _,
+                acquisition_id: _,
+            }
             | AcquisitionState::Shutdown => {
                 return None;
             }
-            AcquisitionState::AcquisitionStarted { params, frame_id }
-            | AcquisitionState::AcquisitionFinishing { params, frame_id } => (params, frame_id),
+            AcquisitionState::AcquisitionStarted {
+                params,
+                frame_id,
+                acquisition_id: _,
+            }
+            | AcquisitionState::AcquisitionFinishing {
+                params,
+                frame_id,
+                acquisition_id: _,
+            } => (params, frame_id),
         };
         frame_in_acquisition(frame_id, *ref_frame_id, params)
     }
