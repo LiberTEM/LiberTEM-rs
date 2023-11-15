@@ -1,6 +1,7 @@
 mod bgthread;
 mod shm_helpers;
 
+use env_logger::Builder;
 use ipc_test::SharedSlabAllocator;
 use shm_helpers::{CamClient, FrameRef};
 use std::{
@@ -17,11 +18,11 @@ use k2o::{
     acquisition::AcquisitionResult,
     block::K2Block,
     block_is::K2ISBlock,
-    events::{AcquisitionParams, AcquisitionSync},
+    events::{AcquisitionParams, AcquisitionSync, WriterSettings, WriterTypeError},
     frame::{GenericFrame, K2Frame},
     frame_is::K2ISFrame,
     frame_summit::K2SummitFrame,
-    params::Mode,
+    params::CameraMode,
     tracing::{get_tracer, init_tracer},
     write::{DirectWriterBuilder, MMapWriterBuilder, WriterBuilder},
 };
@@ -126,7 +127,10 @@ fn k2opy(_py: Python, m: &PyModule) -> PyResult<()> {
     let env = env_logger::Env::default()
         .filter_or("LIBERTEM_K2IS_LOG_LEVEL", "error")
         .write_style_or("LIBERTEM_K2IS_LOG_STYLE", "always");
-    env_logger::init_from_env(env);
+    Builder::new()
+        .parse_env(env)
+        .format_timestamp_micros()
+        .init();
 
     Ok(())
 }
@@ -155,20 +159,20 @@ enum PyMode {
     Summit,
 }
 
-impl From<Mode> for PyMode {
-    fn from(value: Mode) -> Self {
+impl From<CameraMode> for PyMode {
+    fn from(value: CameraMode) -> Self {
         match value {
-            Mode::IS => PyMode::IS,
-            Mode::Summit => PyMode::Summit,
+            CameraMode::IS => PyMode::IS,
+            CameraMode::Summit => PyMode::Summit,
         }
     }
 }
 
-impl Into<Mode> for PyMode {
-    fn into(self) -> Mode {
+impl Into<CameraMode> for PyMode {
+    fn into(self) -> CameraMode {
         match self {
-            PyMode::IS => Mode::IS,
-            PyMode::Summit => Mode::Summit,
+            PyMode::IS => CameraMode::IS,
+            PyMode::Summit => CameraMode::Summit,
         }
     }
 }
@@ -176,35 +180,30 @@ impl Into<Mode> for PyMode {
 #[pyclass(name = "Writer")]
 #[derive(Debug, Clone)]
 struct PyWriter {
-    pub filename: String,
-    pub method: String,
+    pub settings: WriterSettings,
 }
 
 impl PyWriter {
-    fn get_writer_builder(&self, filename: &str) -> PyResult<Box<dyn WriterBuilder>> {
-        let wb: Box<dyn WriterBuilder + Send> = match self.method.as_str() {
-            "direct" => DirectWriterBuilder::for_filename(filename),
-            "mmap" => MMapWriterBuilder::for_filename(filename),
-            #[cfg(feature = "hdf5")]
-            "hdf5" => HDF5WriterBuilder::for_filename(filename),
-            _ => {
-                let meth = &self.method;
-                let msg = format!("unknown method {meth}, choose one: mmap, direct, hdf5");
-                return Err(exceptions::PyValueError::new_err(msg));
-            }
-        };
-        Ok(wb)
+    pub fn get_setttings(&self) -> &WriterSettings {
+        &self.settings
     }
 }
 
 #[pymethods]
 impl PyWriter {
     #[new]
-    fn new(filename: &str, method: &str) -> Self {
-        PyWriter {
-            filename: filename.to_string(),
-            method: method.to_string(),
-        }
+    fn new(filename: &str, method: &str) -> PyResult<Self> {
+        let settings = match WriterSettings::new(method, filename) {
+            Ok(s) => s,
+            Err(WriterTypeError::InvalidWriterType) => {
+                let msg = format!(
+                    "unknown method {method}, choose one: mmap, direct, hdf5 (optional feature)"
+                );
+                return Err(exceptions::PyValueError::new_err(msg));
+            }
+        };
+
+        Ok(PyWriter { settings })
     }
 }
 
@@ -213,30 +212,21 @@ impl PyWriter {
 struct PyAcquisitionParams {
     pub size: Option<u32>,
     pub sync: SyncFlags,
-    pub mode: PyMode,
-    pub writer: Option<PyWriter>,
-    pub enable_frame_iterator: bool,
-    pub shm_path: String,
+    pub writer_settings: WriterSettings,
 }
 
 #[pymethods]
 impl PyAcquisitionParams {
     #[new]
-    fn new(
-        size: Option<u32>,
-        sync: SyncFlags,
-        writer: Option<PyWriter>,
-        mode: Option<PyMode>,
-        enable_frame_iterator: bool,
-        shm_path: String,
-    ) -> Self {
+    fn new(size: Option<u32>, sync: SyncFlags, writer: Option<PyWriter>) -> Self {
+        let writer_settings = match writer {
+            None => WriterSettings::disabled(),
+            Some(py_writer) => py_writer.get_setttings().clone(),
+        };
         PyAcquisitionParams {
             size,
             sync,
-            writer,
-            mode: mode.unwrap_or_default(),
-            enable_frame_iterator,
-            shm_path,
+            writer_settings,
         }
     }
 }
@@ -262,41 +252,36 @@ impl PyFrame {
 
 #[pymethods]
 impl PyFrame {
-    fn is_dropped(slf: PyRef<Self>) -> bool {
+    fn is_dropped(&self) -> bool {
         matches!(
-            &slf.acquisition_result,
+            &self.acquisition_result,
             Some(AcquisitionResult::DroppedFrame(..))
                 | Some(AcquisitionResult::DroppedFrameOutside(..))
         )
     }
 
-    fn get_idx(slf: PyRef<Self>) -> u32 {
-        slf.frame_idx
+    fn get_idx(&self) -> u32 {
+        self.frame_idx
     }
 }
 
 ///
-/// An `Acquisition` is an object representing acquisition parameters,
+/// An `Acquisition` is an object to perform a single acquisition, that is,
+/// acquire a potentially unlimited number of frames and iterate over them or
+/// write them to disk.
 #[pyclass]
 struct Acquisition {
     params: PyAcquisitionParams,
-    addr_config: AddrConfig,
-
-    runtime: Option<AcquisitionRuntime>,
-    shm: Option<SharedSlabAllocator>,
+    camera_mode: CameraMode,
+    id: usize,
 }
 
 impl Acquisition {
-    pub fn new(
-        params: PyAcquisitionParams,
-        addr_config: &AddrConfig,
-        shm: SharedSlabAllocator,
-    ) -> Self {
+    pub fn new(params: PyAcquisitionParams, camera_mode: CameraMode, id: usize) -> Self {
         Acquisition {
             params,
-            addr_config: addr_config.clone(),
-            runtime: None,
-            shm: Some(shm),
+            camera_mode,
+            id,
         }
     }
 }
@@ -310,7 +295,68 @@ impl From<RuntimeError> for PyErr {
 
 #[pymethods]
 impl Acquisition {
-    fn wait_for_start(mut slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
+    fn get_id(&self) -> usize {
+        self.id
+    }
+
+    fn __repr__(&self) -> String {
+        let id = self.id;
+        format!("<Acquisition id='{id}'>")
+    }
+}
+
+#[pyclass]
+struct Cam {
+    addr_config: AddrConfig,
+    camera_mode: PyMode,
+    shm_path: String,
+    enable_frame_iterator: bool,
+    shm: Option<SharedSlabAllocator>,
+    runtime: Option<AcquisitionRuntime>,
+}
+
+#[pymethods]
+impl Cam {
+    #[new]
+    fn new(
+        local_addr_top: &str,
+        local_addr_bottom: &str,
+        mode: PyMode,
+        shm_path: &str,
+        enable_frame_iterator: bool,
+        py: Python,
+    ) -> PyResult<Self> {
+        let _guard = span_from_py(py, "Cam::new")?;
+
+        let path = Path::new(&shm_path);
+        let (num_slots, slot_size) = match mode {
+            PyMode::IS => (2000, 2048 * 1860 * 2),
+            PyMode::Summit => (500, 4096 * 3840 * 2),
+        };
+        let tracer = get_tracer();
+        let shm = tracer.in_span("Cam shm_setup", |_cx| {
+            SharedSlabAllocator::new(num_slots, slot_size, true, path).expect("create shm")
+        });
+        let addr_config = AddrConfig::new(local_addr_top, local_addr_bottom);
+
+        let runtime = AcquisitionRuntime::new(
+            &addr_config,
+            enable_frame_iterator,
+            shm.get_handle(),
+            mode.into(),
+        );
+
+        Ok(Cam {
+            addr_config,
+            camera_mode: mode,
+            shm_path: shm_path.to_owned(),
+            enable_frame_iterator,
+            shm: Some(shm),
+            runtime: Some(runtime),
+        })
+    }
+
+    fn wait_for_start(&mut self, py: Python) -> PyResult<()> {
         // TODO: total deadline for initialization?
         // TODO: currently the API can be used wrong, i.e. calling
         // `get_next_frame` before this function means it will throw away
@@ -319,8 +365,9 @@ impl Acquisition {
         // an object from this function which is the actual frame iterator. Or
         // we should make the wait implicit and integrate it into
         // `get_next_frame`... hmm.
+        let _guard = span_from_py(py, "Cam::wait_for_start")?;
 
-        if let Some(runtime) = &mut slf.runtime {
+        if let Some(runtime) = &mut self.runtime {
             loop {
                 if runtime.wait_for_start(Duration::from_millis(100)).is_some() {
                     break;
@@ -336,13 +383,72 @@ impl Acquisition {
         Ok(())
     }
 
-    fn get_next_frame(mut slf: PyRefMut<Self>, py: Python) -> PyResult<Option<PyFrame>> {
-        if !slf.params.enable_frame_iterator {
+    ///
+    /// Wait for the current acquisition to complete. This is only needed
+    /// if we are only writing to a file, and not consuming the
+    /// frame iterator, which takes care of this synchronization
+    /// otherwise.
+    ///
+    /// Also succeeds if the runtime is already shut down.
+    ///
+    // FIXME: timeout?
+    fn wait_until_complete(&mut self, py: Python) -> PyResult<()> {
+        let _guard = span_from_py(py, "Acquisition::wait_until_complete")?;
+
+        if let Some(runtime) = &mut self.runtime {
+            loop {
+                match runtime.wait_until_complete(Duration::from_millis(100)) {
+                    Some(_) => return Ok(()),
+                    None => {
+                        py.check_signals()?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn stop(&mut self, timeout: Option<f32>, py: Python) -> PyResult<()> {
+        let _guard = span_from_py(py, "Acquisition::stop")?;
+
+        let timeout_float: f32 = timeout.unwrap_or(30_f32);
+        match &mut self.runtime {
+            None => Err(exceptions::PyRuntimeError::new_err(
+                "trying to stop while not running",
+            )),
+            Some(runtime) => {
+                if runtime.stop().is_err() {
+                    return Err(exceptions::PyRuntimeError::new_err(
+                        "connection to background thread lost",
+                    ));
+                }
+                let timeout = Duration::from_secs_f32(timeout_float);
+                let deadline = Instant::now() + timeout;
+                while Instant::now() < deadline {
+                    if runtime.try_join().is_some() {
+                        self.shm.take();
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                    py.check_signals()?;
+                }
+                // deadline exceeded
+                Err(exceptions::PyRuntimeError::new_err(
+                    "timeout while waiting for background thread to stop",
+                ))
+            }
+        }
+    }
+
+    fn get_next_frame(&mut self, py: Python) -> PyResult<Option<PyFrame>> {
+        let _guard = span_from_py(py, "Cam::get_next_frame")?;
+
+        if !self.enable_frame_iterator {
             return Err(exceptions::PyRuntimeError::new_err(
                 "get_next_frame called without enable_frame_iterator",
             ));
         }
-        if let Some(runtime) = &mut slf.runtime {
+        if let Some(runtime) = &mut self.runtime {
             loop {
                 runtime.update_state();
                 match runtime.get_next_frame() {
@@ -371,13 +477,20 @@ impl Acquisition {
                             AcquisitionResult::DroppedFrameOutside(_) => {
                                 runtime.frame_done(result)?;
                             }
-                            AcquisitionResult::DoneError => {
-                                // FIXME: propagate error as python exception?
-                                panic!("WHAT?!");
-                                return Ok(None);
+                            AcquisitionResult::ShutdownIdle
+                            | AcquisitionResult::DoneShuttingDown { acquisition_id: _ } => {
+                                return Err(exceptions::PyRuntimeError::new_err(
+                                    "acquisition runtime is shutting down",
+                                ));
                             }
-                            AcquisitionResult::DoneAborted { dropped }
-                            | AcquisitionResult::DoneSuccess { dropped } => {
+                            AcquisitionResult::DoneAborted {
+                                dropped,
+                                acquisition_id,
+                            }
+                            | AcquisitionResult::DoneSuccess {
+                                dropped,
+                                acquisition_id,
+                            } => {
                                 eprintln!("dropped {dropped} frames in this acquisition");
                                 return Ok(None);
                             }
@@ -392,8 +505,8 @@ impl Acquisition {
         }
     }
 
-    fn frame_done(mut slf: PyRefMut<Self>, frame: &mut PyFrame) -> PyResult<()> {
-        if let Some(runtime) = &mut slf.runtime {
+    fn frame_done(&mut self, frame: &mut PyFrame) -> PyResult<()> {
+        if let Some(runtime) = &mut self.runtime {
             runtime.frame_done(frame.consume_frame_data())?;
             Ok(())
         } else {
@@ -403,8 +516,8 @@ impl Acquisition {
         }
     }
 
-    fn get_frame_slot(mut slf: PyRefMut<Self>, frame: &mut PyFrame) -> PyResult<usize> {
-        if let Some(runtime) = &mut slf.runtime {
+    fn get_frame_slot(&mut self, frame: &mut PyFrame) -> PyResult<usize> {
+        if let Some(runtime) = &mut self.runtime {
             let slot = runtime.get_frame_slot(frame.consume_frame_data());
             if let Some(idx) = slot {
                 Ok(idx)
@@ -421,147 +534,51 @@ impl Acquisition {
     }
 
     fn get_frame_shape(&self) -> (usize, usize) {
-        match self.params.mode {
+        match self.camera_mode {
             PyMode::IS => (1860, 2048),
             PyMode::Summit => (3840, 4096),
         }
     }
 
-    ///
-    /// Start the receiver. Starts receiver threads and, if configured,
-    /// instantiates a writer.
-    ///
-    /// Immediately returns after initialization, but the frame iterator
-    /// will block until the data actually arrives.
-    ///
-    fn arm(mut slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
-        let _guard = span_from_py(py, "Acquisition::arm")?;
-
-        let wb = if let Some(writer) = &slf.params.writer {
-            writer.get_writer_builder(&writer.filename)?
-        } else {
-            Box::<k2o::write::NoopWriterBuilder>::default()
-        };
-
-        let sync: AcquisitionSync = slf.params.sync.clone().into();
-        let p: AcquisitionParams = AcquisitionParams {
-            size: slf.params.size.into(),
-            sync,
-            binning: k2o::events::Binning::Bin1x,
-        };
-        let mode = slf.params.mode;
-        let mut runtime = if let Some(shm) = &slf.shm {
-            AcquisitionRuntime::new::<{ <K2ISBlock as K2Block>::PACKET_SIZE }>(
-                wb,
-                &slf.addr_config,
-                slf.params.enable_frame_iterator,
-                shm.get_handle(),
-                mode.into(),
-            )
-        } else {
-            return Err(exceptions::PyRuntimeError::new_err(
-                "invalid state - no shared memory connection available",
-            ));
-        };
-        if runtime.arm(p).is_err() {
-            return Err(exceptions::PyRuntimeError::new_err(
-                "connection to background thread lost",
-            ));
-        }
-        loop {
-            py.check_signals()?;
-            if runtime.wait_for_arm(Duration::from_millis(100)).is_some() {
-                break;
-            }
-        }
-        slf.runtime = Some(runtime);
-        Ok(())
-    }
-
-    fn stop(mut slf: PyRefMut<Self>, timeout: Option<f32>, py: Python) -> PyResult<()> {
-        let _guard = span_from_py(py, "Acquisition::stop")?;
-
-        let timeout_float: f32 = timeout.unwrap_or(30_f32);
-        match &mut slf.runtime {
-            None => Err(exceptions::PyRuntimeError::new_err(
-                "trying to stop while not running",
-            )),
-            Some(runtime) => {
-                if runtime.stop().is_err() {
-                    return Err(exceptions::PyRuntimeError::new_err(
-                        "connection to background thread lost",
-                    ));
-                }
-                let timeout = Duration::from_secs_f32(timeout_float);
-                let deadline = Instant::now() + timeout;
-                while Instant::now() < deadline {
-                    if runtime.try_join().is_some() {
-                        slf.shm.take();
-                        return Ok(());
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                    py.check_signals()?;
-                }
-                // deadline exceeded
-                Err(exceptions::PyRuntimeError::new_err(
-                    "timeout while waiting for background thread to stop",
-                ))
-            }
-        }
-    }
-
-    ///
-    /// Wait for the acquisition to complete. This is only needed
-    /// if we are only writing to a file, and not consuming the
-    /// frame iterator, which takes care of this synchronization
-    /// otherwise.
-    ///
-    /// Also succeeds if the runtime is already shut down.
-    ///
-    // FIXME: timeout?
-    fn wait_until_complete(mut slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
-        let _guard = span_from_py(py, "Acquisition::wait_until_complete")?;
-
-        if let Some(runtime) = &mut slf.runtime {
-            loop {
-                match runtime.wait_until_complete(Duration::from_millis(100)) {
-                    Some(_) => return Ok(()),
-                    None => {
-                        py.check_signals()?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-#[pyclass]
-struct Cam {
-    addr_config: AddrConfig,
-}
-
-#[pymethods]
-impl Cam {
-    #[new]
-    fn new(local_addr_top: &str, local_addr_bottom: &str) -> Self {
-        Cam {
-            addr_config: AddrConfig::new(local_addr_top, local_addr_bottom),
-        }
-    }
-
+    /// Arm the runtime for the next acquisition
     fn make_acquisition(
-        slf: PyRef<Self>,
+        &mut self,
         py: Python,
         params: PyAcquisitionParams,
     ) -> PyResult<Acquisition> {
         let _guard = span_from_py(py, "Cam::make_acquisition")?;
-        let path = Path::new(&params.shm_path);
-        let (num_slots, slot_size) = match params.mode {
-            PyMode::IS => (2000, 2048 * 1860 * 2),
-            PyMode::Summit => (500, 4096 * 3840 * 2),
+        let p = params.clone();
+        let acq_params = AcquisitionParams {
+            size: p.size.into(),
+            sync: p.sync.into(),
+            binning: k2o::events::Binning::Bin1x,
+            writer_settings: p.writer_settings,
         };
-        let shm = SharedSlabAllocator::new(num_slots, slot_size, true, path).expect("create shm");
-        Ok(Acquisition::new(params, &slf.addr_config, shm))
+        if let Some(runtime) = &mut self.runtime {
+            if runtime.arm(acq_params).is_err() {
+                return Err(exceptions::PyRuntimeError::new_err(
+                    "connection to background thread lost",
+                ));
+            }
+            let tracer = get_tracer();
+
+            tracer.in_span("AcquisitionRuntime::wait_for_arm", |_cx| -> PyResult<()> {
+                loop {
+                    py.check_signals()?;
+                    if runtime.wait_for_arm(Duration::from_millis(100)).is_some() {
+                        return Ok(());
+                    }
+                }
+            })?;
+            Ok(Acquisition::new(
+                params,
+                self.camera_mode.into(),
+                runtime.get_current_acquisition_id(),
+            ))
+        } else {
+            Err(exceptions::PyRuntimeError::new_err(
+                "invalid state - acquisition runtime not available",
+            ))
+        }
     }
 }

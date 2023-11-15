@@ -11,7 +11,7 @@ use k2o::{
     block_summit::K2SummitBlock,
     events::{
         AcquisitionParams, AcquisitionSize, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
-        Events,
+        Events, WriterSettings,
     },
     recv::recv_decode_loop,
 };
@@ -89,7 +89,7 @@ fn start_threads<
 
         // "warmup"
         for _ in 0..1024 {
-            recycle_blocks_tx.send(B::empty(0)).unwrap();
+            recycle_blocks_tx.send(B::empty(0, 0)).unwrap();
         }
 
         events.send(&EventMsg::ArmSectors {
@@ -97,7 +97,9 @@ fn start_threads<
                 size: AcquisitionSize::Continuous,
                 sync: AcquisitionSync::Immediately,
                 binning: k2o::events::Binning::Bin1x,
+                writer_settings: WriterSettings::disabled(),
             },
+            acquisition_id: 0,
         });
 
         let mut stats: HashMap<u32, Vec<Instant>, _> = HashMap::new();

@@ -1,8 +1,6 @@
 use std::time::Instant;
 
-use ndarray::{ArrayBase, ArrayView, Dim, ViewRepr};
-
-use crate::decode::{decode, decode_u16, decode_u16_vec, decode_u32};
+use ndarray::{ArrayBase, Dim, ViewRepr};
 
 pub trait K2Block: Send {
     const PACKET_SIZE: usize;
@@ -13,11 +11,11 @@ pub trait K2Block: Send {
     const SECTOR_HEIGHT: usize;
     const BLOCKS_PER_SECTOR: u8;
 
-    fn from_bytes(bytes: &[u8], sector_id: u8) -> Self;
-    fn replace_with(&mut self, bytes: &[u8], sector_id: u8);
+    fn from_bytes(bytes: &[u8], sector_id: u8, acquisition_id: usize) -> Self;
+    fn replace_with(&mut self, bytes: &[u8], sector_id: u8, acquisition_id: usize);
     fn as_array(&self) -> ArrayBase<ViewRepr<&u16>, Dim<[usize; 2]>>;
     fn as_vec(&self) -> &Vec<u16>;
-    fn empty(first_frame_id: u32) -> Self;
+    fn empty(first_frame_id: u32, acquisition_id: usize) -> Self;
     fn get_flags(&self) -> u8;
     fn sync_is_set(&self) -> bool {
         (self.get_flags() & 0x01) == 0x01
@@ -34,6 +32,7 @@ pub trait K2Block: Send {
     fn get_frame_id(&self) -> u32;
     fn get_sector_id(&self) -> u8;
     fn get_decoded_timestamp(&self) -> Instant;
+    fn get_acquisition_id(&self) -> usize;
     fn validate(&self);
 }
 

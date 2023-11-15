@@ -15,9 +15,12 @@ use k2o::block::BlockRouteInfo;
 use k2o::block::K2Block;
 use k2o::block_is::K2ISBlock;
 use k2o::block_summit::K2SummitBlock;
-use k2o::cli_args::{Args, Mode, WriteMode};
+use k2o::cli_args::{Args, Mode};
 use k2o::control::control_loop;
-use k2o::events::{AcquisitionParams, AcquisitionSize, AcquisitionSync, Events, MessagePump};
+use k2o::events::{
+    AcquisitionParams, AcquisitionSize, AcquisitionSync, Events, MessagePump, WriterSettings,
+    WriterType,
+};
 use k2o::events::{ChannelEventBus, EventBus, EventMsg};
 use k2o::frame::K2Frame;
 use k2o::frame_is::K2ISFrame;
@@ -26,7 +29,6 @@ use k2o::helpers::CPU_AFF_WRITER;
 use k2o::helpers::{recv_and_get_init, set_cpu_affinity};
 use k2o::recv::recv_decode_loop;
 use k2o::tracing::init_tracer;
-use k2o::write::{DirectWriterBuilder, MMapWriterBuilder, WriterBuilder};
 use log::info;
 use tokio::runtime::Runtime;
 
@@ -121,21 +123,11 @@ fn start_threads<
 
                     let writer_shm = SharedSlabAllocator::connect(&shm_handle).unwrap();
 
-                    let wb: Box<dyn WriterBuilder> = match args.write_mode {
-                        WriteMode::Direct => DirectWriterBuilder::for_filename(&args.write_to),
-                        WriteMode::MMAP => MMapWriterBuilder::for_filename(&args.write_to),
-                        #[cfg(not(feature = "hdf5"))]
-                        WriteMode::HDF5 => panic!("hdf5 not supported"),
-                        #[cfg(feature = "hdf5")]
-                        WriteMode::HDF5 => HDF5WriterBuilder::for_filename(&args.write_to),
-                    };
-
                     acquisition_loop(
                         &w1rx,
                         &recycle_frames_tx,
                         &writer_events_rx,
                         events,
-                        wb,
                         writer_shm,
                     );
                 }
@@ -157,7 +149,8 @@ fn start_threads<
                             }
                             Ok(AcquisitionResult::DoneAborted { .. })
                             | Ok(AcquisitionResult::DoneSuccess { .. })
-                            | Ok(AcquisitionResult::DoneError) => {
+                            | Ok(AcquisitionResult::ShutdownIdle)
+                            | Ok(AcquisitionResult::DoneShuttingDown { .. }) => {
                                 info!("retire thread closing");
                                 break;
                             }
@@ -176,6 +169,12 @@ fn start_threads<
 
         events.send(&EventMsg::Init {});
 
+        let method: WriterType = args.write_mode.into();
+        let writer_settings = WriterSettings::Enabled {
+            method,
+            filename: args.write_to.to_owned(),
+        };
+
         events.send(&EventMsg::Arm {
             params: AcquisitionParams {
                 size: AcquisitionSize::NumFrames(40),
@@ -183,7 +182,9 @@ fn start_threads<
                 //sync: AcquisitionSync::WaitForSync,
                 sync: AcquisitionSync::Immediately,
                 binning: k2o::events::Binning::Bin1x,
+                writer_settings,
             },
+            acquisition_id: 0,
         });
 
         control_loop(events, pump)

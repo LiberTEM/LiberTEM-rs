@@ -27,6 +27,9 @@ pub struct K2ISFrameForWriting {
 
     /// when the last block was received, to handle dropped packets
     pub modified_timestamp: Instant,
+
+    /// Acquisition id/generation
+    pub acquisition_id: usize,
 }
 
 impl FrameForWriting for K2ISFrameForWriting {
@@ -34,6 +37,7 @@ impl FrameForWriting for K2ISFrameForWriting {
         frame_id: u32,
         ts: &Instant,
         shm: &mut SharedSlabAllocator,
+        acquisition_id: usize,
     ) -> Self {
         let mut payload = shm.get_mut().expect("get free SHM slot");
         assert!(payload.size >= Self::FRAME_WIDTH * Self::FRAME_HEIGHT);
@@ -58,6 +62,7 @@ impl FrameForWriting for K2ISFrameForWriting {
             created_timestamp: *ts,
             modified_timestamp: Instant::now(),
             subframe_idx: 0,
+            acquisition_id,
         }
     }
 
@@ -94,6 +99,7 @@ impl FrameForWriting for K2ISFrameForWriting {
             frame_id: self.frame_id,
             created_timestamp: self.created_timestamp,
             modified_timestamp: self.modified_timestamp,
+            acquisition_id: self.acquisition_id,
         }
     }
 
@@ -119,6 +125,10 @@ impl FrameForWriting for K2ISFrameForWriting {
         let slot_as_u16: &[u16] = bytemuck::cast_slice(self.payload.as_slice());
         slot_as_u16
     }
+
+    fn get_acquisition_id(&self) -> usize {
+        self.acquisition_id
+    }
 }
 
 impl K2ISFrameForWriting {
@@ -138,6 +148,7 @@ impl K2ISFrameForWriting {
             frame_id: self.frame_id,
             created_timestamp: self.created_timestamp,
             modified_timestamp: self.modified_timestamp,
+            acquisition_id: self.acquisition_id,
         }
     }
 }
@@ -156,6 +167,9 @@ pub struct K2ISFrame {
 
     /// when the last block was received, to handle dropped packets
     pub modified_timestamp: Instant,
+
+    /// Acquisition id/generation
+    pub acquisition_id: usize,
 }
 
 impl K2Frame for K2ISFrame {
@@ -224,6 +238,7 @@ impl K2Frame for K2ISFrame {
             self.frame_id,
             self.created_timestamp,
             self.modified_timestamp,
+            self.acquisition_id,
         )
     }
 
@@ -238,5 +253,9 @@ impl K2Frame for K2ISFrame {
 
     fn get_frame_id(&self) -> u32 {
         self.frame_id
+    }
+
+    fn get_acquisition_id(&self) -> usize {
+        self.acquisition_id
     }
 }

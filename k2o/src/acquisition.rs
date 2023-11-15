@@ -1,20 +1,24 @@
-use std::time::{Duration, Instant};
+use std::{
+    fmt::Debug,
+    time::{Duration, Instant},
+};
 
 use crossbeam_channel::{Receiver, RecvError, Select, SelectedOperation, Sender};
 use human_bytes::human_bytes;
 use ipc_test::SharedSlabAllocator;
-use log::{info, warn};
+use log::{error, info, warn};
 use opentelemetry::{
     global,
     trace::{self, TraceContextExt, Tracer},
     Context, Key,
 };
+use partialdebug::placeholder::PartialDebug;
 
 use crate::{
     assemble::AssemblyResult,
     control::AcquisitionState,
     events::{AcquisitionParams, AcquisitionSize, EventBus, EventMsg, EventReceiver, Events},
-    frame::{GenericFrame, K2Frame},
+    frame::{FrameMeta, GenericFrame, K2Frame},
     ordering::{FrameOrdering, FrameOrderingResult, FrameWithIdx},
     tracing::get_tracer,
     write::{Writer, WriterBuilder},
@@ -28,13 +32,30 @@ enum HandleFramesResult {
     Shutdown,
 }
 
+#[derive(PartialDebug)]
 pub enum AcquisitionResult<F> {
     Frame(F, u32),
     DroppedFrame(F, u32),
     DroppedFrameOutside(F),
-    DoneSuccess { dropped: usize },
-    DoneAborted { dropped: usize },
-    DoneError, // some possibly unhandled error happened, we don't know a lot here...
+    DoneSuccess {
+        dropped: usize,
+        acquisition_id: usize,
+    },
+    DoneAborted {
+        dropped: usize,
+        acquisition_id: usize,
+    },
+
+    /// This is the result if some threads upstream closed their end of the
+    /// channel and we get a receive error, while an acquisition is running -
+    /// the system is probably shutting down (or crashing).
+    DoneShuttingDown {
+        acquisition_id: usize,
+    },
+
+    /// This is the result if some threads upstream closed their end of the
+    /// channel while no current acquisition is known
+    ShutdownIdle,
 }
 
 impl<F> AcquisitionResult<F> {
@@ -43,9 +64,16 @@ impl<F> AcquisitionResult<F> {
             AcquisitionResult::Frame(f, _) => Some(f),
             AcquisitionResult::DroppedFrame(f, _) => Some(f),
             AcquisitionResult::DroppedFrameOutside(f) => Some(f),
-            AcquisitionResult::DoneSuccess { dropped: _ } => None,
-            AcquisitionResult::DoneAborted { dropped: _ } => None,
-            AcquisitionResult::DoneError => None,
+            AcquisitionResult::DoneSuccess {
+                dropped: _,
+                acquisition_id: _,
+            } => None,
+            AcquisitionResult::DoneAborted {
+                dropped: _,
+                acquisition_id: _,
+            } => None,
+            AcquisitionResult::DoneShuttingDown { acquisition_id: _ } => None,
+            AcquisitionResult::ShutdownIdle => None,
         }
     }
 
@@ -54,9 +82,16 @@ impl<F> AcquisitionResult<F> {
             AcquisitionResult::Frame(f, _) => Some(f),
             AcquisitionResult::DroppedFrame(f, _) => Some(f),
             AcquisitionResult::DroppedFrameOutside(f) => Some(f),
-            AcquisitionResult::DoneSuccess { dropped: _ } => None,
-            AcquisitionResult::DoneAborted { dropped: _ } => None,
-            AcquisitionResult::DoneError => None,
+            AcquisitionResult::DoneSuccess {
+                dropped: _,
+                acquisition_id: _,
+            } => None,
+            AcquisitionResult::DoneAborted {
+                dropped: _,
+                acquisition_id: _,
+            } => None,
+            AcquisitionResult::DoneShuttingDown { acquisition_id: _ } => None,
+            AcquisitionResult::ShutdownIdle => None,
         }
     }
 }
@@ -174,7 +209,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
             match oper.index() {
                 i if i == op_events => match oper.recv(self.events_rx) {
                     Ok(EventMsg::Shutdown {}) => return HandleFramesResult::Shutdown,
-                    Ok(EventMsg::CancelAcquisition {}) => {
+                    Ok(EventMsg::CancelAcquisition { acquisition_id }) => {
                         return HandleFramesResult::Aborted {
                             dropped: self.dropped,
                         }
@@ -222,7 +257,20 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
             }
             Ok(AssemblyResult::AssemblyTimeout { frame, frame_id }) => {
                 span.add_event("timeout", vec![Key::new("frame_id").i64(frame_id as i64)]);
+                let frame_meta = frame.get_meta();
                 self.timeout(frame_id, frame);
+
+                // handle the case that the last frame was dropped:
+                if let AcquisitionSize::NumFrames(num) = self.params.size {
+                    if self.counter == num as usize {
+                        if self.counter % 100 != 0 {
+                            self.print_stats(&frame_meta);
+                        }
+                        return Some(HandleFramesResult::Done {
+                            dropped: self.dropped,
+                        });
+                    }
+                }
                 None
             }
             Err(RecvError) => Some(HandleFramesResult::Shutdown),
@@ -258,8 +306,9 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                 self.ref_bytes_written += frame_size_bytes;
                 self.counter += 1;
             }
+            let frame_meta = frame.get_meta();
             if self.counter % 100 == 0 {
-                self.print_stats(&frame);
+                self.print_stats(&frame_meta);
             }
             if let AcquisitionSize::NumFrames(num) = self.params.size {
                 // FIXME: NumFrames should always be a
@@ -267,7 +316,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                 // otherwise this check can fail!
                 if self.counter == num as usize {
                     if self.counter % 100 != 0 {
-                        self.print_stats(&frame);
+                        self.print_stats(&frame_meta);
                     }
                     let result = FrameWithIdx::Frame(frame.into_generic(), frame_idx);
                     next_hop_ordered(&mut self.ordering, self.next_hop_tx, result);
@@ -296,7 +345,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                 vec![Key::new("frame_id").i64(frame_id as i64)],
             );
             self.dropped += 1;
-            self.counter += 1;
+            self.counter += 1; // FIXME: might need to increment by number of subframes?
             let result = FrameWithIdx::DroppedFrame(frame.into_generic(), frame_idx);
             next_hop_ordered(&mut self.ordering, self.next_hop_tx, result);
         } else {
@@ -309,9 +358,9 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
         }
     }
 
-    fn print_stats(&mut self, frame: &F) {
+    fn print_stats(&mut self, frame_meta: &FrameMeta) {
         let now = Instant::now();
-        let latency = frame.get_created_timestamp().elapsed();
+        let latency = frame_meta.get_created_timestamp().elapsed();
         let channel_size = self.channel.len();
         let delta_t = now - self.ref_ts;
         let throughput = {
@@ -329,8 +378,11 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                 String::from("")
             }
         };
-        info!("frame counter={} frame_id={} dropped={} dropped_outside={}, latency first block -> frame written={:?} channel.len()={} write throughput={}/s fps={}",
-               self.counter, frame.get_frame_id(), self.dropped, self.dropped_outside, latency, channel_size, throughput, fps);
+        info!("frame acq#{} counter={} frame_id={} dropped={} dropped_outside={}, latency first block -> frame written={:?} channel.len()={} write throughput={}/s fps={}",
+            frame_meta.get_acquisition_id(), self.counter, frame_meta.get_frame_id(),
+            self.dropped, self.dropped_outside, latency, channel_size,
+            throughput, fps
+        );
 
         self.ref_ts = Instant::now();
         self.ref_bytes_written = 0;
@@ -339,7 +391,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
 
 ///
 /// Instantiate a writer, receive and write N frames, and forward frames
-/// to the next hop channel.
+/// to the next hop channel. This is started in a background thread.
 ///
 /// Filters out frames that don't belong to the current acquisition.
 ///
@@ -349,7 +401,6 @@ pub fn acquisition_loop<F: K2Frame>(
     next_hop_tx: &Sender<AcquisitionResult<GenericFrame>>,
     events_rx: &EventReceiver,
     events: &Events,
-    writer_builder: Box<dyn WriterBuilder>,
     mut shm: SharedSlabAllocator,
 ) {
     let tracer = get_tracer();
@@ -369,9 +420,10 @@ pub fn acquisition_loop<F: K2Frame>(
                 i if i == op_events => {
                     let msg_result = oper.recv(events_rx);
                     match msg_result {
-                        Ok(EventMsg::Arm { params }) => {
+                        Ok(EventMsg::Arm { params, acquisition_id }) => {
                             state = AcquisitionState::Armed {
                                 params: params.clone(),
+                                acquisition_id,
                             };
 
                             // Forward the start event for sectors, making sure we get the
@@ -380,27 +432,34 @@ pub fn acquisition_loop<F: K2Frame>(
                             // we do here, we could possibly get the response from the
                             // sectors before we are transitioning to the `Armed` state,
                             // meaning we don't have the acquisition parameters yet etc...
-                            events.send(&EventMsg::ArmSectors { params });
+                            events.send(&EventMsg::ArmSectors { params, acquisition_id});
                         }
                         Ok(EventMsg::AcquisitionStartedSector {
                             sector_id: _,
                             frame_id,
+                            acquisition_id: acquisition_id_outer,
                         }) => {
                             match state {
-                                AcquisitionState::Armed { params } => {
+                                AcquisitionState::Armed { params , acquisition_id } => {
+                                    if acquisition_id != acquisition_id_outer {
+                                        error!("acquisition id mismatch; {acquisition_id} != {acquisition_id_outer}");
+                                    }
                                     state = AcquisitionState::AcquisitionStarted {
                                         params: params.clone(),
                                         frame_id,
+                                        acquisition_id,
                                     };
                                     events.send(&EventMsg::AcquisitionStarted {
                                         frame_id,
                                         params: params.clone(),
+                                        acquisition_id,
                                     });
                                     info!("acquisition started, first frame_id = {}", frame_id);
 
                                     Context::current()
                                         .span()
                                         .add_event("AcquisitionStarted", vec![]);
+                                    let writer_builder = params.writer_settings.get_writer_builder();
                                     let fh = FrameHandler::new(
                                         channel,
                                         next_hop_tx,
@@ -412,25 +471,25 @@ pub fn acquisition_loop<F: K2Frame>(
                                     );
                                     let write_result = fh.handle_frames();
                                     info!("handle_frames done.");
-                                    events.send(&EventMsg::AcquisitionEnded {});
+                                    events.send(&EventMsg::AcquisitionEnded { acquisition_id });
                                     Context::current()
                                         .span()
                                         .add_event("AcquisitionEnded", vec![]);
                                     match write_result {
                                         HandleFramesResult::Done { dropped } => {
                                             next_hop_tx
-                                                .send(AcquisitionResult::DoneSuccess { dropped })
+                                                .send(AcquisitionResult::DoneSuccess { dropped, acquisition_id })
                                                 .unwrap();
                                             continue;
                                         }
                                         HandleFramesResult::Aborted { dropped } => {
                                             next_hop_tx
-                                                .send(AcquisitionResult::DoneAborted { dropped })
+                                                .send(AcquisitionResult::DoneAborted { dropped, acquisition_id })
                                                 .unwrap();
                                             continue;
                                         }
                                         HandleFramesResult::Shutdown => {
-                                            next_hop_tx.send(AcquisitionResult::DoneError).unwrap();
+                                            next_hop_tx.send(AcquisitionResult::DoneShuttingDown { acquisition_id }).unwrap();
                                             break;
                                         }
                                     }
@@ -438,14 +497,15 @@ pub fn acquisition_loop<F: K2Frame>(
                                 AcquisitionState::AcquisitionStarted {
                                     params: _,
                                     frame_id: _,
+                                    acquisition_id,
                                 } => {
                                     // we are only interested in the event from the first sector that starts the acquisition:
                                     warn!(
-                                        "ignoring AcuisitionStartedSector in AcquisitionStarted state"
+                                        "ignoring AcuisitionStartedSector in AcquisitionStarted state for acq#{acquisition_id}"
                                     );
                                 }
                                 AcquisitionState::Idle
-                                | AcquisitionState::AcquisitionFinishing { params: _, frame_id: _ }
+                                | AcquisitionState::AcquisitionFinishing { params: _, frame_id: _, acquisition_id: _ }
                                 | AcquisitionState::Startup
                                 | AcquisitionState::Shutdown => {
                                     panic!(
@@ -457,7 +517,7 @@ pub fn acquisition_loop<F: K2Frame>(
                         Ok(EventMsg::Shutdown {}) => break,
                         Ok(_) => continue,
                         Err(RecvError) => {
-                            next_hop_tx.send(AcquisitionResult::DoneError).unwrap();
+                            next_hop_tx.send(AcquisitionResult::ShutdownIdle).unwrap();
                             break;
                         }
                     }

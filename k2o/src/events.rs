@@ -5,7 +5,11 @@ use std::{
 };
 
 use crossbeam_channel::{unbounded, Receiver, SendError, Sender};
-use log::info;
+use log::{debug, info};
+
+use crate::write::{DirectWriterBuilder, MMapWriterBuilder, NoopWriterBuilder, WriterBuilder};
+#[cfg(feature = "hdf5")]
+use k2o::write::HDF5WriterBuilder;
 
 pub trait EventBus<T: Clone + Debug> {
     /// Send `msg` to all subscribers
@@ -46,7 +50,7 @@ impl<T: Clone + Debug> EventBus<T> for ChannelEventBus<T> {
     }
 
     fn send(&self, msg: &T) {
-        info!("Event: {:?}", msg);
+        debug!("Event: {:?}", msg);
         // FIXME: don't panic
         for (tx, _) in self.channels.lock().unwrap().iter() {
             tx.send(msg.clone()).unwrap();
@@ -177,10 +181,69 @@ pub enum Binning {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WriterType {
+    Direct,
+    Mmap,
+    #[cfg(feature = "hdf5")]
+    HDF5,
+}
+
+pub enum WriterTypeError {
+    InvalidWriterType,
+}
+
+impl TryFrom<&str> for WriterType {
+    type Error = WriterTypeError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "direct" => Ok(Self::Direct),
+            "mmap" => Ok(Self::Mmap),
+            #[cfg(feature = "hdf5")]
+            "hdf5" => Ok(Self::HDF5),
+            _ => Err(WriterTypeError::InvalidWriterType),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WriterSettings {
+    Disabled,
+    Enabled {
+        method: WriterType,
+        filename: String, // maybe change to a path type?
+    },
+}
+
+impl WriterSettings {
+    pub fn disabled() -> Self {
+        Self::Disabled
+    }
+
+    pub fn new(method: &str, filename: &str) -> Result<Self, WriterTypeError> {
+        Ok(Self::Enabled {
+            method: WriterType::try_from(method)?,
+            filename: filename.to_owned(),
+        })
+    }
+
+    pub fn get_writer_builder(&self) -> Box<dyn WriterBuilder> {
+        match self {
+            Self::Disabled => NoopWriterBuilder::new(),
+            Self::Enabled { method, filename } => match &method {
+                WriterType::Direct => DirectWriterBuilder::for_filename(filename),
+                WriterType::Mmap => MMapWriterBuilder::for_filename(filename),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcquisitionParams {
     pub size: AcquisitionSize,
     pub sync: AcquisitionSync,
     pub binning: Binning,
+    pub writer_settings: WriterSettings,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,36 +257,46 @@ pub enum EventMsg {
     AcquisitionStartedSector {
         sector_id: u8,
         frame_id: u32,
+        acquisition_id: usize,
     },
 
     /// Send when any sector has started the acquisition
     AcquisitionStarted {
         frame_id: u32,
         params: AcquisitionParams,
+        acquisition_id: usize,
     },
 
     /// Send when a acquisition should be started
     Arm {
         params: AcquisitionParams,
+        acquisition_id: usize,
     },
 
     /// Send when the sector receiver threads should start acquiring data
     ArmSectors {
         params: AcquisitionParams,
+        acquisition_id: usize,
     },
 
     /// Send when the acquisition has ended (successfully or with an error)
     // FIXME: need to distinguish cases!
-    AcquisitionEnded,
+    AcquisitionEnded {
+        acquisition_id: usize,
+    },
 
     /// Send when the final consumer is done processing all data
-    ProcessingDone,
+    ProcessingDone {
+        acquisition_id: usize,
+    },
 
     /// Send when the currently running acquisition should be stopped.
     /// Depending on the `AcquisitionSize`, this can either be before finishing
     /// acquisition of the fixed number of frames, or for continuous,
     /// this successfully finishes the acquisition.
-    CancelAcquisition,
+    CancelAcquisition {
+        acquisition_id: usize,
+    },
 
     /// Generic fatal acquisition error
     AcquisitionError {

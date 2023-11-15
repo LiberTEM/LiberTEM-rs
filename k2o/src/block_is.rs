@@ -41,12 +41,13 @@ pub struct K2ISBlock {
     sector_id: u8,   // not part of the actual data received, added as "metadata"
     decode_timestamp: Instant,
     // TODO: receive timestamp as an Instant
+    acquisition_id: usize,
 }
 
 impl K2ISBlock {
     /// return a dummy block with specified fields, matching IS specs
     /// NOTE: only meant for testing!
-    pub fn empty_for_pos(x: u16, y: u16, frame_id: u32) -> K2ISBlock {
+    pub fn empty_for_pos(x: u16, y: u16, frame_id: u32, acquisition_id: usize) -> K2ISBlock {
         let payload: Vec<u16> = vec![0; Self::DECODED_SIZE];
         K2ISBlock {
             sync: 0xFFFF0055,
@@ -64,13 +65,20 @@ impl K2ISBlock {
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
+            acquisition_id,
         }
     }
 
     /// return a block for the given input data and specified position
     /// NOTE: not optimized for performance - creates a copy of the data
     /// only use for testing!
-    pub fn from_vec_and_pos(data: &[u16], x: u16, y: u16, frame_id: u32) -> K2ISBlock {
+    pub fn from_vec_and_pos(
+        data: &[u16],
+        x: u16,
+        y: u16,
+        frame_id: u32,
+        acquisition_id: usize,
+    ) -> K2ISBlock {
         let payload = data.to_vec(); // create an owned copy here
         K2ISBlock {
             sync: 0xFFFF0055,
@@ -88,12 +96,13 @@ impl K2ISBlock {
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
+            acquisition_id,
         }
     }
 }
 
 impl K2Block for K2ISBlock {
-    fn from_bytes(bytes: &[u8], sector_id: u8) -> K2ISBlock {
+    fn from_bytes(bytes: &[u8], sector_id: u8, acquisition_id: usize) -> K2ISBlock {
         // FIXME: we don't really need to initialize the vector, as it will be overwritten by `decode` just below...
         // FIXME: use MaybeUninit stuff from nightly?
         let mut payload = vec![0; Self::DECODED_SIZE];
@@ -119,10 +128,11 @@ impl K2Block for K2ISBlock {
             payload,
             sector_id,
             decode_timestamp: Instant::now(),
+            acquisition_id,
         }
     }
 
-    fn replace_with(&mut self, bytes: &[u8], sector_id: u8) {
+    fn replace_with(&mut self, bytes: &[u8], sector_id: u8, acquisition_id: usize) {
         decode::<{ Self::PACKET_SIZE }>(bytes, &mut self.payload);
 
         self.sync = decode_u32(&bytes[0..4]);
@@ -139,6 +149,7 @@ impl K2Block for K2ISBlock {
         self.block_size = decode_u32(&bytes[36..40]);
         self.sector_id = sector_id;
         self.decode_timestamp = Instant::now();
+        self.acquisition_id = acquisition_id;
     }
 
     fn as_array(&self) -> ArrayBase<ViewRepr<&u16>, Dim<[usize; 2]>> {
@@ -155,7 +166,7 @@ impl K2Block for K2ISBlock {
 
     /// return a dummy block, matching IS specs
     /// NOTE: only meant for testing!
-    fn empty(first_frame_id: u32) -> Self {
+    fn empty(first_frame_id: u32, acquisition_id: usize) -> Self {
         let payload: Vec<u16> = vec![0; Self::DECODED_SIZE];
         K2ISBlock {
             sync: 0xFFFF0055,
@@ -173,6 +184,7 @@ impl K2Block for K2ISBlock {
             payload,
             sector_id: 0,
             decode_timestamp: Instant::now(),
+            acquisition_id,
         }
     }
 
@@ -227,5 +239,9 @@ impl K2Block for K2ISBlock {
     fn validate(&self) {
         assert_eq!(self.sync, 0xFFFF0055);
         assert_eq!(self.block_size, 0x5758)
+    }
+
+    fn get_acquisition_id(&self) -> usize {
+        self.acquisition_id
     }
 }

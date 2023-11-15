@@ -14,8 +14,8 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     const TOTAL_INPUT_SIZE: usize = 1 * PACKET_SIZE;
 
-    let block = K2ISBlock::empty(42);
-    let mut frame: K2ISFrame = K2ISFrame::empty::<K2ISBlock>(42);
+    let block = K2ISBlock::empty(42, 0);
+    let mut frame: K2ISFrame = K2ISFrame::empty::<K2ISBlock>(42, 0);
 
     let mut assign_block = c.benchmark_group("assign_block* functions");
     assign_block.measurement_time(Duration::new(10, 0));
