@@ -19,8 +19,15 @@ enum RecvState {
     /// goes to `Receiving` state once a block with sync flag has been received
     WaitForSync { acquisition_id: usize },
 
-    /// Start receiving and decoding at the next block, regardless of sync status
+    /// When receiving the next block, go to the `WaitForFrame` state
     WaitForNext { acquisition_id: usize },
+
+    /// Start receiving and decoding at the start of the specified frame id,
+    /// regardless of sync status
+    WaitForFrame {
+        acquisition_id: usize,
+        frame_id: u32,
+    },
 
     /// Recveicing and decoding packets, and sending the decoded packets down
     /// the pipeline
@@ -116,14 +123,26 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
         }
 
         match state {
+            RecvState::WaitForFrame {
+                acquisition_id,
+                frame_id,
+            } => {
+                let block = block_for_bytes(&buf, recycle_blocks_rx, acquisition_id, sector_id);
+                if block.get_frame_id() == frame_id {
+                    events.send(&EventMsg::AcquisitionStartedSector {
+                        sector_id,
+                        frame_id: block.get_frame_id(),
+                        acquisition_id,
+                    });
+                    state = RecvState::Receiving { acquisition_id };
+                }
+            }
             RecvState::WaitForNext { acquisition_id } => {
                 let block = block_for_bytes(&buf, recycle_blocks_rx, acquisition_id, sector_id);
-                events.send(&EventMsg::AcquisitionStartedSector {
-                    sector_id,
-                    frame_id: block.get_frame_id(),
+                state = RecvState::WaitForFrame {
                     acquisition_id,
-                });
-                state = RecvState::Receiving { acquisition_id };
+                    frame_id: block.get_frame_id() + 1,
+                }
             }
             RecvState::WaitForSync { acquisition_id } => {
                 let block = block_for_bytes(&buf, recycle_blocks_rx, acquisition_id, sector_id);

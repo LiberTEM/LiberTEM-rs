@@ -12,7 +12,7 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
-use bgthread::{AcquisitionRuntime, AddrConfig, RuntimeError};
+use bgthread::{AcquisitionRuntime, AddrConfig, RuntimeError, WaitResult};
 
 use k2o::{
     acquisition::AcquisitionResult,
@@ -369,7 +369,10 @@ impl Cam {
 
         if let Some(runtime) = &mut self.runtime {
             loop {
-                if runtime.wait_for_start(Duration::from_millis(100)).is_some() {
+                if runtime
+                    .wait_for_start(Duration::from_millis(100))
+                    .is_success()
+                {
                     break;
                 }
                 py.check_signals()?;
@@ -398,8 +401,8 @@ impl Cam {
         if let Some(runtime) = &mut self.runtime {
             loop {
                 match runtime.wait_until_complete(Duration::from_millis(100)) {
-                    Some(_) => return Ok(()),
-                    None => {
+                    WaitResult::PredSuccess => return Ok(()),
+                    WaitResult::Timeout => {
                         py.check_signals()?;
                     }
                 }
@@ -565,7 +568,10 @@ impl Cam {
             tracer.in_span("AcquisitionRuntime::wait_for_arm", |_cx| -> PyResult<()> {
                 loop {
                     py.check_signals()?;
-                    if runtime.wait_for_arm(Duration::from_millis(100)).is_some() {
+                    if runtime
+                        .wait_for_arm(Duration::from_millis(100))
+                        .is_success()
+                    {
                         return Ok(());
                     }
                 }

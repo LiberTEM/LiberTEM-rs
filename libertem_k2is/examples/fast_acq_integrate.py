@@ -38,7 +38,7 @@ def iterate(aq, cam, cam_client, frame_arr):
             payload = np.frombuffer(mv, dtype=np.uint16).reshape(
                 cam.get_frame_shape()
             )
-            # frame_arr += payload
+            frame_arr += payload
             cam_client.done(slot)
     finally:
         t1 = time.time()
@@ -71,7 +71,7 @@ def main(mode, num_parts, frames_per_part):
 
         try:
             for i in range(num_parts):
-                # frame_arr[:] = 0
+                frame_arr[:] = 0
                 writer = Writer(
                     method="direct",
                     # method="mmap",

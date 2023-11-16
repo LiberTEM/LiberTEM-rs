@@ -220,6 +220,21 @@ pub enum UpdateStateResult {
     NoNewMessage,
 }
 
+pub enum WaitResult {
+    Timeout,
+    PredSuccess,
+}
+
+impl WaitResult {
+    pub fn is_success(&self) -> bool {
+        matches!(self, WaitResult::PredSuccess)
+    }
+
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, WaitResult::Timeout)
+    }
+}
+
 /// The `AcquisitionRuntime` starts and communicates with a background thread,
 /// keeps track of the state via the `StateTracker`, and owns the shared memory
 /// area.
@@ -336,7 +351,7 @@ impl AcquisitionRuntime {
         }
     }
 
-    /// Receive at most one event from the event bus and update the state
+    /// Receive at most one event from the event bus and update the state.
     pub fn update_state(&mut self) -> UpdateStateResult {
         match self.main_events_rx.try_recv() {
             Ok(msg) => match self.state_tracker.set_state_from_msg(&msg) {
@@ -467,34 +482,48 @@ impl AcquisitionRuntime {
         }
     }
 
-    pub fn wait_predicate<P>(&mut self, timeout: Duration, pred: P) -> Option<()>
+    pub fn wait_predicate<P>(&mut self, timeout: Duration, pred: P) -> WaitResult
     where
         P: Fn(&Self) -> bool,
     {
         let deadline = Instant::now() + timeout;
+        // bail out of predicate is true already:
+        if pred(self) {
+            log::trace!("predicate success");
+            return WaitResult::PredSuccess;
+        }
         loop {
+            log::trace!("updating state");
             let update_result = self.update_state();
-            if pred(self) {
-                return Some(());
-            }
             // only sleep if there was no new message, so we can handle
             // storms of events efficiently here:
-            if matches!(update_result, UpdateStateResult::NoNewMessage) {
-                std::thread::sleep(Duration::from_millis(1));
+            match update_result {
+                UpdateStateResult::DidUpdate => {
+                    log::trace!("checking predicate");
+                    if pred(self) {
+                        log::trace!("predicate success");
+                        return WaitResult::PredSuccess;
+                    }
+                }
+                UpdateStateResult::NoNewMessage => {
+                    log::trace!("no state change, sleeping");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
             }
             if Instant::now() > deadline {
-                return None;
+                log::trace!("wait_predicate: timeout");
+                return WaitResult::Timeout;
             }
         }
     }
 
-    /// Wait until the acquisition has ended or the timeout expired, returning `()` for success and `None` for timeout.
-    pub fn wait_until_complete(&mut self, timeout: Duration) -> Option<()> {
+    /// Wait until the acquisition has ended or the timeout expired
+    pub fn wait_until_complete(&mut self, timeout: Duration) -> WaitResult {
         self.wait_predicate(timeout, |slf| slf.is_done())
     }
 
-    /// Wait until the arm command succeeded, returning `()` for success and `None` for timeout.
-    pub fn wait_for_arm(&mut self, timeout: Duration) -> Option<()> {
+    /// Wait until the arm command succeeded
+    pub fn wait_for_arm(&mut self, timeout: Duration) -> WaitResult {
         debug!("wait_for_arm");
         self.wait_predicate(timeout, |slf| {
             matches!(
@@ -507,7 +536,7 @@ impl AcquisitionRuntime {
         })
     }
 
-    pub fn wait_for_start(&mut self, timeout: Duration) -> Option<()> {
+    pub fn wait_for_start(&mut self, timeout: Duration) -> WaitResult {
         self.wait_predicate(timeout, |slf| {
             matches!(
                 slf.state_tracker.state,
