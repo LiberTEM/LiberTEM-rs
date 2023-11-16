@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{unbounded, Receiver, SendError, Sender};
+use crossbeam_channel::{select, unbounded, Receiver, RecvError, SendError, Sender};
 use log::{debug, info};
 
 use crate::write::{DirectWriterBuilder, MMapWriterBuilder, NoopWriterBuilder, WriterBuilder};
@@ -69,6 +69,12 @@ impl<T> From<SendError<T>> for MessagePumpError {
     }
 }
 
+impl From<RecvError> for MessagePumpError {
+    fn from(_: RecvError) -> Self {
+        MessagePumpError::Disconnected
+    }
+}
+
 pub struct MessagePump {
     // our ends:
     rx_from_ext_to_bus: Receiver<EventMsg>,
@@ -119,13 +125,16 @@ impl MessagePump {
         events: &Events,
         timeout: Duration,
     ) -> Result<(), MessagePumpError> {
-        // from the bus to the external channel:
-        if let Ok(msg) = self.rx_from_bus.recv_timeout(timeout) {
-            self.tx_from_bus_to_ext.send(msg)?;
-        }
-        // from the external channel to the bus:
-        if let Ok(msg) = self.rx_from_ext_to_bus.recv_timeout(timeout) {
-            events.send(&msg);
+        select! {
+            // from the bus to the external channel:
+            recv(self.rx_from_bus) -> msg => {
+                self.tx_from_bus_to_ext.send(msg?)?;
+            }
+            // from the external channel to the bus:
+            recv(self.rx_from_ext_to_bus) -> msg => {
+                events.send(&msg?);
+            }
+            default(timeout) => return Ok(()),
         }
         Ok(())
     }
