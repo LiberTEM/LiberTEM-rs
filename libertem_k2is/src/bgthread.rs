@@ -17,8 +17,8 @@ use k2o::helpers::{set_cpu_affinity, CPU_AFF_WRITER};
 use k2o::params::CameraMode;
 use k2o::recv::recv_decode_loop;
 use k2o::tracing::get_tracer;
-use k2o::write::WriterBuilder;
-use log::{debug, info};
+
+use log::debug;
 use opentelemetry::trace::Tracer;
 use opentelemetry::{global, Context};
 #[derive(Debug, Clone)]
@@ -228,10 +228,6 @@ pub enum WaitResult {
 impl WaitResult {
     pub fn is_success(&self) -> bool {
         matches!(self, WaitResult::PredSuccess)
-    }
-
-    pub fn is_timeout(&self) -> bool {
-        matches!(self, WaitResult::Timeout)
     }
 }
 
@@ -460,26 +456,6 @@ impl AcquisitionRuntime {
         }
         global::force_flush_tracer_provider();
         Some(())
-    }
-
-    pub fn try_join_timeout(&mut self, timeout: Duration) -> Result<(), RuntimeError> {
-        if let Some(join_handle) = self.bg_thread.take() {
-            let deadline = Instant::now() + timeout;
-            while !join_handle.is_finished() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            if !join_handle.is_finished() {
-                self.bg_thread = Some(join_handle);
-                Err(RuntimeError::Timeout)
-            } else {
-                join_handle
-                    .join()
-                    .expect("could not join background thread!");
-                Ok(())
-            }
-        } else {
-            Ok(()) // join on non-running thread is not an error
-        }
     }
 
     pub fn wait_predicate<P>(&mut self, timeout: Duration, pred: P) -> WaitResult

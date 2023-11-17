@@ -9,7 +9,7 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender};
 use ipc_test::SharedSlabAllocator;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use opentelemetry::Context;
 
 use crate::{
@@ -28,7 +28,7 @@ impl<F: K2Frame> PendingFrames<F> {
     pub fn new() -> Self {
         PendingFrames {
             frames: HashMap::new(),
-            timeout: Duration::from_millis(5),
+            timeout: Duration::from_millis(15),
         }
     }
 
@@ -94,6 +94,14 @@ impl<F: K2Frame> PendingFrames<F> {
         for (_, frame) in self.frames.iter() {
             let delta = now - frame.get_modified_timestamp();
             if !frame.is_finished() && delta > self.timeout {
+                let tracker = frame.get_tracker();
+                let num_missing = tracker.iter().filter(|have_block| !**have_block).count();
+                warn!(
+                    "dropping frame {}, num_missing: {:?} of {}",
+                    frame.get_frame_id(),
+                    num_missing,
+                    tracker.len()
+                );
                 to_remove.push(frame.get_frame_id());
             }
         }

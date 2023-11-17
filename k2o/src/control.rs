@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::TryRecvError;
-use log::{debug, info};
+use log::debug;
 use opentelemetry::trace::{TraceContextExt, Tracer};
 
 use crate::{
@@ -162,12 +162,12 @@ impl StateTracker {
                         acquisition_id: *acquisition_id,
                     }),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
-                    EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
+                    EventMsg::AcquisitionError { msg: _ } => Ok(AcquisitionState::Shutdown),
                 }
             }
             AcquisitionState::Armed {
                 params,
-                acquisition_id,
+                acquisition_id: _,
             } => {
                 match event {
                     // invalid transitions:
@@ -217,7 +217,7 @@ impl StateTracker {
                     EventMsg::AcquisitionEnded { acquisition_id: _ } => Ok(AcquisitionState::Idle),
                     EventMsg::CancelAcquisition { acquisition_id: _ } => Ok(AcquisitionState::Idle),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
-                    EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
+                    EventMsg::AcquisitionError { msg: _ } => Ok(AcquisitionState::Shutdown),
                 }
             }
             AcquisitionState::AcquisitionStarted {
@@ -275,15 +275,15 @@ impl StateTracker {
                             acquisition_id: *acquisition_id,
                         })
                     }
-                    EventMsg::CancelAcquisition { acquisition_id } => Ok(AcquisitionState::Idle),
+                    EventMsg::CancelAcquisition { acquisition_id: _ } => Ok(AcquisitionState::Idle),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
-                    EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
+                    EventMsg::AcquisitionError { msg: _ } => Ok(AcquisitionState::Shutdown),
                 }
             }
             AcquisitionState::AcquisitionFinishing {
                 params: _,
                 frame_id: _,
-                acquisition_id: acquisition_id_outer,
+                acquisition_id: _acquisition_id_outer,
             } => {
                 match event {
                     // invalid transitions:
@@ -330,7 +330,7 @@ impl StateTracker {
                     EventMsg::CancelAcquisition { acquisition_id: _ } => Ok(AcquisitionState::Idle),
                     EventMsg::Shutdown => Ok(AcquisitionState::Shutdown),
                     EventMsg::ProcessingDone { acquisition_id: _ } => Ok(AcquisitionState::Idle),
-                    EventMsg::AcquisitionError { msg } => Ok(AcquisitionState::Shutdown),
+                    EventMsg::AcquisitionError { msg: _ } => Ok(AcquisitionState::Shutdown),
                 }
             }
         }

@@ -95,7 +95,6 @@ impl FrameForWriting for K2ISFrameForWriting {
         let slot_info = shm.writing_done(self.payload);
         K2ISFrame {
             payload: slot_info,
-            subframe_idx: self.subframe_idx,
             frame_id: self.frame_id,
             created_timestamp: self.created_timestamp,
             modified_timestamp: self.modified_timestamp,
@@ -140,24 +139,11 @@ impl K2ISFrameForWriting {
             counts.get(&false).unwrap_or(&0)
         );
     }
-
-    fn into_readonly(self, slot_info: SlotInfo) -> K2ISFrame {
-        K2ISFrame {
-            payload: slot_info,
-            subframe_idx: self.subframe_idx,
-            frame_id: self.frame_id,
-            created_timestamp: self.created_timestamp,
-            modified_timestamp: self.modified_timestamp,
-            acquisition_id: self.acquisition_id,
-        }
-    }
 }
 
 pub struct K2ISFrame {
     /// a reference to the decoded payload of the whole frame
     pub payload: SlotInfo,
-
-    subframe_idx: u8,
 
     /// the frame id as received
     pub frame_id: u32,

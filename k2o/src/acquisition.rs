@@ -1,7 +1,4 @@
-use std::{
-    fmt::Debug,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvError, Select, SelectedOperation, Sender};
 use human_bytes::human_bytes;
@@ -9,7 +6,7 @@ use ipc_test::SharedSlabAllocator;
 use log::{error, info, warn};
 use opentelemetry::{
     global,
-    trace::{self, TraceContextExt, Tracer},
+    trace::{self, Span, TraceContextExt, Tracer},
     Context, Key,
 };
 use partialdebug::placeholder::PartialDebug;
@@ -188,7 +185,11 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
     #[must_use]
     fn handle_frames(mut self) -> HandleFramesResult {
         let tracer = get_tracer();
-        let span = tracer.start("handle_frames");
+        let mut span = tracer.start("handle_frames");
+        span.add_event(
+            "start",
+            vec![Key::new("ref_frame_id").i64(self.ref_frame_id as i64)],
+        );
         let _guard = trace::mark_span_as_active(span);
         let mut sel = Select::new();
         let op_events = sel.recv(self.events_rx);
@@ -209,7 +210,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
             match oper.index() {
                 i if i == op_events => match oper.recv(self.events_rx) {
                     Ok(EventMsg::Shutdown {}) => return HandleFramesResult::Shutdown,
-                    Ok(EventMsg::CancelAcquisition { acquisition_id }) => {
+                    Ok(EventMsg::CancelAcquisition { acquisition_id: _ }) => {
                         return HandleFramesResult::Aborted {
                             dropped: self.dropped,
                         }

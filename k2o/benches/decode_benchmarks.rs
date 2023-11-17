@@ -22,9 +22,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     // let mut out_f32: [f32; DECODED_SIZE * NUM_PACKETS] = [0.0; DECODED_SIZE * NUM_PACKETS];
     // (in production code, we don't need to make these large allocations, as we only look at ~single packets at a time)
 
-    let input = vec![0 as u8; PACKET_SIZE * NUM_PACKETS].into_boxed_slice();
-    let mut out = vec![0 as u16; DECODED_SIZE * NUM_PACKETS].into_boxed_slice();
-    let mut out_f32 = vec![0.0 as f32; DECODED_SIZE * NUM_PACKETS].into_boxed_slice();
+    let input = vec![0_u8; PACKET_SIZE * NUM_PACKETS].into_boxed_slice();
+    let mut out = vec![0_u16; DECODED_SIZE * NUM_PACKETS].into_boxed_slice();
+    let mut out_f32 = vec![0.0_f32; DECODED_SIZE * NUM_PACKETS].into_boxed_slice();
 
     const TOTAL_INPUT_SIZE: usize = NUM_PACKETS * PACKET_SIZE;
 
@@ -40,7 +40,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let out_chunks = out.chunks_exact_mut(DECODED_SIZE);
 
                 for (chunk, o_chunk) in in_chunks.zip(out_chunks) {
-                    decode::<PACKET_SIZE>(black_box(&chunk), black_box(o_chunk));
+                    decode::<PACKET_SIZE>(black_box(chunk), black_box(o_chunk));
                 }
             })
         },
@@ -56,7 +56,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
                 for (in_chunk, out_chunk) in in_chunks.zip(out_chunks) {
                     decode_unrolled::<PACKET_SIZE, DECODED_SIZE>(
-                        black_box(&in_chunk),
+                        black_box(in_chunk),
                         black_box(out_chunk),
                     );
                 }
@@ -74,7 +74,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
                 for (in_chunk, out_chunk) in in_chunks.zip(out_chunks) {
                     decode_map::<_, _, PACKET_SIZE, DECODED_SIZE>(
-                        black_box(&in_chunk),
+                        black_box(in_chunk),
                         black_box(out_chunk),
                         |x| x,
                     );
@@ -93,7 +93,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
                 for (in_chunk, out_chunk) in in_chunks.zip(out_chunks) {
                     decode_map::<_, _, PACKET_SIZE, DECODED_SIZE>(
-                        black_box(&in_chunk),
+                        black_box(in_chunk),
                         black_box(out_chunk),
                         |x| x as f32,
                     );
@@ -112,7 +112,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
                 for (in_chunk, out_chunk) in in_chunks.zip(out_chunks) {
                     decode_converted::<_, PACKET_SIZE, DECODED_SIZE>(
-                        black_box(&in_chunk),
+                        black_box(in_chunk),
                         black_box(out_chunk),
                     );
                 }
@@ -130,7 +130,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
                 for (in_chunk, out_chunk) in in_chunks.zip(out_chunks) {
                     decode_converted::<_, PACKET_SIZE, DECODED_SIZE>(
-                        black_box(&in_chunk),
+                        black_box(in_chunk),
                         black_box(out_chunk),
                     );
                 }

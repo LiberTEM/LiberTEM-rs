@@ -15,9 +15,9 @@ pub enum WriteMode {
     HDF5,
 }
 
-impl Into<WriterType> for WriteMode {
-    fn into(self) -> WriterType {
-        match self {
+impl From<WriteMode> for WriterType {
+    fn from(val: WriteMode) -> Self {
+        match val {
             WriteMode::Direct => WriterType::Direct,
             WriteMode::MMAP => WriterType::Mmap,
             #[cfg(not(feature = "hdf5"))]

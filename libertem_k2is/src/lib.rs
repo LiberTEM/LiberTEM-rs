@@ -5,7 +5,6 @@ use env_logger::Builder;
 use ipc_test::SharedSlabAllocator;
 use shm_helpers::{CamClient, FrameRef};
 use std::{
-    panic,
     path::Path,
     sync::{Arc, Barrier},
     time::{Duration, Instant},
@@ -16,15 +15,10 @@ use bgthread::{AcquisitionRuntime, AddrConfig, RuntimeError, WaitResult};
 
 use k2o::{
     acquisition::AcquisitionResult,
-    block::K2Block,
-    block_is::K2ISBlock,
     events::{AcquisitionParams, AcquisitionSync, WriterSettings, WriterTypeError},
-    frame::{GenericFrame, K2Frame},
-    frame_is::K2ISFrame,
-    frame_summit::K2SummitFrame,
+    frame::GenericFrame,
     params::CameraMode,
     tracing::{get_tracer, init_tracer},
-    write::{DirectWriterBuilder, MMapWriterBuilder, WriterBuilder},
 };
 
 #[cfg(feature = "hdf5")]
@@ -34,7 +28,7 @@ use opentelemetry::{
     trace::{self, SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer},
     Context, ContextGuard,
 };
-use pyo3::{exceptions, prelude::*};
+use pyo3::{exceptions, prelude::*, types::PyType};
 
 fn tracing_thread() {
     let thread_builder = std::thread::Builder::new();
@@ -168,11 +162,26 @@ impl From<CameraMode> for PyMode {
     }
 }
 
-impl Into<CameraMode> for PyMode {
-    fn into(self) -> CameraMode {
-        match self {
+impl From<PyMode> for CameraMode {
+    fn from(val: PyMode) -> Self {
+        match val {
             PyMode::IS => CameraMode::IS,
             PyMode::Summit => CameraMode::Summit,
+        }
+    }
+}
+
+#[pymethods]
+impl PyMode {
+    #[classmethod]
+    fn from_string(_cls: &PyType, mode: &str) -> PyResult<Self> {
+        match mode.to_lowercase().as_ref() {
+            "is" => Ok(Self::IS),
+            "summit" => Ok(Self::Summit),
+            _ => Err(exceptions::PyValueError::new_err(format!(
+                "unknown mode: {}",
+                mode
+            ))),
         }
     }
 }
@@ -299,6 +308,14 @@ impl Acquisition {
         self.id
     }
 
+    fn get_mode(&self) -> PyMode {
+        self.camera_mode.into()
+    }
+
+    fn get_params(&self) -> PyAcquisitionParams {
+        self.params.clone()
+    }
+
     fn __repr__(&self) -> String {
         let id = self.id;
         format!("<Acquisition id='{id}'>")
@@ -307,9 +324,7 @@ impl Acquisition {
 
 #[pyclass]
 struct Cam {
-    addr_config: AddrConfig,
     camera_mode: PyMode,
-    shm_path: String,
     enable_frame_iterator: bool,
     shm: Option<SharedSlabAllocator>,
     runtime: Option<AcquisitionRuntime>,
@@ -347,9 +362,7 @@ impl Cam {
         );
 
         Ok(Cam {
-            addr_config,
             camera_mode: mode,
-            shm_path: shm_path.to_owned(),
             enable_frame_iterator,
             shm: Some(shm),
             runtime: Some(runtime),
@@ -488,11 +501,11 @@ impl Cam {
                             }
                             AcquisitionResult::DoneAborted {
                                 dropped,
-                                acquisition_id,
+                                acquisition_id: _,
                             }
                             | AcquisitionResult::DoneSuccess {
                                 dropped,
-                                acquisition_id,
+                                acquisition_id: _,
                             } => {
                                 eprintln!("dropped {dropped} frames in this acquisition");
                                 return Ok(None);

@@ -5,7 +5,7 @@ use std::{
 };
 
 use crossbeam_channel::{select, unbounded, Receiver, RecvError, SendError, Sender};
-use log::{debug, info};
+use log::debug;
 
 use crate::write::{DirectWriterBuilder, MMapWriterBuilder, NoopWriterBuilder, WriterBuilder};
 #[cfg(feature = "hdf5")]
