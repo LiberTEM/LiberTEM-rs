@@ -135,6 +135,14 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
                         acquisition_id,
                     });
                     state = RecvState::Receiving { acquisition_id };
+                    // send out the first block:
+                    let route_info = BlockRouteInfo::new(&block);
+                    if assembly_channel.send((block, route_info)).is_err() {
+                        events.send(&EventMsg::AcquisitionError {
+                            msg: "failed to send to assembly threads".to_string(),
+                        });
+                        break;
+                    }
                 }
             }
             RecvState::WaitForNext { acquisition_id } => {

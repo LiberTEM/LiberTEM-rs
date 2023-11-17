@@ -3,10 +3,7 @@ use std::{
     collections::{BinaryHeap, HashSet},
 };
 
-use crate::{
-    acquisition::AcquisitionResult,
-    frame::{GenericFrame, K2Frame},
-};
+use crate::{acquisition::AcquisitionResult, frame::GenericFrame};
 
 pub enum FrameOrderingResult {
     Buffered,
@@ -19,9 +16,9 @@ pub enum FrameWithIdx {
     DroppedFrame(GenericFrame, u32),
 }
 
-impl Into<AcquisitionResult<GenericFrame>> for FrameWithIdx {
-    fn into(self) -> AcquisitionResult<GenericFrame> {
-        match self {
+impl From<FrameWithIdx> for AcquisitionResult<GenericFrame> {
+    fn from(val: FrameWithIdx) -> Self {
+        match val {
             FrameWithIdx::Frame(frame, frame_idx) => AcquisitionResult::Frame(frame, frame_idx),
             FrameWithIdx::DroppedFrame(frame, frame_idx) => {
                 AcquisitionResult::DroppedFrame(frame, frame_idx)
@@ -103,8 +100,8 @@ impl FrameOrdering {
     pub fn handle_frame(&mut self, frame_w_idx: FrameWithIdx) -> FrameOrderingResult {
         let expected_frame_idx = self.next_expected_frame_idx;
 
-        // frame indices can be repeated, in case we drop a frame and later a
-        // block of said frame arrives, which starts a new frame with the old index
+        // Frame indices can be repeated, in case we drop a frame and later a
+        // block of said frame arrives, which starts a new frame with the old index.
         // filter these out here:
         if self.dropped_idxs.contains(&frame_w_idx.get_idx()) {
             return FrameOrderingResult::Dropped;

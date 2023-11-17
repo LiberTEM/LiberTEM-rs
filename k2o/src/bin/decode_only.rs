@@ -1,5 +1,5 @@
+use k2o::decode::decode_unrolled;
 use k2o::decode::HEADER_SIZE;
-use k2o::decode::{decode, decode_unrolled};
 
 fn main() {
     const PACKET_SIZE: usize = 0x5758;

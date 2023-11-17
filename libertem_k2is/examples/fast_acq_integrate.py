@@ -6,9 +6,16 @@ This example demonstrates fast turnaround of multiple acquisitions, where:
 3) Each acquisition start point is properly synchronized, meaning it doesn't
    include data from any point in time before explicitly starting the
    acquisition.
+
+To run with full instrumentation and debug logging:
+
+$ OTEL_ENABLE=1 OTLP_ENDPOINT=localhost:4317 LIBERTEM_K2IS_LOG_LEVEL=debug\
+    python examples/fast_acq_integrate.py\
+        --mode summit --num-parts=2 --frames-per-part=4
 """
 
 import time
+import datetime
 
 import click
 import numpy as np
@@ -23,15 +30,15 @@ from k2opy import (
 tracer = trace.get_tracer("write_and_iterate")
 
 
-def iterate(aq, cam, cam_client, frame_arr):
+def iterate(outer_i, aq, cam, cam_client, frame_arr):
     t0 = time.time()
     i = 0
     try:
         while frame := cam.get_next_frame():
-            i += 1
             if frame.is_dropped():
                 print(f"dropped frame {frame.get_idx()}")
                 continue
+            i += 1
             slot = cam.get_frame_slot(frame)
             frame_ref = cam_client.get_frame_ref(slot)
             mv = frame_ref.get_memoryview()
@@ -43,7 +50,7 @@ def iterate(aq, cam, cam_client, frame_arr):
     finally:
         t1 = time.time()
         print(f"acquisition {aq} done, got {i} frames in {t1-t0:.2f}s...")
-        # np.save(f"/cachedata/alex/bar-sum-{aq.get_id()}.npy", frame_arr)
+    np.save(f"/cachedata/alex/bar-sum-{outer_i}.npy", frame_arr)
 
 
 @click.command
@@ -53,10 +60,7 @@ def iterate(aq, cam, cam_client, frame_arr):
 def main(mode, num_parts, frames_per_part):
     maybe_setup_tracing("write_and_iterate")
     with tracer.start_as_current_span("main"):
-        if mode.lower() == "summit":
-            mode = Mode.Summit
-        elif mode.lower() == "is":
-            mode = Mode.IS
+        mode = Mode.from_string(mode)
         shm_socket = "/tmp/k2shm.socket"
         cam = Cam(
             local_addr_top="192.168.10.99",
@@ -72,10 +76,11 @@ def main(mode, num_parts, frames_per_part):
         try:
             for i in range(num_parts):
                 frame_arr[:] = 0
+                ts = datetime.datetime.now().strftime("%H:%M:%S")
                 writer = Writer(
                     method="direct",
                     # method="mmap",
-                    filename=f"/cachedata/alex/bar-{i}.raw",
+                    filename=f"/cachedata/alex/bar-{i}-{ts}.raw",
                 )
                 aqp = AcquisitionParams(
                     size=frames_per_part,
@@ -87,9 +92,9 @@ def main(mode, num_parts, frames_per_part):
                 aq = cam.make_acquisition(aqp)
                 print(f"acquisition {aq}")
                 cam.wait_for_start()
-                iterate(aq, cam, cam_client, frame_arr)
+                iterate(i, aq, cam, cam_client, frame_arr)
         finally:
-            # this shuts down the runtime, backgrounds threads an all...
+            # this shuts down the runtime, backgrounds threads and all...
             cam.stop()
 
 

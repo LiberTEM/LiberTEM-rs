@@ -9,7 +9,7 @@ use hdf5::{
     types::{IntSize, TypeDescriptor},
     Dataset, Extent,
 };
-use log::{info, trace};
+use log::trace;
 use memmap2::{MmapMut, MmapOptions};
 use ndarray::s;
 use ndarray_npy::{write_zeroed_npy, ViewMutNpyExt};
