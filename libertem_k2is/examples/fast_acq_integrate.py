@@ -46,6 +46,8 @@ def iterate(outer_i, aq, cam, cam_client, frame_arr, do_work):
     try:
         while frame := cam.get_next_frame():
             if frame.is_dropped():
+                slot = cam.get_frame_slot(frame)
+                cam_client.done(slot)
                 print(f"dropped frame {frame.get_idx()}")
                 continue
             i += 1

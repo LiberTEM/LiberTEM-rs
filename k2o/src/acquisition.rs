@@ -263,11 +263,11 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                     "handle_assembled_frame",
                     vec![Key::new("frame_id").i64(frame_id as i64)],
                 );
-                assert!(self.acquisition_id == frame.get_acquisition_id());
                 if frame.get_acquisition_id() == self.acquisition_id {
                     self.handle_assembled_frame(frame, writer)
                 } else {
                     warn!("dropped assembled frame from unrelated acquisition");
+                    frame.free_payload(self.shm);
                     None
                 }
             }
@@ -278,6 +278,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                     self.timeout(frame_id, frame);
                 } else {
                     warn!("dropped frame from unrelated acquisition");
+                    frame.free_payload(self.shm);
                 }
 
                 // handle the case that the last frame was dropped:

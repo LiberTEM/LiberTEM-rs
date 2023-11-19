@@ -2,6 +2,7 @@ mod shm_helpers;
 
 use env_logger::Builder;
 use ipc_test::SharedSlabAllocator;
+use log::info;
 use shm_helpers::{CamClient, FrameRef};
 use std::{
     path::Path,
@@ -499,7 +500,7 @@ impl Cam {
                                 dropped,
                                 acquisition_id: _,
                             } => {
-                                eprintln!("dropped {dropped} frames in this acquisition");
+                                info!("dropped {dropped} frames in this acquisition");
                                 return Ok(None);
                             }
                         }
