@@ -1,4 +1,3 @@
-mod bgthread;
 mod shm_helpers;
 
 use env_logger::Builder;
@@ -11,13 +10,14 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
-use bgthread::{AcquisitionRuntime, AddrConfig, RuntimeError, WaitResult};
+use k2o::runtime::{AddrConfig, RuntimeError, WaitResult};
 
 use k2o::{
     acquisition::AcquisitionResult,
     events::{AcquisitionParams, AcquisitionSync, WriterSettings, WriterTypeError},
     frame::GenericFrame,
     params::CameraMode,
+    runtime::AcquisitionRuntime,
     tracing::{get_tracer, init_tracer},
 };
 
@@ -289,13 +289,6 @@ impl Acquisition {
     }
 }
 
-impl From<RuntimeError> for PyErr {
-    fn from(val: RuntimeError) -> Self {
-        let msg = format!("runtime error: {val:?}");
-        exceptions::PyRuntimeError::new_err(msg)
-    }
-}
-
 #[pymethods]
 impl Acquisition {
     fn get_id(&self) -> usize {
@@ -314,6 +307,11 @@ impl Acquisition {
         let id = self.id;
         format!("<Acquisition id='{id}'>")
     }
+}
+
+fn convert_runtime_error(val: RuntimeError) -> PyErr {
+    let msg = format!("runtime error: {val:?}");
+    exceptions::PyRuntimeError::new_err(msg)
 }
 
 #[pyclass]
@@ -467,7 +465,7 @@ impl Cam {
                         // FIXME: break out of here after some larger timeout of no data received?
                         continue;
                     }
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(convert_runtime_error(e)),
                     Ok(result) => {
                         py.check_signals()?;
                         match &result {
@@ -481,11 +479,11 @@ impl Cam {
                                 } else {
                                     let frame_id = result.get_frame().unwrap().get_frame_id();
                                     println!("recycling frame {frame_id}");
-                                    runtime.frame_done(result)?;
+                                    runtime.frame_done(result).map_err(convert_runtime_error)?;
                                 }
                             }
                             AcquisitionResult::DroppedFrameOutside(_) => {
-                                runtime.frame_done(result)?;
+                                runtime.frame_done(result).map_err(convert_runtime_error)?;
                             }
                             AcquisitionResult::ShutdownIdle
                             | AcquisitionResult::DoneShuttingDown { acquisition_id: _ } => {
@@ -517,7 +515,9 @@ impl Cam {
 
     fn frame_done(&mut self, frame: &mut PyFrame) -> PyResult<()> {
         if let Some(runtime) = &mut self.runtime {
-            runtime.frame_done(frame.consume_frame_data())?;
+            runtime
+                .frame_done(frame.consume_frame_data())
+                .map_err(convert_runtime_error)?;
             Ok(())
         } else {
             Err(exceptions::PyRuntimeError::new_err(
