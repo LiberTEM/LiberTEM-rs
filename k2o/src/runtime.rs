@@ -1,26 +1,26 @@
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
-
+use crate::acquisition::{acquisition_loop, frame_in_acquisition, AcquisitionResult};
+use crate::assemble::{assembler_main, AssemblyResult};
+use crate::block::{BlockRouteInfo, K2Block};
+use crate::block_is::K2ISBlock;
+use crate::block_summit::K2SummitBlock;
+use crate::control::{control_loop, AcquisitionState, StateError, StateTracker};
+use crate::events::{AcquisitionParams, ChannelEventBus, EventBus, EventMsg, Events, MessagePump};
+use crate::frame::{GenericFrame, K2Frame};
+use crate::frame_is::K2ISFrame;
+use crate::frame_summit::K2SummitFrame;
+use crate::helpers::{set_cpu_affinity, CPU_AFF_WRITER};
+use crate::params::CameraMode;
+use crate::recv::recv_decode_loop;
+use crate::tracing::get_tracer;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
-use k2o::acquisition::{acquisition_loop, frame_in_acquisition, AcquisitionResult};
-use k2o::assemble::{assembler_main, AssemblyResult};
-use k2o::block::{BlockRouteInfo, K2Block};
-use k2o::block_is::K2ISBlock;
-use k2o::block_summit::K2SummitBlock;
-use k2o::control::{control_loop, AcquisitionState, StateError, StateTracker};
-use k2o::events::{AcquisitionParams, ChannelEventBus, EventBus, EventMsg, Events, MessagePump};
-use k2o::frame::{GenericFrame, K2Frame};
-use k2o::frame_is::K2ISFrame;
-use k2o::frame_summit::K2SummitFrame;
-use k2o::helpers::{set_cpu_affinity, CPU_AFF_WRITER};
-use k2o::params::CameraMode;
-use k2o::recv::recv_decode_loop;
-use k2o::tracing::get_tracer;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use log::debug;
 use opentelemetry::trace::Tracer;
 use opentelemetry::{global, Context};
+
 #[derive(Debug, Clone)]
 pub struct AddrConfig {
     top: String,
@@ -165,7 +165,7 @@ fn k2_bg_thread<
 /// Communication with the background thread(s) is handled via the event bus,
 /// that is, `k2o::events::Events` and `k2o::events::EventReceiver`.
 ///
-pub fn start_bg_thread<F: K2Frame + 'static, const PACKET_SIZE: usize>(
+pub fn start_bg_thread<F: K2Frame, const PACKET_SIZE: usize>(
     events: Events,
     addr_config: AddrConfig,
     pump: MessagePump,
@@ -439,8 +439,7 @@ impl AcquisitionRuntime {
         // currently running?
         // self.events
         //     .send(&k2o::events::EventMsg::CancelAcquisition {});
-        self.main_events_tx
-            .send(k2o::events::EventMsg::Shutdown {})?;
+        self.main_events_tx.send(EventMsg::Shutdown {})?;
         global::force_flush_tracer_provider();
         Ok(())
     }
