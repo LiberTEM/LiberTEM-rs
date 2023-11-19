@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 
 use crossbeam_channel::{Receiver, RecvError, Select, SelectedOperation, Sender};
 use human_bytes::human_bytes;
@@ -138,6 +141,8 @@ fn next_hop_ordered(
 // currently working on
 
 struct FrameHandler<'a, F: K2Frame> {
+    acquisition_id: usize,
+
     channel: &'a Receiver<AssemblyResult<F>>,
     next_hop_tx: &'a Sender<AcquisitionResult<GenericFrame>>,
     events_rx: &'a EventReceiver,
@@ -150,6 +155,7 @@ struct FrameHandler<'a, F: K2Frame> {
     counter: usize,
     dropped: usize,
     dropped_outside: usize,
+    dropped_frame_ids: HashSet<u32>,
 
     ref_ts: Instant,
     ref_bytes_written: usize,
@@ -157,6 +163,7 @@ struct FrameHandler<'a, F: K2Frame> {
 
 impl<'a, F: K2Frame> FrameHandler<'a, F> {
     fn new(
+        acquisition_id: usize,
         channel: &'a Receiver<AssemblyResult<F>>,
         next_hop_tx: &'a Sender<AcquisitionResult<GenericFrame>>,
         events_rx: &'a EventReceiver,
@@ -166,6 +173,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
         ref_frame_id: u32,
     ) -> Self {
         FrameHandler {
+            acquisition_id,
             channel,
             next_hop_tx,
             events_rx,
@@ -177,6 +185,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
             counter: 0,
             dropped: 0,
             dropped_outside: 0,
+            dropped_frame_ids: HashSet::new(),
             ref_ts: Instant::now(),
             ref_bytes_written: 0,
         }
@@ -254,12 +263,22 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                     "handle_assembled_frame",
                     vec![Key::new("frame_id").i64(frame_id as i64)],
                 );
-                self.handle_assembled_frame(frame, writer)
+                assert!(self.acquisition_id == frame.get_acquisition_id());
+                if frame.get_acquisition_id() == self.acquisition_id {
+                    self.handle_assembled_frame(frame, writer)
+                } else {
+                    warn!("dropped assembled frame from unrelated acquisition");
+                    None
+                }
             }
             Ok(AssemblyResult::AssemblyTimeout { frame, frame_id }) => {
                 span.add_event("timeout", vec![Key::new("frame_id").i64(frame_id as i64)]);
                 let frame_meta = frame.get_meta();
-                self.timeout(frame_id, frame);
+                if frame.get_acquisition_id() == self.acquisition_id {
+                    self.timeout(frame_id, frame);
+                } else {
+                    warn!("dropped frame from unrelated acquisition");
+                }
 
                 // handle the case that the last frame was dropped:
                 if let AcquisitionSize::NumFrames(num) = self.params.size {
@@ -322,6 +341,9 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                     let result = FrameWithIdx::Frame(frame.into_generic(), frame_idx);
                     next_hop_ordered(&mut self.ordering, self.next_hop_tx, result);
                     self.ordering.dump_if_nonempty();
+                    if !self.ordering.is_empty() {
+                        info!("self.counter = {}, num = {}", self.counter, num);
+                    }
                     assert!(self.ordering.is_empty());
                     return Some(HandleFramesResult::Done {
                         dropped: self.dropped,
@@ -346,7 +368,10 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                 vec![Key::new("frame_id").i64(frame_id as i64)],
             );
             self.dropped += 1;
-            self.counter += 1; // FIXME: might need to increment by number of subframes?
+            // only increment the counter if we haven't seen this frame ID before:
+            if self.dropped_frame_ids.insert(frame.get_frame_id()) {
+                self.counter += 1; // FIXME: might need to increment by number of subframes?
+            }
             let result = FrameWithIdx::DroppedFrame(frame.into_generic(), frame_idx);
             next_hop_ordered(&mut self.ordering, self.next_hop_tx, result);
         } else {
@@ -379,7 +404,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                 String::from("")
             }
         };
-        info!("frame acq#{} counter={} frame_id={} dropped={} dropped_outside={}, latency first block -> frame written={:?} channel.len()={} write throughput={}/s fps={}",
+        info!("acq#{} frame counter={} frame_id={} dropped={} dropped_outside={}, latency first block -> frame written={:?} channel.len()={} write throughput={}/s fps={}",
             frame_meta.get_acquisition_id(), self.counter, frame_meta.get_frame_id(),
             self.dropped, self.dropped_outside, latency, channel_size,
             throughput, fps
@@ -462,6 +487,7 @@ pub fn acquisition_loop<F: K2Frame>(
                                         .add_event("AcquisitionStarted", vec![]);
                                     let writer_builder = params.writer_settings.get_writer_builder();
                                     let fh = FrameHandler::new(
+                                        acquisition_id,
                                         channel,
                                         next_hop_tx,
                                         events_rx,
