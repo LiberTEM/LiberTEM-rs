@@ -71,7 +71,7 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
     let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
 
     match make_realtime(50) {
-        Ok(_) => info!("successfully enabled realtime priority"),
+        Ok(prio) => info!("successfully enabled realtime priority {prio}"),
         Err(e) => error!("failed to set realtime priority: {e:?}"),
     }
 
@@ -183,6 +183,7 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
                 if l > 10000 {
                     // make sure we don't consume all available memory:
                     error!("too many blocks in assembly_channel, bailing out");
+                    break;
                 }
                 if assembly_channel.send((block, route_info)).is_err() {
                     events.send(&EventMsg::AcquisitionError {

@@ -3,6 +3,8 @@ use std::{
     collections::{BinaryHeap, HashSet},
 };
 
+use itertools::Itertools;
+
 use crate::{acquisition::AcquisitionResult, frame::GenericFrame};
 
 pub enum FrameOrderingResult {
@@ -156,7 +158,7 @@ impl FrameOrdering {
         if !self.is_empty() {
             println!("\n\nDUMP START");
             println!("next expected frame idx: {}", self.next_expected_frame_idx);
-            for rf in self.frame_buffer.iter() {
+            for rf in self.frame_buffer.iter().sorted() {
                 let Reverse(f) = rf;
                 print!("{:?} - ", f.get_idx());
             }

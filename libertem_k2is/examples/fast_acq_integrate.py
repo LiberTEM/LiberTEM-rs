@@ -19,6 +19,7 @@ import datetime
 
 import click
 import numpy as np
+import numba
 from libertem.common.tracing import maybe_setup_tracing
 
 from opentelemetry import trace
@@ -28,6 +29,15 @@ from k2opy import (
 )
 
 tracer = trace.get_tracer("write_and_iterate")
+
+
+@numba.njit(parallel=True)
+def cast_and_add(dst, src):
+    dst_flat = dst.reshape((-1,))
+    src_flat = src.reshape((-1,))
+    # assert dst_flat.shape == src_flat.shape
+    for i in numba.prange(dst_flat.shape[0]):
+        dst_flat[i] += src_flat[i]
 
 
 def iterate(outer_i, aq, cam, cam_client, frame_arr):
@@ -45,7 +55,8 @@ def iterate(outer_i, aq, cam, cam_client, frame_arr):
             payload = np.frombuffer(mv, dtype=np.uint16).reshape(
                 cam.get_frame_shape()
             )
-            frame_arr += payload
+            cast_and_add(frame_arr, payload)
+            # frame_arr += payload
             cam_client.done(slot)
     finally:
         t1 = time.time()
@@ -73,6 +84,8 @@ def main(mode, num_parts, frames_per_part):
 
         frame_arr = np.zeros(cam.get_frame_shape(), dtype=np.float32)
 
+        numba.set_num_threads(8)
+        print("ready for acquisition")
         try:
             for i in range(num_parts):
                 frame_arr[:] = 0

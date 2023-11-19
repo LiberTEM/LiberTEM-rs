@@ -159,7 +159,7 @@ fn assembly_worker<F: K2Frame, B: K2Block>(
     let mut shm = SharedSlabAllocator::connect(handle_path).expect("connect to SHM");
 
     match make_realtime(5) {
-        Ok(_) => info!("successfully enabled realtime priority"),
+        Ok(prio) => info!("successfully enabled realtime priority {prio}"),
         Err(e) => error!("failed to set realtime priority: {e:?}"),
     }
 
@@ -219,7 +219,7 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
     let ctx = Context::current();
 
     // warmup for the block queue:
-    for _ in 0..512 {
+    for _ in 0..1024 {
         recycle_blocks_tx.send(B::empty(0, 0)).unwrap();
     }
 
@@ -246,7 +246,7 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
                     )
                     .is_err()
                     {
-                        eprintln!("disconnect in asm-frame");
+                        warn!("disconnect in asm-frame");
                     }
                 })
                 .expect("could not spawn asm-frame");
@@ -259,7 +259,7 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
                     let frame_id = block_route.get_frame_id();
                     let chan = worker_channels[(frame_id as usize) % pool_size].clone();
                     if chan.send(block).is_err() {
-                        eprintln!("assembly thread died, stopping");
+                        error!("assembly thread died, stopping");
                         stop_event.store(true, Ordering::Relaxed);
                         break;
                     }
