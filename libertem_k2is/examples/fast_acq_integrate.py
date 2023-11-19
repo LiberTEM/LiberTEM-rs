@@ -40,7 +40,7 @@ def cast_and_add(dst, src):
         dst_flat[i] += src_flat[i]
 
 
-def iterate(outer_i, aq, cam, cam_client, frame_arr):
+def iterate(outer_i, aq, cam, cam_client, frame_arr, do_work):
     t0 = time.time()
     i = 0
     try:
@@ -55,7 +55,8 @@ def iterate(outer_i, aq, cam, cam_client, frame_arr):
             payload = np.frombuffer(mv, dtype=np.uint16).reshape(
                 cam.get_frame_shape()
             )
-            cast_and_add(frame_arr, payload)
+            if do_work:
+                cast_and_add(frame_arr, payload)
             # frame_arr += payload
             cam_client.done(slot)
     finally:
@@ -68,7 +69,8 @@ def iterate(outer_i, aq, cam, cam_client, frame_arr):
 @click.option('--mode', default="summit", type=str)
 @click.option('--num-parts', default=4, type=int)
 @click.option('--frames-per-part', default=10, type=int)
-def main(mode, num_parts, frames_per_part):
+@click.option('--do-work', default=True, type=bool)
+def main(mode, num_parts, frames_per_part, do_work):
     maybe_setup_tracing("write_and_iterate")
     with tracer.start_as_current_span("main"):
         mode = Mode.from_string(mode)
@@ -105,7 +107,7 @@ def main(mode, num_parts, frames_per_part):
                 aq = cam.make_acquisition(aqp)
                 print(f"acquisition {aq}")
                 cam.wait_for_start()
-                iterate(i, aq, cam, cam_client, frame_arr)
+                iterate(i, aq, cam, cam_client, frame_arr, do_work)
         finally:
             # this shuts down the runtime, backgrounds threads and all...
             cam.stop()

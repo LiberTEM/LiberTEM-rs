@@ -60,17 +60,11 @@ fn tracing_thread() {
 }
 
 fn get_py_span_context(py: Python) -> PyResult<SpanContext> {
-    let extract_span_context = PyModule::from_code(
-        py,
-        "
-from opentelemetry import trace
-span = trace.get_current_span()
-span_context = span.get_span_context()",
-        "",
-        "",
-    )?;
-
-    let span_context_py = extract_span_context.getattr("span_context")?;
+    let span_context_py = PyModule::import(py, "opentelemetry.trace")?
+        .getattr("get_current_span")?
+        .call0()?
+        .getattr("get_span_context")?
+        .call0()?;
 
     let trace_id_py: u128 = span_context_py.getattr("trace_id")?.extract()?;
     let span_id_py: u64 = span_context_py.getattr("span_id")?.extract()?;
