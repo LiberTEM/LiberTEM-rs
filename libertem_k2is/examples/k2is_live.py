@@ -30,7 +30,9 @@ from libertem_live.detectors.base.connection import (
 )
 from libertem_live.hooks import Hooks
 
-from k2opy import Cam, Sync, AcquisitionParams, Acquisition, CamClient, Writer
+from k2opy import (
+    Cam, Sync, AcquisitionParams, Acquisition, CamClient, Writer, Mode,
+)
 
 
 tracer = trace.get_tracer(__name__)
@@ -54,13 +56,18 @@ class K2ISDetectorConnection(DetectorConnection):
         local_addr_top: str,
         local_addr_bottom: str,
         sync_mode=Sync.WaitForSync,  # or `Sync.Immediately`
-        file_pattern: Optional[str] = None,  # must contain one %d pattern for sequence number
-        # TODO: shm config here
+        camera_mode=Mode.IS,
+        file_pattern: Optional[str] = None,
+        shm_path: Optional[str] = None,
     ):
         self._local_addr_top = local_addr_top
         self._local_addr_bottom = local_addr_bottom
         self._sync_mode = sync_mode
+        self._cam_mode = camera_mode
         self._file_pattern = file_pattern
+        if shm_path is None:
+            shm_path = f"/run/user/{os.getuid()}/k2is-shm-path"
+        self._shm_path = shm_path
 
         self._connect()
 
@@ -68,6 +75,9 @@ class K2ISDetectorConnection(DetectorConnection):
         cam = Cam(
             local_addr_top=self._local_addr_top,
             local_addr_bottom=self._local_addr_bottom,
+            mode=self._cam_mode,
+            enable_frame_iterator=True,
+            shm_path=self._shm_path,
         )
         self._conn = cam
 
@@ -79,8 +89,11 @@ class K2ISDetectorConnection(DetectorConnection):
     def get_conn_impl(self):
         return self._conn
 
+    def get_shm_path(self) -> str:
+        return self._shm_path
+
     def close(self):
-        self._conn.close()
+        self._conn.stop()
         self._conn = None
 
     def reconnect(self):
@@ -102,10 +115,16 @@ class K2ISConnectionBuilder:
         self,
         local_addr_top: str,
         local_addr_bottom: str,
+        camera_mode: Mode = Mode.IS,
+        shm_path: Optional[str] = None,
+        file_pattern: Optional[str] = None,
     ):
         return K2ISDetectorConnection(
             local_addr_top=local_addr_top,
             local_addr_bottom=local_addr_bottom,
+            camera_mode=camera_mode,
+            shm_path=shm_path,
+            file_pattern=file_pattern,
         )
 
 
@@ -119,17 +138,26 @@ def get_frames(request_queue, socket_path: str) -> FramesIter:
     """
     while True:
         cam_client = CamClient(socket_path)
+        zeros_frame = np.zeros((1860, 2048), dtype=np.uint16)
+
         try:
             with request_queue.get() as msg:
                 header, payload_empty = msg
                 header_type = header["type"]
                 if header_type == "FRAMES":
                     idx = header['idx']
+                    dropped = header['dropped']
                     span = trace.get_current_span()
                     span.add_event("frame", {"slot": header['slot'], "idx": header["idx"]})
                     frame_ref = cam_client.get_frame_ref(header['slot'])
                     mv = frame_ref.get_memoryview()
-                    payload = np.frombuffer(mv, dtype=np.uint16).reshape((1860, 2048))
+                    if dropped:
+                        payload = zeros_frame
+                    else:
+                        payload = np.frombuffer(mv, dtype=np.uint16).reshape(
+                            # TODO: cam.get_frame_shape
+                            (1860, 2048)
+                        )
                     yield (payload, idx)
                     del payload
                     del mv
@@ -151,8 +179,7 @@ class K2CommHandler(TaskCommHandler):
         self._conn = conn
 
     def handle_task(self, task: TaskProtocol, queue: WorkerQueue):
-        aq = self._aq
-        conn = self._conn
+        cam = self._conn.get_conn_impl()
 
         with tracer.start_as_current_span("K2CommHandler.handle_task") as span:
             put_time = 0.0
@@ -169,7 +196,7 @@ class K2CommHandler(TaskCommHandler):
             current_idx = start_idx
             while current_idx < end_idx:
                 t0 = time.perf_counter()
-                frame = aq.get_next_frame()
+                frame = cam.get_next_frame()
                 t1 = time.perf_counter()
                 recv_time += t1 - t0
                 if frame is None:
@@ -186,7 +213,8 @@ class K2CommHandler(TaskCommHandler):
                 queue.put({
                     "type": "FRAMES",
                     "idx": frame.get_idx(),
-                    "slot": aq.get_frame_slot(frame),
+                    "dropped": frame.is_dropped(),
+                    "slot": cam.get_frame_slot(frame),
                 })
                 t1 = time.perf_counter()
                 put_time += t1 - t0
@@ -198,11 +226,15 @@ class K2CommHandler(TaskCommHandler):
             })
 
     def start(self):
-        socket_path = "/tmp/k2is-socket-todo"
         pass
 
     def done(self):
-        pass
+        # continue pumping events for a bit:
+        cam = self._conn.get_conn_impl()
+        while True:
+            frame = cam.get_next_frame()
+            if frame is None:
+                break
 
 
 class K2Acquisition(AcquisitionMixin, DataSet):
@@ -310,23 +342,19 @@ class K2Acquisition(AcquisitionMixin, DataSet):
                     method="direct",
                     filename=filename,
                 )
-            socket_path = "/tmp/k2is-socket-todo"
             aqp = AcquisitionParams(
                 size=nimages,
                 sync=self._conn._sync_mode,
                 writer=writer,
-                enable_frame_iterator=True,
-                shm_path=socket_path,
             )
-            aq = self._conn.get_conn_impl().make_acquisition(aqp)
+            cam = self._conn.get_conn_impl()
+            aq = cam.make_acquisition(aqp)
             try:
                 self._acq_state = aq
-                aq.arm()
-
                 span.add_event("K2Acquisition.acquire:arm")
 
                 try:
-                    aq.wait_for_start()
+                    cam.wait_for_start()
                     t0 = time.time()
                     yield
                 finally:
@@ -334,7 +362,6 @@ class K2Acquisition(AcquisitionMixin, DataSet):
                         print(f"acquisition took {time.time() - t0}s")
                     except NameError:
                         pass
-                    aq.stop()
                     self._acq_state = None
             finally:
                 pass
@@ -372,6 +399,7 @@ class K2Acquisition(AcquisitionMixin, DataSet):
                 end_idx=stop,
                 meta=self._meta,
                 partition_slice=part_slice,
+                shm_path=self._conn.get_shm_path(),
             )
 
     def get_task_comm_handler(self) -> "K2CommHandler":
@@ -385,11 +413,12 @@ class K2Acquisition(AcquisitionMixin, DataSet):
 class K2LivePartition(Partition):
     def __init__(
         self, start_idx, end_idx, partition_slice,
-        meta,
+        meta, shm_path,
     ):
         super().__init__(meta=meta, partition_slice=partition_slice, io_backend=None, decoder=None)
         self._start_idx = start_idx
         self._end_idx = end_idx
+        self._shm_path = shm_path
 
     def shape_for_roi(self, roi):
         return self.slice.adjust_for_roi(roi).shape
@@ -421,8 +450,7 @@ class K2LivePartition(Partition):
         buf = np.zeros((depth,) + tiling_scheme[0].shape, dtype=dest_dtype)
         buf_idx = 0
         tile_start = self._start_idx
-        socket_path = "/tmp/k2is-socket-todo"
-        frames = get_frames(self._worker_context.get_worker_queue(), socket_path)
+        frames = get_frames(self._worker_context.get_worker_queue(), self._shm_path)
         while to_read > 0:
             # 1) put frame into tile buffer (including dtype conversion if needed)
             assert buf_idx < depth,\

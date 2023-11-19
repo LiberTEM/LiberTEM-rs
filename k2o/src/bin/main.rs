@@ -106,6 +106,7 @@ fn start_threads<
                         &recycle_blocks_tx,
                         asm_events_rx,
                         asm_shm,
+                        &Duration::from_millis(100),
                     );
                 }
             })
@@ -151,6 +152,7 @@ fn start_threads<
                             | Ok(AcquisitionResult::DoneSuccess { .. })
                             | Ok(AcquisitionResult::ShutdownIdle)
                             | Ok(AcquisitionResult::DoneShuttingDown { .. }) => {
+                                events.send(&EventMsg::Shutdown);
                                 info!("retire thread closing");
                                 break;
                             }
@@ -174,10 +176,11 @@ fn start_threads<
             method,
             filename: args.write_to.to_owned(),
         };
+        let writer_settings = WriterSettings::Disabled;
 
         events.send(&EventMsg::Arm {
             params: AcquisitionParams {
-                size: AcquisitionSize::NumFrames(40),
+                size: AcquisitionSize::NumFrames(1800),
                 // size: AcquisitionSize::Continuous,
                 //sync: AcquisitionSync::WaitForSync,
                 sync: AcquisitionSync::Immediately,

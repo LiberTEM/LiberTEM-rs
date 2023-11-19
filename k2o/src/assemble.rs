@@ -25,10 +25,10 @@ pub struct PendingFrames<F: K2Frame> {
 }
 
 impl<F: K2Frame> PendingFrames<F> {
-    pub fn new() -> Self {
+    pub fn new(timeout: Duration) -> Self {
         PendingFrames {
             frames: HashMap::new(),
-            timeout: Duration::from_millis(15),
+            timeout,
         }
     }
 
@@ -132,12 +132,6 @@ impl<F: K2Frame> PendingFrames<F> {
     }
 }
 
-impl<F: K2Frame> Default for PendingFrames<F> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Debug)]
 enum AssemblyError {
     Disconnected,
@@ -154,14 +148,15 @@ fn assembly_worker<F: K2Frame, B: K2Block>(
     recycle_blocks_tx: &Sender<B>,
     stop_event: Arc<AtomicBool>,
     handle_path: &str,
+    timeout: &Duration,
 ) -> Result<(), AssemblyError> {
-    let mut pending: PendingFrames<F> = PendingFrames::new();
+    let mut pending: PendingFrames<F> = PendingFrames::new(timeout.clone());
     let mut shm = SharedSlabAllocator::connect(handle_path).expect("connect to SHM");
 
-    match make_realtime(5) {
-        Ok(prio) => info!("successfully enabled realtime priority {prio}"),
-        Err(e) => error!("failed to set realtime priority: {e:?}"),
-    }
+    // match make_realtime(5) {
+    //     Ok(prio) => info!("successfully enabled realtime priority {prio}"),
+    //     Err(e) => error!("failed to set realtime priority: {e:?}"),
+    // }
 
     loop {
         match blocks_rx.recv_timeout(Duration::from_millis(100)) {
@@ -210,8 +205,9 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
     recycle_blocks_tx: &Sender<B>,
     events_rx: EventReceiver,
     shm: SharedSlabAllocator,
+    timeout: &Duration,
 ) {
-    let pool_size = 4;
+    let pool_size = 5;
     let mut worker_channels: Vec<Sender<B>> = Vec::with_capacity(pool_size);
 
     let stop_event = Arc::new(AtomicBool::new(false));
@@ -219,7 +215,7 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
     let ctx = Context::current();
 
     // warmup for the block queue:
-    for _ in 0..1024 {
+    for _ in 0..2048 {
         recycle_blocks_tx.send(B::empty(0, 0)).unwrap();
     }
 
@@ -243,6 +239,7 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
                         &recycle_blocks_tx.clone(),
                         this_stop_event,
                         &shm_handle.os_handle,
+                        timeout,
                     )
                     .is_err()
                     {
@@ -285,6 +282,8 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use ipc_test::SharedSlabAllocator;
     use ndarray::s;
     use ndarray::ArrayView;
@@ -368,7 +367,8 @@ mod tests {
         let socket_as_path = socket_dir.into_path().join("stuff.socket");
 
         const FRAME_ID: u32 = 42;
-        let mut pending_frames: PendingFrames<K2ISFrame> = PendingFrames::new();
+        let mut pending_frames: PendingFrames<K2ISFrame> =
+            PendingFrames::new(Duration::from_millis(100));
         let mut ssa = SharedSlabAllocator::new(
             10,
             K2ISFrame::FRAME_HEIGHT * K2ISFrame::FRAME_WIDTH * std::mem::size_of::<u16>(),
@@ -432,7 +432,8 @@ mod tests {
             &socket_as_path,
         )
         .expect("create SHM area for testing");
-        let mut pending_frames: PendingFrames<K2ISFrame> = PendingFrames::new();
+        let mut pending_frames: PendingFrames<K2ISFrame> =
+            PendingFrames::new(Duration::from_millis(100));
 
         assert_eq!(pending_frames.num_finished(), 0);
         assert_eq!(pending_frames.num_unfinished(), 0);

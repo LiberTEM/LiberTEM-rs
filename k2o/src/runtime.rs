@@ -27,6 +27,25 @@ pub struct AddrConfig {
     bottom: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct AssemblyConfig {
+    pub timeout: Duration,
+}
+
+impl AssemblyConfig {
+    fn new(timeout: Duration) -> Self {
+        Self { timeout }
+    }
+}
+
+impl Default for AssemblyConfig {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_millis(100),
+        }
+    }
+}
+
 impl AddrConfig {
     pub fn new(top: &str, bottom: &str) -> Self {
         Self {
@@ -58,6 +77,7 @@ fn k2_bg_thread<
     pump: MessagePump,
     writer_dest_channel: Sender<AcquisitionResult<GenericFrame>>, // either going to the consumer, or back to the assembly
     shm: SharedSlabAllocator,
+    asm_config: AssemblyConfig,
 ) {
     let tracer = get_tracer();
     tracer.in_span("start_threads", |_cx| {
@@ -118,6 +138,7 @@ fn k2_bg_thread<
                         &recycle_blocks_tx,
                         asm_events_rx,
                         asm_shm,
+                        &asm_config.timeout,
                     );
                 })
                 .expect("could not spawn assembly thread");
@@ -174,9 +195,11 @@ pub fn start_bg_thread<F: K2Frame, const PACKET_SIZE: usize>(
     tx_from_writer: Sender<AcquisitionResult<GenericFrame>>,
 
     shm_handle: SHMHandle,
+    asm_config: &AssemblyConfig,
 ) -> JoinHandle<()> {
     let thread_builder = std::thread::Builder::new();
     let ctx = Context::current();
+    let asm_config = asm_config.clone();
     thread_builder
         .name("k2_bg_thread".to_string())
         .spawn(move || {
@@ -188,6 +211,7 @@ pub fn start_bg_thread<F: K2Frame, const PACKET_SIZE: usize>(
                 pump,
                 tx_from_writer,
                 shm,
+                asm_config,
             );
         })
         .expect("failed to start k2 background thread")
@@ -283,6 +307,7 @@ impl AcquisitionRuntime {
         let bg_thread = if enable_frame_consumer {
             // Frame consumer enabled -> after writing, the writer thread should send the frames
             // to the `tx_frame_consumer` channel
+            let asm_config = AssemblyConfig::new(Duration::from_millis(25));
             match mode {
                 CameraMode::IS => Some(start_bg_thread::<K2ISFrame, { K2ISBlock::PACKET_SIZE }>(
                     events,
@@ -290,6 +315,7 @@ impl AcquisitionRuntime {
                     pump,
                     tx_writer_to_consumer,
                     shm,
+                    &asm_config,
                 )),
                 CameraMode::Summit => Some(start_bg_thread::<
                     K2SummitFrame,
@@ -300,6 +326,7 @@ impl AcquisitionRuntime {
                     pump,
                     tx_writer_to_consumer,
                     shm,
+                    &asm_config,
                 )),
             }
         } else {
@@ -379,8 +406,6 @@ impl AcquisitionRuntime {
         let acquisition_result = self
             .rx_writer_to_consumer
             .recv_timeout(Duration::from_millis(100))?;
-        // FIXME! frames are not yet ordered by index
-        // so sentinels can come out of order (ugh!)
         match acquisition_result {
             AcquisitionResult::DoneSuccess {
                 acquisition_id,
