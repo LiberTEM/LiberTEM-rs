@@ -14,6 +14,8 @@ use crate::recv::recv_decode_loop;
 use crate::tracing::get_tracer;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Barrier, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -87,9 +89,11 @@ fn k2_bg_thread<
 
         let ctx = Context::current();
 
+        let first_block_counter = Arc::new((Mutex::new(0u8), Condvar::new()));
+
         crossbeam::scope(|s| {
             let (assembly_tx, assembly_rx) = unbounded::<(B, BlockRouteInfo)>();
-            for sector_id in ids {
+            for sector_id in ids.clone() {
                 let tx = assembly_tx.clone();
                 let recycle_clone_rx = recycle_blocks_rx.clone();
                 let recycle_clone_tx = recycle_blocks_tx.clone();
@@ -97,6 +101,7 @@ fn k2_bg_thread<
                 let addr = addr_config.addr_for_sector(sector_id);
                 let port = addr_config.port_for_sector(sector_id);
                 let decode_ctx = ctx.clone();
+                let sector_counter = Arc::clone(&first_block_counter);
                 s.builder()
                     .name(format!("recv-decode-{}", sector_id))
                     .spawn(move |_| {
@@ -110,6 +115,7 @@ fn k2_bg_thread<
                             &events_rx,
                             events,
                             addr,
+                            Some(sector_counter),
                         );
                     })
                     .expect("spawn recv+decode thread");
@@ -168,6 +174,12 @@ fn k2_bg_thread<
                 })
                 .expect("could not spawn acquisition thread");
 
+            let (lock, cvar) = &*first_block_counter;
+
+            cvar.wait_while(lock.lock().unwrap(), |counter| {
+                (*counter as usize) < ids.len()
+            })
+            .unwrap();
             events.send(&EventMsg::Init {});
 
             control_loop(events, &Some(pump));
