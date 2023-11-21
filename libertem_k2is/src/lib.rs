@@ -239,13 +239,15 @@ impl PyAcquisitionParams {
 struct PyFrame {
     acquisition_result: Option<AcquisitionResult<GenericFrame>>,
     frame_idx: u32,
+    frame_id: u32,
 }
 
 impl PyFrame {
-    fn new(result: AcquisitionResult<GenericFrame>, frame_idx: u32) -> Self {
+    fn new(result: AcquisitionResult<GenericFrame>, frame_idx: u32, frame_id: u32) -> Self {
         PyFrame {
             acquisition_result: Some(result),
             frame_idx,
+            frame_id,
         }
     }
 
@@ -266,6 +268,10 @@ impl PyFrame {
 
     fn get_idx(&self) -> u32 {
         self.frame_idx
+    }
+
+    fn get_id(&self) -> u32 {
+        self.frame_id
     }
 }
 
@@ -476,7 +482,8 @@ impl Cam {
                                 if let Some(frame_idx) =
                                     runtime.frame_in_acquisition(frame.get_frame_id())
                                 {
-                                    return Ok(Some(PyFrame::new(result, frame_idx)));
+                                    let frame_id = frame.get_frame_id();
+                                    return Ok(Some(PyFrame::new(result, frame_idx, frame_id)));
                                 } else {
                                     let frame_id = result.get_frame().unwrap().get_frame_id();
                                     println!("recycling frame {frame_id}");

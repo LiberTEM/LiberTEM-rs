@@ -1,4 +1,11 @@
-use std::{io::ErrorKind, time::Duration};
+use std::{
+    io::ErrorKind,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Barrier, Condvar, Mutex,
+    },
+    time::Duration,
+};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use log::{debug, error, info, warn};
@@ -12,15 +19,21 @@ use crate::{
 
 #[derive(PartialEq)]
 enum RecvState {
+    Initializing,
+
     /// Receiving UDP packets, but not doing anything with them
     Idle,
 
     /// Receiving and decoding blocks, but not passing them on downstream to assembly,
     /// goes to `Receiving` state once a block with sync flag has been received
-    WaitForSync { acquisition_id: usize },
+    WaitForSync {
+        acquisition_id: usize,
+    },
 
     /// When receiving the next block, go to the `WaitForFrame` state
-    WaitForNext { acquisition_id: usize },
+    WaitForNext {
+        acquisition_id: usize,
+    },
 
     /// Start receiving and decoding at the start of the specified frame id,
     /// regardless of sync status
@@ -31,7 +44,9 @@ enum RecvState {
 
     /// Recveicing and decoding packets, and sending the decoded packets down
     /// the pipeline
-    Receiving { acquisition_id: usize },
+    Receiving {
+        acquisition_id: usize,
+    },
 }
 
 fn block_for_bytes<B: K2Block>(
@@ -66,6 +81,7 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
     events_rx: &EventReceiver,
     events: &Events,
     local_addr: String,
+    first_block_counter: Option<Arc<(Mutex<u8>, Condvar)>>,
 ) {
     let socket = create_mcast_socket(port, "225.1.1.1", &local_addr);
     let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
@@ -79,13 +95,16 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
         .set_read_timeout(Some(Duration::from_millis(10)))
         .unwrap();
 
-    let mut state = RecvState::Idle;
+    let mut state = RecvState::Initializing;
 
     info!("Listening on {local_addr}:{port} for sector {sector_id}");
 
     let aff = CPU_AFF_DECODE_START + sector_id as usize;
     info!("Pinning to CPU {aff} for sector {sector_id}");
     set_cpu_affinity(aff);
+
+    // FIXME: at startup, first wait for all sectors to have received at least
+    // one block
 
     loop {
         match events_rx.try_recv() {
@@ -116,9 +135,22 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
             Err(_) => panic!("recv_from failed"),
         }
 
+        if state == RecvState::Initializing {
+            if let Some(counter) = &first_block_counter {
+                let (lock, cvar) = &**counter;
+                let mut counter = lock.lock().unwrap();
+                *counter += 1;
+                cvar.notify_all();
+            }
+            state = RecvState::Idle;
+        };
+
         // if we are not armed for acquisition, we don't decode the buffer into
         // a block:
         if state == RecvState::Idle {
+            // we use a "fake" acquisition id here, because there is no acquisition running:
+            let block = block_for_bytes(&buf, recycle_blocks_rx, 0, sector_id);
+            recycle_blocks_tx.send(block).unwrap();
             continue;
         }
 
@@ -192,10 +224,8 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
                     break;
                 }
             }
-            RecvState::Idle => {
-                // we use a "fake" acquisition id here, because there is no acquisition running:
-                let block = block_for_bytes(&buf, recycle_blocks_rx, 0, sector_id);
-                recycle_blocks_tx.send(block).unwrap();
+            RecvState::Idle | RecvState::Initializing => {
+                // handled before the match
             }
         }
     }

@@ -82,6 +82,7 @@ fn start_threads<
                         &events_rx,
                         events,
                         local_addr,
+                        None,
                     );
                 })
                 .expect("could not spawn recv+decode thread");
