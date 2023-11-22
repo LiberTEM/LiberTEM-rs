@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
-use k2o::runtime::{AddrConfig, RuntimeError, WaitResult};
+use k2o::runtime::{AcquisitionRuntimeConfig, AddrConfig, RuntimeError, WaitResult};
 
 use k2o::{
     acquisition::AcquisitionResult,
@@ -332,13 +332,16 @@ struct Cam {
 #[pymethods]
 impl Cam {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python,
         local_addr_top: &str,
         local_addr_bottom: &str,
         mode: PyMode,
         shm_path: &str,
-        enable_frame_iterator: bool,
-        py: Python,
+        enable_frame_iterator: Option<bool>,
+        recv_realtime: Option<bool>,
+        assembly_realtime: Option<bool>,
     ) -> PyResult<Self> {
         let _guard = span_from_py(py, "Cam::new")?;
 
@@ -352,13 +355,16 @@ impl Cam {
             SharedSlabAllocator::new(num_slots, slot_size, true, path).expect("create shm")
         });
         let addr_config = AddrConfig::new(local_addr_top, local_addr_bottom);
-
-        let runtime = AcquisitionRuntime::new(
-            &addr_config,
+        let enable_frame_iterator = enable_frame_iterator.unwrap_or(true);
+        let runtime_config = AcquisitionRuntimeConfig::new(
             enable_frame_iterator,
-            shm.get_handle(),
+            recv_realtime.unwrap_or(true),
+            assembly_realtime.unwrap_or(true),
             mode.into(),
+            addr_config,
         );
+
+        let runtime = AcquisitionRuntime::new(&runtime_config, shm.get_handle());
 
         Ok(Cam {
             camera_mode: mode,

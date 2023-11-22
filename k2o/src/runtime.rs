@@ -10,12 +10,11 @@ use crate::frame_is::K2ISFrame;
 use crate::frame_summit::K2SummitFrame;
 use crate::helpers::{set_cpu_affinity, CPU_AFF_WRITER};
 use crate::params::CameraMode;
-use crate::recv::recv_decode_loop;
+use crate::recv::{recv_decode_loop, RecvConfig};
 use crate::tracing::get_tracer;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Barrier, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -32,11 +31,12 @@ pub struct AddrConfig {
 #[derive(Debug, Clone)]
 pub struct AssemblyConfig {
     pub timeout: Duration,
+    pub realtime: bool,
 }
 
 impl AssemblyConfig {
-    fn new(timeout: Duration) -> Self {
-        Self { timeout }
+    fn new(timeout: Duration, realtime: bool) -> Self {
+        Self { timeout, realtime }
     }
 }
 
@@ -44,6 +44,7 @@ impl Default for AssemblyConfig {
     fn default() -> Self {
         Self {
             timeout: Duration::from_millis(100),
+            realtime: true,
         }
     }
 }
@@ -80,6 +81,7 @@ fn k2_bg_thread<
     writer_dest_channel: Sender<AcquisitionResult<GenericFrame>>, // either going to the consumer, or back to the assembly
     shm: SharedSlabAllocator,
     asm_config: AssemblyConfig,
+    recv_config: RecvConfig,
 ) {
     let tracer = get_tracer();
     tracer.in_span("start_threads", |_cx| {
@@ -102,6 +104,7 @@ fn k2_bg_thread<
                 let port = addr_config.port_for_sector(sector_id);
                 let decode_ctx = ctx.clone();
                 let sector_counter = Arc::clone(&first_block_counter);
+                let recv_config = recv_config.clone();
                 s.builder()
                     .name(format!("recv-decode-{}", sector_id))
                     .spawn(move |_| {
@@ -116,6 +119,7 @@ fn k2_bg_thread<
                             events,
                             addr,
                             Some(sector_counter),
+                            &recv_config,
                         );
                     })
                     .expect("spawn recv+decode thread");
@@ -145,6 +149,7 @@ fn k2_bg_thread<
                         asm_events_rx,
                         asm_shm,
                         &asm_config.timeout,
+                        asm_config.realtime,
                     );
                 })
                 .expect("could not spawn assembly thread");
@@ -176,10 +181,12 @@ fn k2_bg_thread<
 
             let (lock, cvar) = &*first_block_counter;
 
-            cvar.wait_while(lock.lock().unwrap(), |counter| {
-                (*counter as usize) < ids.len()
-            })
-            .unwrap();
+            drop(
+                cvar.wait_while(lock.lock().unwrap(), |counter| {
+                    (*counter as usize) < ids.len()
+                })
+                .unwrap(),
+            );
             events.send(&EventMsg::Init {});
 
             control_loop(events, &Some(pump));
@@ -208,10 +215,12 @@ pub fn start_bg_thread<F: K2Frame, const PACKET_SIZE: usize>(
 
     shm_handle: SHMHandle,
     asm_config: &AssemblyConfig,
+    recv_config: &RecvConfig,
 ) -> JoinHandle<()> {
     let thread_builder = std::thread::Builder::new();
     let ctx = Context::current();
     let asm_config = asm_config.clone();
+    let recv_config = recv_config.clone();
     thread_builder
         .name("k2_bg_thread".to_string())
         .spawn(move || {
@@ -224,6 +233,7 @@ pub fn start_bg_thread<F: K2Frame, const PACKET_SIZE: usize>(
                 tx_from_writer,
                 shm,
                 asm_config,
+                recv_config,
             );
         })
         .expect("failed to start k2 background thread")
@@ -267,6 +277,33 @@ impl WaitResult {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AcquisitionRuntimeConfig {
+    pub enable_frame_iterator: bool,
+    pub recv_realtime: bool,
+    pub assembly_realtime: bool,
+    pub mode: CameraMode,
+    pub addr_config: AddrConfig,
+}
+
+impl AcquisitionRuntimeConfig {
+    pub fn new(
+        enable_frame_iterator: bool,
+        recv_realtime: bool,
+        assembly_realtime: bool,
+        mode: CameraMode,
+        addr_config: AddrConfig,
+    ) -> Self {
+        Self {
+            enable_frame_iterator,
+            recv_realtime,
+            assembly_realtime,
+            mode,
+            addr_config,
+        }
+    }
+}
+
 /// The `AcquisitionRuntime` starts and communicates with a background thread,
 /// keeps track of the state via the `StateTracker`, and owns the shared memory
 /// area.
@@ -287,22 +324,17 @@ pub struct AcquisitionRuntime {
     /// This is where an "external" frame consumer gets their frames:
     rx_writer_to_consumer: Receiver<AcquisitionResult<GenericFrame>>,
 
-    enable_frame_consumer: bool,
-
     state_tracker: StateTracker,
 
     shm: SharedSlabAllocator,
 
     current_acquisition_id: usize,
+
+    config: AcquisitionRuntimeConfig,
 }
 
 impl AcquisitionRuntime {
-    pub fn new(
-        addr_config: &AddrConfig,
-        enable_frame_consumer: bool,
-        shm: SHMHandle,
-        mode: CameraMode,
-    ) -> Self {
+    pub fn new(config: &AcquisitionRuntimeConfig, shm: SHMHandle) -> Self {
         let events: Events = ChannelEventBus::new();
         let pump = MessagePump::new(&events);
         let (main_events_tx, main_events_rx) = pump.get_ext_channels();
@@ -316,29 +348,33 @@ impl AcquisitionRuntime {
         //
         // They are configured by wiring up channels in the correct way.
         let os_handle = shm.os_handle.clone();
-        let bg_thread = if enable_frame_consumer {
+        let bg_thread = if config.enable_frame_iterator {
             // Frame consumer enabled -> after writing, the writer thread should send the frames
             // to the `tx_frame_consumer` channel
-            let asm_config = AssemblyConfig::new(Duration::from_millis(25));
-            match mode {
+            let asm_config =
+                AssemblyConfig::new(Duration::from_millis(25), config.assembly_realtime);
+            let recv_config = RecvConfig::new(config.recv_realtime);
+            match config.mode {
                 CameraMode::IS => Some(start_bg_thread::<K2ISFrame, { K2ISBlock::PACKET_SIZE }>(
                     events,
-                    addr_config.clone(),
+                    config.addr_config.clone(),
                     pump,
                     tx_writer_to_consumer,
                     shm,
                     &asm_config,
+                    &recv_config,
                 )),
                 CameraMode::Summit => Some(start_bg_thread::<
                     K2SummitFrame,
                     { K2SummitBlock::PACKET_SIZE },
                 >(
                     events,
-                    addr_config.clone(),
+                    config.addr_config.clone(),
                     pump,
                     tx_writer_to_consumer,
                     shm,
                     &asm_config,
+                    &recv_config,
                 )),
             }
         } else {
@@ -379,10 +415,10 @@ impl AcquisitionRuntime {
             main_events_tx,
             main_events_rx,
             rx_writer_to_consumer,
-            enable_frame_consumer,
             state_tracker,
             shm,
             current_acquisition_id: 0,
+            config: config.clone(),
         }
     }
 
@@ -412,7 +448,7 @@ impl AcquisitionRuntime {
 
     pub fn get_next_frame(&self) -> Result<AcquisitionResult<GenericFrame>, RuntimeError> {
         // FIXME: can we make this a non-issue somehow?
-        if !self.enable_frame_consumer {
+        if !self.config.enable_frame_iterator {
             return Err(RuntimeError::ConfigurationError);
         }
         let acquisition_result = self
@@ -443,7 +479,7 @@ impl AcquisitionRuntime {
     ) -> Result<(), RuntimeError> {
         // TODO: keep track of which frames we have seen here, and once we have
         // seen all of them, send `EventMsg::ProcesingDone`
-        if !self.enable_frame_consumer {
+        if !self.config.enable_frame_iterator {
             return Err(RuntimeError::ConfigurationError);
         }
         let inner = frame.unpack();

@@ -149,14 +149,17 @@ fn assembly_worker<F: K2Frame, B: K2Block>(
     stop_event: Arc<AtomicBool>,
     handle_path: &str,
     timeout: &Duration,
+    realtime: bool,
 ) -> Result<(), AssemblyError> {
-    let mut pending: PendingFrames<F> = PendingFrames::new(timeout.clone());
+    let mut pending: PendingFrames<F> = PendingFrames::new(*timeout);
     let mut shm = SharedSlabAllocator::connect(handle_path).expect("connect to SHM");
 
-    // match make_realtime(5) {
-    //     Ok(prio) => info!("successfully enabled realtime priority {prio}"),
-    //     Err(e) => error!("failed to set realtime priority: {e:?}"),
-    // }
+    if realtime {
+        match make_realtime(5) {
+            Ok(prio) => info!("successfully enabled realtime priority {prio}"),
+            Err(e) => error!("failed to set realtime priority: {e:?}"),
+        }
+    }
 
     loop {
         match blocks_rx.recv_timeout(Duration::from_millis(100)) {
@@ -206,6 +209,7 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
     events_rx: EventReceiver,
     shm: SharedSlabAllocator,
     timeout: &Duration,
+    realtime: bool,
 ) {
     let pool_size = 5;
     let mut worker_channels: Vec<Sender<B>> = Vec::with_capacity(pool_size);
@@ -217,6 +221,13 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
     // warmup for the block queue:
     for _ in 0..2048 {
         recycle_blocks_tx.send(B::empty(0, 0)).unwrap();
+    }
+
+    if realtime {
+        match make_realtime(5) {
+            Ok(prio) => info!("successfully enabled realtime priority {prio}"),
+            Err(e) => error!("failed to set realtime priority: {e:?}"),
+        }
     }
 
     crossbeam::scope(|s| {
@@ -240,6 +251,7 @@ pub fn assembler_main<F: K2Frame, B: K2Block>(
                         this_stop_event,
                         &shm_handle.os_handle,
                         timeout,
+                        realtime,
                     )
                     .is_err()
                     {
