@@ -13,7 +13,7 @@ use k2o::{
         AcquisitionParams, AcquisitionSize, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
         Events, WriterSettings,
     },
-    recv::recv_decode_loop,
+    recv::{recv_decode_loop, RecvConfig},
 };
 
 fn mean(data: &[u128]) -> Option<f32> {
@@ -83,6 +83,7 @@ fn start_threads<
                         events,
                         local_addr,
                         None,
+                        &RecvConfig::new(true),
                     );
                 })
                 .expect("could not spawn recv+decode thread");

@@ -1,9 +1,6 @@
 use std::{
     io::ErrorKind,
-    sync::{
-        atomic::{AtomicU8, Ordering},
-        Arc, Barrier, Condvar, Mutex,
-    },
+    sync::{Arc, Condvar, Mutex},
     time::Duration,
 };
 
@@ -16,6 +13,17 @@ use crate::{
     helpers::{make_realtime, set_cpu_affinity, CPU_AFF_DECODE_START},
     net::create_mcast_socket,
 };
+
+#[derive(Debug, Clone)]
+pub struct RecvConfig {
+    pub realtime: bool,
+}
+
+impl RecvConfig {
+    pub fn new(realtime: bool) -> Self {
+        Self { realtime }
+    }
+}
 
 #[derive(PartialEq)]
 enum RecvState {
@@ -82,13 +90,16 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
     events: &Events,
     local_addr: String,
     first_block_counter: Option<Arc<(Mutex<u8>, Condvar)>>,
+    config: &RecvConfig,
 ) {
     let socket = create_mcast_socket(port, "225.1.1.1", &local_addr);
     let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
 
-    match make_realtime(50) {
-        Ok(prio) => info!("successfully enabled realtime priority {prio}"),
-        Err(e) => error!("failed to set realtime priority: {e:?}"),
+    if config.realtime {
+        match make_realtime(50) {
+            Ok(prio) => info!("successfully enabled realtime priority {prio}"),
+            Err(e) => error!("failed to set realtime priority: {e:?}"),
+        }
     }
 
     socket

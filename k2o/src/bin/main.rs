@@ -27,7 +27,7 @@ use k2o::frame_is::K2ISFrame;
 use k2o::frame_summit::K2SummitFrame;
 use k2o::helpers::CPU_AFF_WRITER;
 use k2o::helpers::{recv_and_get_init, set_cpu_affinity};
-use k2o::recv::recv_decode_loop;
+use k2o::recv::{recv_decode_loop, RecvConfig};
 use k2o::tracing::init_tracer;
 use log::info;
 use tokio::runtime::Runtime;
@@ -80,6 +80,7 @@ fn start_threads<
                         events,
                         local_addr,
                         None,
+                        &RecvConfig::new(true),
                     );
                 })
                 .expect("could not spawn recv+decode thread");
@@ -108,6 +109,7 @@ fn start_threads<
                         asm_events_rx,
                         asm_shm,
                         &Duration::from_millis(100),
+                        true,
                     );
                 }
             })
