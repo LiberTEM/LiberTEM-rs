@@ -162,6 +162,7 @@ struct FrameHandler<'a, F: K2Frame> {
 }
 
 impl<'a, F: K2Frame> FrameHandler<'a, F> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         acquisition_id: usize,
         channel: &'a Receiver<AssemblyResult<F>>,
@@ -578,86 +579,3 @@ pub fn acquisition_loop<F: K2Frame>(
     });
     global::force_flush_tracer_provider();
 }
-
-// /// Track until which index we have received all frames, and the possibly
-// /// "non-contiguous" set of other frames "on the right" which we have received.
-// struct TrackFrames {
-//     /// Marker dividing the index space of the acquisition into frames that we have
-//     /// finished processing, and those that are still in flight or to be received.
-//     ///
-//     /// This points at the first frame in the todo-part, so a `0` at the beginning
-//     /// means everything still needs to be received.
-//     ///
-//     /// Finished processing also includes dropped frames, where we have waited long
-//     /// enough and didn't get all the data for the full frame.
-//     dense_until: usize,
-//
-//     /// Set of all indices `i` that have been successfully received, but where
-//     /// another index `j` exists, such that the frame `j` has not been received fully.
-//     leading: HashSet<usize>,
-//
-//     /// Separate tracker for dropped frames
-//     dropped: HashSet<usize>,
-// }
-//
-// impl TrackFrames {
-//     pub fn new() -> Self {
-//         TrackFrames {
-//             dense_until: 0,
-//             leading: HashSet::new(),
-//             dropped: HashSet::new(),
-//         }
-//     }
-//
-//     /// After changing `leading` or `dense_until`, call this function to check
-//     /// if we can move `dense_until` even further, and remove items from
-//     /// `leading`.
-//     fn maybe_move_marker(&mut self) {
-//         if self.leading.len() == 0 {
-//             return; // no need to adjust if `self.leading` is empty
-//         }
-//         let max_leading = self
-//             .leading
-//             .iter()
-//             .max()
-//             .expect("`leading` is not empty, so should have a maximum");
-//         for idx in self.dense_until..=*max_leading {
-//             if self.leading.contains(&idx) {
-//                 self.leading.remove(&idx);
-//                 self.dense_until = idx + 1;
-//             } else {
-//                 // first frame which is not done yet encountered, so we keep this and
-//                 // the following in the `leading` set.
-//                 return;
-//             }
-//         }
-//     }
-//
-//     fn track_frame<F: K2Frame>(&mut self, frame: &F, rel_idx: usize) {
-//         if rel_idx == self.dense_until {
-//             // fast path: the frame is exactly the next "expected" frame:
-//             self.dense_until += 1;
-//             self.maybe_move_marker();
-//             return;
-//         } else if rel_idx > self.dense_until {
-//             // anything else
-//             self.leading.insert(rel_idx);
-//             self.maybe_move_marker();
-//             return;
-//         } else {
-//             panic!(
-//                 "cannot track a frame with idx {} < {}",
-//                 rel_idx, self.dense_until
-//             );
-//         }
-//     }
-//
-//     pub fn track_frame_done<F: K2Frame>(&mut self, frame: &F, rel_idx: usize) {
-//         self.track_frame(frame, rel_idx);
-//     }
-//
-//     pub fn track_frame_dropped<F: K2Frame>(&mut self, frame: &F, rel_idx: usize) {
-//         self.track_frame(frame, rel_idx);
-//         self.dropped.insert(rel_idx);
-//     }
-// }
