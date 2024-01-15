@@ -50,7 +50,7 @@ jobs:
     - name: rustup stable
       run: rustup default stable
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2.7.1
+      uses: Swatinem/rust-cache@v2.7.3
     - uses: actions/setup-python@v5
       with:
         python-version: '3.10' 
@@ -111,7 +111,7 @@ jobs:
     - name: rustup stable
       run: rustup default stable
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2.7.1
+      uses: Swatinem/rust-cache@v2.7.3
     - uses: actions/setup-python@v5
       with:
         python-version: '3.10' 
@@ -135,7 +135,7 @@ jobs:
     - name: rustup stable
       run: rustup default stable
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2.7.1
+      uses: Swatinem/rust-cache@v2.7.3
     - uses: actions/setup-python@v5
       with:
         python-version: '3.10' 
