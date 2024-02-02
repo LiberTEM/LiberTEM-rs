@@ -680,20 +680,20 @@ mod tests {
     #[test]
     fn test_can_fit() {
         let (_socket_dir, socket_as_path) = get_socket_path();
-        // slot size is rounded up to 4k blocks
-        let mut shm = SharedSlabAllocator::new(3, 4096, false, &socket_as_path).unwrap();
+        let slot_size = page_size::get();
+        let mut shm = SharedSlabAllocator::new(3, slot_size, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
 
         let mut fs = ChunkStackForWriting::new(slot, 1);
 
-        assert!(fs.can_fit(4096));
+        assert!(fs.can_fit(slot_size));
         assert!(fs.can_fit(1024));
         assert!(fs.can_fit(512));
         assert!(fs.can_fit(0));
         assert!(fs.can_fit(1));
 
         println!("{}", fs.total_size());
-        assert!(!fs.can_fit(4097));
+        assert!(!fs.can_fit(slot_size + 1));
 
         const NNZ: u32 = 12;
         const NROWS: u32 = 7;
