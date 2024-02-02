@@ -25,8 +25,8 @@ crossbeam-channel = "0.5.6"
 env_logger = "0.9.3"
 log = "0.4.17"
 memmap2 = "0.5.6"
-numpy = "0.17.0"
-pyo3 = { version = "0.17", features = ["abi3-py37"] }
+numpy = "0.20.0"
+pyo3 = { version = "0.20.2", features = ["abi3-py37"] }
 serde = { version = "1.0.143", features = ["derive"] }
 serde_json = "1.0.83"
 spin_sleep = "1.1.1"
