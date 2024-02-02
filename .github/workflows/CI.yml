@@ -120,12 +120,13 @@ jobs:
       working-directory: ${{ matrix.crate }}
 
   macos-test:
-    runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     strategy:
       matrix:
         crate: [libertem_dectris, libertem_asi_tpx3]
+        os: [macos-12, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
     - name: Set LIBCLANG_PATH
       run: echo "LIBCLANG_PATH=$(brew --prefix llvm@15)/lib" >> $env:GITHUB_ENV
