@@ -718,14 +718,15 @@ mod tests {
         assert_eq!(fs.padding_bytes, 7);
         assert_eq!(fs.cursor, 8);
 
-        assert!(!fs.can_fit(4096));
-        assert!(fs.can_fit(4088));
+        assert!(!fs.can_fit(slot_size));
+        assert!(fs.can_fit(slot_size - 8));
 
-        fs.slice_for_writing(4088, layout.clone());
+        fs.slice_for_writing(slot_size - 8, layout.clone());
         assert_eq!(fs.padding_bytes, 7);
-        assert_eq!(fs.cursor, 4096);
+        assert_eq!(fs.cursor, slot_size);
         assert!(!fs.can_fit(1));
         assert!(!fs.can_fit(8));
         assert!(!fs.can_fit(4096));
+        assert!(!fs.can_fit(slot_size));
     }
 }
