@@ -246,7 +246,8 @@ pub struct DectrisSim {
 #[pymethods]
 impl DectrisSim {
     #[new]
-    fn new(uri: &str, filename: &str, dwelltime: Option<u64>, random_port: bool) -> Self {
+    fn new(uri: &str, filename: &str, dwelltime: Option<u64>, random_port: Option<bool>) -> Self {
+        let random_port = random_port.unwrap_or(false);
         DectrisSim {
             frame_sender: FrameSender::from_file(uri, filename, random_port),
             dwelltime,
@@ -259,10 +260,11 @@ impl DectrisSim {
         uri: &str,
         num_frames: usize,
         dwelltime: Option<u64>,
-        random_port: bool,
+        random_port: Option<bool>,
     ) -> Self {
         let data = make_sim_data(num_frames);
         let drf = DumpRecordFile::from_raw_data(Arc::new(data));
+        let random_port = random_port.unwrap_or(false);
         DectrisSim {
             frame_sender: FrameSender::new(uri, &drf, random_port),
             dwelltime,
