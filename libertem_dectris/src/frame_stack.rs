@@ -125,7 +125,7 @@ impl FrameStackHandle {
         &self.meta
     }
 
-    pub(crate) fn deserialize_impl(serialized: &PyBytes) -> PyResult<Self> {
+    pub(crate) fn deserialize_impl<'py>(serialized: &Bound<'py, PyBytes>) -> PyResult<Self> {
         let data = serialized.as_bytes();
         bincode::deserialize(data).map_err(|e| {
             let msg = format!("could not deserialize FrameStackHandle: {e:?}");
@@ -195,43 +195,47 @@ impl FrameStackHandle {
 
 #[pymethods]
 impl FrameStackHandle {
-    pub fn serialize(&self, py: Python) -> PyResult<Py<PyBytes>> {
-        let bytes: &PyBytes = PyBytes::new(py, serialize(self).unwrap().as_slice());
+    pub fn serialize<'py>(&self, py: Python<'py>) -> PyResult<Py<PyBytes>> {
+        let bytes: Bound<'py, PyBytes> =
+            PyBytes::new_bound(py, serialize(self).unwrap().as_slice());
         Ok(bytes.into())
     }
 
     #[classmethod]
-    fn deserialize(_cls: &PyType, serialized: &PyBytes) -> PyResult<Self> {
-        Self::deserialize_impl(serialized)
+    fn deserialize<'py>(
+        _cls: Bound<'py, PyType>,
+        serialized: Bound<'py, PyBytes>,
+    ) -> PyResult<Self> {
+        Self::deserialize_impl(&serialized)
     }
 
-    fn get_series_id(slf: PyRef<Self>) -> PyResult<u64> {
-        Ok(slf.first_meta()?.dimage.series)
+    fn get_series_id(&self) -> PyResult<u64> {
+        Ok(self.first_meta()?.dimage.series)
     }
 
-    fn get_frame_id(slf: PyRef<Self>) -> PyResult<u64> {
-        Ok(slf.first_meta()?.dimage.frame)
+    fn get_frame_id(&self) -> PyResult<u64> {
+        Ok(self.first_meta()?.dimage.frame)
     }
 
-    fn get_hash(slf: PyRef<Self>) -> PyResult<String> {
-        Ok(slf.first_meta()?.dimage.hash.clone())
+    fn get_hash(&self) -> PyResult<String> {
+        Ok(self.first_meta()?.dimage.hash.clone())
     }
 
-    fn get_pixel_type(slf: PyRef<Self>) -> PyResult<String> {
-        Ok(match &slf.first_meta()?.dimaged.type_ {
+    fn get_pixel_type(&self) -> PyResult<String> {
+        Ok(match &self.first_meta()?.dimaged.type_ {
             PixelType::Uint8 => "uint8".to_string(),
             PixelType::Uint16 => "uint16".to_string(),
             PixelType::Uint32 => "uint32".to_string(),
         })
     }
 
-    fn get_encoding(slf: PyRef<Self>) -> PyResult<String> {
-        Ok(slf.first_meta()?.dimaged.encoding.clone())
+    fn get_encoding(&self) -> PyResult<String> {
+        Ok(self.first_meta()?.dimaged.encoding.clone())
     }
 
     /// return endianess in numpy notation
-    fn get_endianess(slf: PyRef<Self>) -> PyResult<String> {
-        match slf.first_meta()?.dimaged.encoding.chars().last() {
+    fn get_endianess(&self) -> PyResult<String> {
+        match self.first_meta()?.dimaged.encoding.chars().last() {
             Some(c) => Ok(c.to_string()),
             None => Err(exceptions::PyValueError::new_err(
                 "encoding should be non-empty".to_string(),
@@ -239,12 +243,12 @@ impl FrameStackHandle {
         }
     }
 
-    fn get_shape(slf: PyRef<Self>) -> PyResult<Vec<u64>> {
-        Ok(slf.first_meta()?.dimaged.shape.clone())
+    fn get_shape(&self) -> PyResult<Vec<u64>> {
+        Ok(self.first_meta()?.dimaged.shape.clone())
     }
 
-    fn __len__(slf: PyRef<Self>) -> usize {
-        slf.len()
+    fn __len__(&self) -> usize {
+        self.len()
     }
 }
 

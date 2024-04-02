@@ -255,8 +255,8 @@ impl DectrisSim {
     }
 
     #[classmethod]
-    fn new_mocked(
-        _cls: &PyType,
+    fn new_mocked<'py>(
+        _cls: Bound<'py, PyType>,
         uri: &str,
         num_frames: usize,
         dwelltime: Option<u64>,
