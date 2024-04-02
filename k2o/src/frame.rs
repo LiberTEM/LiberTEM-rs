@@ -1,6 +1,7 @@
 use std::{ops::Range, time::Instant};
 
 use ipc_test::{SharedSlabAllocator, Slot, SlotInfo};
+use multiversion::multiversion;
 use ndarray::{s, ArrayView2, ArrayViewMut2};
 
 use crate::{block::K2Block, events::Binning, helpers::Shape2};

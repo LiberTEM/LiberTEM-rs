@@ -23,6 +23,7 @@
 //! output: BC FA DE
 use std::convert::TryInto;
 
+use multiversion::multiversion;
 use num::cast::AsPrimitive;
 
 pub const HEADER_SIZE: usize = 40;
@@ -39,6 +40,12 @@ pub const HEADER_SIZE: usize = 40;
 /// * `bytes` - the bytes that should be decoded. Should be `PACKET_SIZE` long (`0x5758` or `0xc028`)
 /// * `out` - the slice where the decoded integers should be written to. Should be `DECODED_SIZE` long (`14880`).
 ///
+#[multiversion(targets(
+    "x86_64+adx+aes+avx+avx2+bmi1+bmi2+cmpxchg16b+f16c+fma+fxsr+lzcnt+movbe+pclmulqdq+popcnt+rdrand+rdseed+sha+sse+sse2+sse3+sse4.1+sse4.2+ssse3+xsave+xsavec+xsaveopt+xsaves",
+    "x86_64+avx+avx2+bmi1+bmi2+fma+sse+sse2+sse3+sse4.1+sse4.2+ssse3+popcnt",
+    "x86_64+avx+avx2",
+    "x86_64+avx",
+))]
 pub fn decode<const PACKET_SIZE: usize>(bytes: &[u8], out: &mut [u16]) {
     // make sure input/output are bounded to PACKET_SIZE and DECODED_SIZE
     //const DECODED_SIZE: usize = (PACKET_SIZE - HEADER_SIZE) * 2 / 3;
@@ -68,6 +75,12 @@ pub fn decode<const PACKET_SIZE: usize>(bytes: &[u8], out: &mut [u16]) {
 /// * `bytes` - the bytes that should be decoded. Should be `PACKET_SIZE` long (`0x5758`)
 /// * `out` - the slice where the decoded integers should be written to. Should be `DECODED_SIZE` long (`14880`).
 ///
+#[multiversion(targets(
+    "x86_64+adx+aes+avx+avx2+bmi1+bmi2+cmpxchg16b+f16c+fma+fxsr+lzcnt+movbe+pclmulqdq+popcnt+rdrand+rdseed+sha+sse+sse2+sse3+sse4.1+sse4.2+ssse3+xsave+xsavec+xsaveopt+xsaves",
+    "x86_64+avx+avx2+bmi1+bmi2+fma+sse+sse2+sse3+sse4.1+sse4.2+ssse3+popcnt",
+    "x86_64+avx+avx2",
+    "x86_64+avx",
+))]
 pub fn decode_map<D, F, const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
     bytes: &[u8],
     out: &mut [D],
@@ -102,6 +115,12 @@ pub fn decode_map<D, F, const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
 /// * `bytes` - the bytes that should be decoded. Should be `PACKET_SIZE` long (`0x5758`)
 /// * `out` - the slice where the decoded integers should be written to. Should be `DECODED_SIZE` long (`14880`).
 ///
+#[multiversion(targets(
+    "x86_64+adx+aes+avx+avx2+bmi1+bmi2+cmpxchg16b+f16c+fma+fxsr+lzcnt+movbe+pclmulqdq+popcnt+rdrand+rdseed+sha+sse+sse2+sse3+sse4.1+sse4.2+ssse3+xsave+xsavec+xsaveopt+xsaves",
+    "x86_64+avx+avx2+bmi1+bmi2+fma+sse+sse2+sse3+sse4.1+sse4.2+ssse3+popcnt",
+    "x86_64+avx+avx2",
+    "x86_64+avx",
+))]
 pub fn decode_converted<D, const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
     bytes: &[u8],
     out: &mut [D],
@@ -137,6 +156,12 @@ pub fn decode_converted<D, const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
 /// * `bytes` - the bytes that should be decoded. Should be `PACKET_SIZE` long (`0x5758`)
 /// * `out` - the slice where the decoded integers should be written to. Should be `DECODED_SIZE` long (`14880`).
 ///
+#[multiversion(targets(
+    "x86_64+adx+aes+avx+avx2+bmi1+bmi2+cmpxchg16b+f16c+fma+fxsr+lzcnt+movbe+pclmulqdq+popcnt+rdrand+rdseed+sha+sse+sse2+sse3+sse4.1+sse4.2+ssse3+xsave+xsavec+xsaveopt+xsaves",
+    "x86_64+avx+avx2+bmi1+bmi2+fma+sse+sse2+sse3+sse4.1+sse4.2+ssse3+popcnt",
+    "x86_64+avx+avx2",
+    "x86_64+avx",
+))]
 pub fn decode_unrolled<const PACKET_SIZE: usize, const DECODED_SIZE: usize>(
     bytes: &[u8],
     out: &mut [u16],
@@ -187,6 +212,12 @@ pub fn decode_u16(bytes: &[u8]) -> u16 {
     u16::from_be_bytes(bytes.try_into().unwrap())
 }
 
+#[multiversion(targets(
+    "x86_64+adx+aes+avx+avx2+bmi1+bmi2+cmpxchg16b+f16c+fma+fxsr+lzcnt+movbe+pclmulqdq+popcnt+rdrand+rdseed+sha+sse+sse2+sse3+sse4.1+sse4.2+ssse3+xsave+xsavec+xsaveopt+xsaves",
+    "x86_64+avx+avx2+bmi1+bmi2+fma+sse+sse2+sse3+sse4.1+sse4.2+ssse3+popcnt",
+    "x86_64+avx+avx2",
+    "x86_64+avx",
+))]
 pub fn decode_u16_vec<const PACKET_SIZE: usize>(bytes: &[u8], out: &mut [u16]) {
     for i in 0..(PACKET_SIZE - HEADER_SIZE) / 2 {
         let in_bytes = &bytes[HEADER_SIZE + i * 2..HEADER_SIZE + i * 2 + 2];
@@ -205,6 +236,12 @@ pub fn decode_packet_size(bytes: &[u8]) -> u32 {
 /// * `inp` - The input integers
 /// * `out` - A mutable byte slice where the encoded values will be written
 ///
+#[multiversion(targets(
+    "x86_64+adx+aes+avx+avx2+bmi1+bmi2+cmpxchg16b+f16c+fma+fxsr+lzcnt+movbe+pclmulqdq+popcnt+rdrand+rdseed+sha+sse+sse2+sse3+sse4.1+sse4.2+ssse3+xsave+xsavec+xsaveopt+xsaves",
+    "x86_64+avx+avx2+bmi1+bmi2+fma+sse+sse2+sse3+sse4.1+sse4.2+ssse3+popcnt",
+    "x86_64+avx+avx2",
+    "x86_64+avx",
+))]
 pub fn encode(inp: &Vec<u16>, out: &mut [u8]) {
     // pre-condition: out_chunks should have no remainder
     assert_eq!(out.len() % 3, 0);
