@@ -2,7 +2,7 @@ use std::ffi::c_int;
 
 use ipc_test::SharedSlabAllocator;
 use log::trace;
-use pyo3::{exceptions::PyRuntimeError, ffi::PyMemoryView_FromMemory, prelude::*, FromPyPointer};
+use pyo3::{exceptions::PyRuntimeError, ffi::PyMemoryView_FromMemory, prelude::*};
 
 use crate::{
     chunk_stack::{ChunkCSRLayout, ChunkStackHandle},
@@ -24,8 +24,7 @@ impl CamClient {
         let mv = unsafe {
             PyMemoryView_FromMemory(ptr as *mut i8, length.try_into().unwrap(), PyBUF_READ)
         };
-        let from_ptr: &PyAny = unsafe { FromPyPointer::from_owned_ptr(py, mv) };
-        from_ptr.into_py(py)
+        unsafe { Py::from_owned_ptr(py, mv) }
     }
 
     #[cfg(test)]
@@ -186,7 +185,7 @@ mod tests {
         // roundtrip serialize/deserialize:
         Python::with_gil(|py| {
             let bytes = fs_handle.serialize(py).unwrap();
-            let new_handle = ChunkStackHandle::deserialize_impl(bytes.as_ref(py)).unwrap();
+            let new_handle = ChunkStackHandle::deserialize_impl(&bytes).unwrap();
             assert_eq!(fs_handle, new_handle);
         });
 

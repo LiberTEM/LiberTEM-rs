@@ -24,7 +24,7 @@ use pyo3::{
 use stats::Stats;
 
 #[pymodule]
-fn libertem_asi_tpx3(py: Python, m: &PyModule) -> PyResult<()> {
+fn libertem_asi_tpx3<'py>(py: Python, m: Bound<'py, PyModule>) -> PyResult<()> {
     // FIXME: logging integration deadlocks on close(), when trying to acquire
     // the GIL
     // pyo3_log::init();
@@ -38,8 +38,8 @@ fn libertem_asi_tpx3(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<ScanEnd>()?;
     m.add_class::<AcquisitionEnd>()?;
     m.add_class::<CamClient>()?;
-    m.add_function(wrap_pyfunction!(make_sim_data, m)?)?;
-    m.add("TimeoutError", py.get_type::<TimeoutError>())?;
+    m.add_function(wrap_pyfunction!(make_sim_data, &m)?)?;
+    m.add("TimeoutError", py.get_type_bound::<TimeoutError>())?;
 
     // register_header_module(py, m)?;
 

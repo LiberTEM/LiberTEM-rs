@@ -249,7 +249,7 @@ impl ChunkStackHandle {
         &self.layout
     }
 
-    pub(crate) fn deserialize_impl(serialized: &PyBytes) -> PyResult<Self> {
+    pub(crate) fn deserialize_impl<'py>(serialized: &Bound<'py, PyBytes>) -> PyResult<Self> {
         let data = serialized.as_bytes();
         bincode::deserialize(data).map_err(|e| {
             let msg = format!("could not deserialize FrameStackHandle: {e:?}");
@@ -423,14 +423,18 @@ impl ChunkStackHandle {
 
 #[pymethods]
 impl ChunkStackHandle {
-    pub fn serialize(&self, py: Python) -> PyResult<Py<PyBytes>> {
-        let bytes: &PyBytes = PyBytes::new(py, serialize(self).unwrap().as_slice());
+    pub fn serialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes: Bound<'py, PyBytes> =
+            PyBytes::new_bound(py, serialize(self).unwrap().as_slice());
         Ok(bytes.into())
     }
 
     #[classmethod]
-    fn deserialize(_cls: &PyType, serialized: &PyBytes) -> PyResult<Self> {
-        Self::deserialize_impl(serialized)
+    fn deserialize<'py>(
+        _cls: Bound<'py, PyType>,
+        serialized: Bound<'py, PyBytes>,
+    ) -> PyResult<Self> {
+        Self::deserialize_impl(&serialized)
     }
 
     fn get_pixel_type(slf: PyRef<Self>) -> PyResult<String> {
