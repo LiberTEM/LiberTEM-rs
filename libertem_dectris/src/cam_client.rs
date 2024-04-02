@@ -180,7 +180,7 @@ mod tests {
     use std::path::PathBuf;
 
     use lz4::block::CompressionMode;
-    use numpy::PyArray;
+    use numpy::{PyArray, PyArrayMethods};
     use tempfile::tempdir;
 
     use ipc_test::SharedSlabAllocator;
@@ -258,7 +258,7 @@ mod tests {
         // roundtrip serialize/deserialize:
         Python::with_gil(|py| {
             let bytes = fs_handle.serialize(py).unwrap();
-            let new_handle = FrameStackHandle::deserialize_impl(bytes.as_ref(py)).unwrap();
+            let new_handle = FrameStackHandle::deserialize_impl(&bytes).unwrap();
             assert_eq!(fs_handle, new_handle);
         });
 
@@ -270,8 +270,10 @@ mod tests {
 
         Python::with_gil(|py| {
             let flat: Vec<u16> = (0..256).collect();
-            let out = PyArray::from_vec(py, flat).reshape((1, 16, 16)).unwrap();
-            client.decompress_bslz4_impl(&fs_handle, out).unwrap();
+            let out = PyArray::from_vec_bound(py, flat)
+                .reshape((1, 16, 16))
+                .unwrap();
+            client.decompress_bslz4_impl(&fs_handle, &out).unwrap();
 
             out.readonly()
                 .as_slice()
@@ -335,7 +337,7 @@ mod tests {
         // roundtrip serialize/deserialize:
         Python::with_gil(|py| {
             let bytes = fs_handle.serialize(py).unwrap();
-            let new_handle = FrameStackHandle::deserialize_impl(bytes.as_ref(py)).unwrap();
+            let new_handle = FrameStackHandle::deserialize_impl(&bytes).unwrap();
             assert_eq!(fs_handle, new_handle);
         });
 
@@ -359,9 +361,11 @@ mod tests {
 
         Python::with_gil(|py| {
             let flat: Vec<u16> = (0..256).collect();
-            let out = PyArray::from_vec(py, flat).reshape((1, 16, 16)).unwrap();
+            let out = PyArray::from_vec_bound(py, flat)
+                .reshape((1, 16, 16))
+                .unwrap();
 
-            client.decompress_plain_lz4_impl(&fs_handle, out).unwrap();
+            client.decompress_plain_lz4_impl(&fs_handle, &out).unwrap();
 
             out.readonly()
                 .as_slice()
