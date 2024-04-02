@@ -26,7 +26,7 @@ use pyo3::{
 use stats::Stats;
 
 #[pymodule]
-fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
+fn libertem_dectris<'py>(py: Python, m: Bound<'py, PyModule>) -> PyResult<()> {
     // FIXME: logging integration deadlocks on close(), when trying to acquire
     // the GIL
     // pyo3_log::init();
@@ -38,10 +38,10 @@ fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<DetectorConfig>()?;
     m.add_class::<TriggerMode>()?;
     m.add_class::<CamClient>()?;
-    m.add("TimeoutError", py.get_type::<TimeoutError>())?;
-    m.add("DecompressError", py.get_type::<DecompressError>())?;
+    m.add("TimeoutError", py.get_type_bound::<TimeoutError>())?;
+    m.add("DecompressError", py.get_type_bound::<DecompressError>())?;
 
-    register_header_module(py, m)?;
+    register_header_module(py, &m)?;
 
     let env = env_logger::Env::default()
         .filter_or("LIBERTEM_DECTRIS_LOG_LEVEL", "error")
@@ -51,14 +51,17 @@ fn libertem_dectris(py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
-fn register_header_module(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let headers_module = PyModule::new(py, "headers")?;
+fn register_header_module<'py>(
+    py: Python<'_>,
+    parent_module: &Bound<'py, PyModule>,
+) -> PyResult<()> {
+    let headers_module = PyModule::new_bound(py, "headers")?;
     headers_module.add_class::<DHeader>()?;
     headers_module.add_class::<DImage>()?;
     headers_module.add_class::<DImageD>()?;
     headers_module.add_class::<DConfig>()?;
     headers_module.add_class::<DSeriesEnd>()?;
-    parent_module.add_submodule(headers_module)?;
+    parent_module.add_submodule(&headers_module)?;
     Ok(())
 }
 

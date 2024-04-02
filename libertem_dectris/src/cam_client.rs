@@ -1,6 +1,6 @@
 use ipc_test::SharedSlabAllocator;
 use log::trace;
-use numpy::PyArray3;
+use numpy::{PyArray3, PyArrayMethods};
 use pyo3::{
     exceptions::{self, PyRuntimeError},
     prelude::*,
@@ -19,10 +19,10 @@ pub struct CamClient {
 }
 
 impl CamClient {
-    fn decompress_bslz4_impl<T: numpy::Element>(
+    fn decompress_bslz4_impl<'py, T: numpy::Element>(
         &self,
         handle: &FrameStackHandle,
-        out: &PyArray3<T>,
+        out: &Bound<'py, PyArray3<T>>,
     ) -> PyResult<()> {
         let mut out_rw = out.readwrite();
         let out_slice = out_rw.as_slice_mut().expect("`out` must be C-contiguous");
@@ -56,10 +56,10 @@ impl CamClient {
         Ok(())
     }
 
-    fn decompress_plain_lz4_impl<T: numpy::Element + AsBytes + FromBytes>(
+    fn decompress_plain_lz4_impl<'py, T: numpy::Element + AsBytes + FromBytes>(
         &self,
         handle: &FrameStackHandle,
-        out: &PyArray3<T>,
+        out: &Bound<'py, PyArray3<T>>,
     ) -> PyResult<()> {
         let mut out_rw = out.readwrite();
         let out_slice = match out_rw.as_slice_mut() {
@@ -113,14 +113,14 @@ impl CamClient {
         }
     }
 
-    fn decompress_frame_stack(
+    fn decompress_frame_stack<'py>(
         slf: PyRef<Self>,
         handle: &FrameStackHandle,
-        out: &PyAny,
+        out: Bound<'py, PyAny>,
     ) -> PyResult<()> {
-        let arr_u8: Result<&PyArray3<u8>, _> = out.downcast();
-        let arr_u16: Result<&PyArray3<u16>, _> = out.downcast();
-        let arr_u32: Result<&PyArray3<u32>, _> = out.downcast();
+        let arr_u8: Result<&Bound<'py, PyArray3<u8>>, _> = out.downcast();
+        let arr_u16: Result<&Bound<'py, PyArray3<u16>>, _> = out.downcast();
+        let arr_u32: Result<&Bound<'py, PyArray3<u32>>, _> = out.downcast();
 
         let (encoding, type_) = if handle.is_empty() {
             return Ok(());
