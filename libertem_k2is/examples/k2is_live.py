@@ -343,8 +343,8 @@ class K2Acquisition(AcquisitionMixin, DataSet):
                     filename=filename,
                 )
             aqp = AcquisitionParams(
-                size=nimages,
                 sync=self._conn._sync_mode,
+                size=nimages,
                 writer=writer,
             )
             cam = self._conn.get_conn_impl()

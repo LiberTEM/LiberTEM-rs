@@ -13,9 +13,9 @@ def main():
         filename="/cachedata/alex/bar.raw",
     )
     aqp = AcquisitionParams(
-        size=1800,
         # sync=Sync.WaitForSync,
         sync=Sync.Immediately,
+        size=1800,
         writer=writer,
         enable_frame_iterator=False,
         shm_path="/tmp/k2shm.socket",

@@ -222,7 +222,7 @@ struct PyAcquisitionParams {
 #[pymethods]
 impl PyAcquisitionParams {
     #[new]
-    fn new(size: Option<u32>, sync: SyncFlags, writer: Option<PyWriter>) -> Self {
+    fn new(sync: SyncFlags, size: Option<u32>, writer: Option<PyWriter>) -> Self {
         let writer_settings = match writer {
             None => WriterSettings::disabled(),
             Some(py_writer) => py_writer.get_setttings().clone(),

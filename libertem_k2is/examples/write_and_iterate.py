@@ -26,9 +26,9 @@ def main():
         )
         shm_socket = "/tmp/k2shm.socket"
         aqp = AcquisitionParams(
-            size=1800,
             sync=Sync.WaitForSync,
             # sync=Sync.Immediately,
+            size=1800,
             writer=writer,
             # writer=None,
             enable_frame_iterator=True,

@@ -100,9 +100,9 @@ def main(mode, num_parts, frames_per_part, do_work):
                     filename=f"/cachedata/alex/bar-{i}-{ts}.raw",
                 )
                 aqp = AcquisitionParams(
-                    size=frames_per_part,
                     # sync=Sync.WaitForSync,
                     sync=Sync.Immediately,
+                    size=frames_per_part,
                     writer=writer,
                     # writer=None,
                 )
