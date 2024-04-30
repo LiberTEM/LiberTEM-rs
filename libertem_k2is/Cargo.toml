@@ -9,8 +9,8 @@ name = "k2opy"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.17.1", features = ["extension-module", "abi3-py37"] }
-numpy = "0.17.1"
+pyo3 = { version = "0.21.0", features = ["extension-module", "abi3-py37"] }
+numpy = "0.21.0"
 k2o = { path = "../k2o" }
 crossbeam-channel = "0.5.6"
 crossbeam = "0.8.2"
