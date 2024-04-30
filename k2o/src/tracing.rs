@@ -23,5 +23,5 @@ pub fn init_tracer() -> Result<(), TraceError> {
 }
 
 pub fn get_tracer() -> BoxedTracer {
-    global::tracer("k2opy")
+    global::tracer("libertem_k2is")
 }
