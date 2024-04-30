@@ -98,7 +98,7 @@ fn span_from_py(py: Python, name: &str) -> PyResult<ContextGuard> {
 }
 
 #[pymodule]
-fn k2opy(_py: Python, m: &PyModule) -> PyResult<()> {
+fn libertem_k2is(_py: Python, m: &PyModule) -> PyResult<()> {
     // FIXME: add an atexit handler calling `global::shutdown_tracer_provider`
     // so we don't lose any spans at shutdown
     tracing_thread();

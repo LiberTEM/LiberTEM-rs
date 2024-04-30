@@ -1,9 +1,9 @@
 [build-system]
-requires = ["maturin>=1.3.1,<1.4"]
+requires = ["maturin>=1.3.1,<2"]
 build-backend = "maturin"
 
 [project]
-name = "k2opy"
+name = "libertem-k2is"
 requires-python = ">=3.7"
 classifiers = [
     "Programming Language :: Rust",
