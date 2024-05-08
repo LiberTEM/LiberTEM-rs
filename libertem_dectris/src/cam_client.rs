@@ -11,7 +11,7 @@ use zerocopy::{AsBytes, FromBytes};
 use crate::{
     common::{DectrisFrameMeta, PixelType},
     exceptions::{ConnectionError, DecompressError},
-    frame_stack::PyFrameStackHandle,
+    frame_stack_py::PyFrameStackHandle,
 };
 
 #[pyclass]
