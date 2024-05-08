@@ -341,7 +341,8 @@ pub fn background_thread(
 
         // some stuff that needs to be moved to the bg thread:
         let recv_stop_event_bg = Arc::clone(&recv_stop_event);
-        let recv_control_channel = control_channel;
+        let recv_control_channel = control_channel.clone();
+        let inner_status = Arc::clone(&status);
 
         std::thread::Builder::new()
             .name("receiver".to_string())
@@ -350,7 +351,7 @@ pub fn background_thread(
                     recv_control_channel,
                     part_sender,
                     recv_stop_event_bg,
-                    status,
+                    inner_status,
                 );
             })
             .unwrap();
@@ -368,7 +369,13 @@ pub fn background_thread(
 
             let num_pending = bg_state.pending_messages.len();
             // FIXME: reconnect on errors here?
-            let process_results = bg_state.process_pending().unwrap();
+            let process_results = match bg_state.process_pending() {
+                Ok(res) => res,
+                Err(e) => {
+                    error!("error processing pending messages: {:?} reloading...", e);
+                    break;
+                }
+            };
 
             // for each result and each channel, send an `UpdatedData`
             process_results.processed.par_iter().for_each(|data| {

@@ -1,3 +1,4 @@
+use common::frame_stack::FrameStackHandle;
 use ipc_test::SharedSlabAllocator;
 use log::trace;
 use numpy::{PyArray3, PyArrayMethods};
@@ -8,9 +9,9 @@ use pyo3::{
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::{
-    common::PixelType,
+    common::{DectrisFrameMeta, PixelType},
     exceptions::{ConnectionError, DecompressError},
-    frame_stack::FrameStackHandle,
+    frame_stack::PyFrameStackHandle,
 };
 
 #[pyclass]
@@ -19,84 +20,90 @@ pub struct CamClient {
 }
 
 impl CamClient {
-    fn decompress_bslz4_impl<'py, T: numpy::Element>(
+    fn decompress_bslz4_impl<T: numpy::Element>(
         &self,
-        handle: &FrameStackHandle,
-        out: &Bound<'py, PyArray3<T>>,
+        handle: &FrameStackHandle<DectrisFrameMeta>,
+        out: &Bound<'_, PyArray3<T>>,
     ) -> PyResult<()> {
-        let mut out_rw = out.readwrite();
-        let out_slice = out_rw.as_slice_mut().expect("`out` must be C-contiguous");
-        let slot: ipc_test::Slot = if let Some(shm) = &self.shm {
-            shm.get(handle.slot.slot_idx)
+        let shm = if let Some(shm) = &self.shm {
+            shm
         } else {
             return Err(PyRuntimeError::new_err("can't decompress with closed SHM"));
         };
 
-        for (frame_meta, idx) in handle.get_meta().iter().zip(0..) {
-            let out_size = usize::try_from(frame_meta.get_size()).unwrap();
+        handle.with_slot(shm, |slot| {
+            let mut out_rw = out.readwrite();
+            let out_slice = out_rw.as_slice_mut().expect("`out` must be C-contiguous");
 
-            // NOTE: frames should all have the same shape
-            // FIXME: frames in a stack can _theoretically_ have different bit depth?
-            let out_offset = idx * out_size;
-            let out_ptr: *mut T = out_slice[out_offset..out_offset + out_size]
-                .as_mut_ptr()
-                .cast();
+            for (frame_meta, idx) in handle.get_meta().iter().zip(0..) {
+                let out_size = frame_meta.get_number_of_pixels();
 
-            let image_data = handle.get_slice_for_frame(idx, &slot);
+                // NOTE: frames should all have the same shape
+                // FIXME: frames in a stack can _theoretically_ have different bit depth?
+                let out_offset = idx * out_size;
+                let out_ptr: *mut T = out_slice[out_offset..out_offset + out_size]
+                    .as_mut_ptr()
+                    .cast();
 
-            match bs_sys::decompress_lz4_into(&image_data[12..], out_ptr, out_size, None) {
-                Ok(()) => {}
-                Err(e) => {
-                    let msg = format!("decompression failed: {e:?}");
-                    return Err(DecompressError::new_err(msg));
+                let image_data = handle.get_slice_for_frame(idx, slot);
+
+                match bs_sys::decompress_lz4_into(&image_data[12..], out_ptr, out_size, None) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        let msg = format!("decompression failed: {e:?}");
+                        return Err(DecompressError::new_err(msg));
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })
     }
 
-    fn decompress_plain_lz4_impl<'py, T: numpy::Element + AsBytes + FromBytes>(
+    fn decompress_plain_lz4_impl<T: numpy::Element + AsBytes + FromBytes>(
         &self,
-        handle: &FrameStackHandle,
-        out: &Bound<'py, PyArray3<T>>,
+        handle: &FrameStackHandle<DectrisFrameMeta>,
+        out: &Bound<'_, PyArray3<T>>,
     ) -> PyResult<()> {
-        let mut out_rw = out.readwrite();
-        let out_slice = match out_rw.as_slice_mut() {
-            Ok(s) => s,
-            Err(e) => {
-                let msg = format!("`out` must be C-contiguous: {e:?}");
-                return Err(DecompressError::new_err(msg));
-            }
-        };
-        let slot: ipc_test::Slot = if let Some(shm) = &self.shm {
-            shm.get(handle.slot.slot_idx)
+        let shm = if let Some(shm) = &self.shm {
+            shm
         } else {
             return Err(PyRuntimeError::new_err("can't decompress with closed SHM"));
         };
 
-        for (frame_meta, idx) in handle.get_meta().iter().zip(0..) {
-            // NOTE: frames should all have the same shape
-            // FIXME: frames in a stack can _theoretically_ have different bit depth?
-            let out_size = usize::try_from(frame_meta.get_size()).unwrap();
-            let out_slice_cast = out_slice[0..out_size].as_bytes_mut();
-            let image_data = handle.get_slice_for_frame(idx, &slot);
-
-            println!("{} {}", image_data.len(), out_slice_cast.len());
-            match lz4::block::decompress_to_buffer(
-                image_data,
-                Some(out_slice_cast.len().try_into().unwrap()),
-                out_slice_cast,
-            ) {
-                Ok(_) => {}
+        handle.with_slot(shm, |slot| {
+            let mut out_rw = out.readwrite();
+            let out_slice = match out_rw.as_slice_mut() {
+                Ok(s) => s,
                 Err(e) => {
-                    let msg = format!("decompression failed: {e:?}");
+                    let msg = format!("`out` must be C-contiguous: {e:?}");
                     return Err(DecompressError::new_err(msg));
                 }
-            }
-        }
+            };
 
-        Ok(())
+            for (frame_meta, idx) in handle.get_meta().iter().zip(0..) {
+                // NOTE: frames should all have the same shape
+                // FIXME: frames in a stack can _theoretically_ have different bit depth?
+                let out_size = frame_meta.get_number_of_pixels();
+                let out_slice_cast = out_slice[0..out_size].as_bytes_mut();
+                let image_data = handle.get_slice_for_frame(idx, slot);
+
+                println!("{} {}", image_data.len(), out_slice_cast.len());
+                match lz4::block::decompress_to_buffer(
+                    image_data,
+                    Some(out_slice_cast.len().try_into().unwrap()),
+                    out_slice_cast,
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let msg = format!("decompression failed: {e:?}");
+                        return Err(DecompressError::new_err(msg));
+                    }
+                }
+            }
+
+            Ok(())
+        })
     }
 }
 
@@ -115,17 +122,19 @@ impl CamClient {
 
     fn decompress_frame_stack<'py>(
         slf: PyRef<Self>,
-        handle: &FrameStackHandle,
+        handle: &PyFrameStackHandle,
         out: Bound<'py, PyAny>,
     ) -> PyResult<()> {
         let arr_u8: Result<&Bound<'py, PyArray3<u8>>, _> = out.downcast();
         let arr_u16: Result<&Bound<'py, PyArray3<u16>>, _> = out.downcast();
         let arr_u32: Result<&Bound<'py, PyArray3<u32>>, _> = out.downcast();
 
-        let (encoding, type_) = if handle.is_empty() {
+        let handle_inner = handle.try_get_inner()?;
+
+        let (encoding, type_) = if handle_inner.is_empty() {
             return Ok(());
         } else {
-            let dimaged = &handle.get_meta().first().unwrap().dimaged;
+            let dimaged = &handle_inner.first_meta().unwrap().dimaged;
             (&dimaged.encoding, &dimaged.type_)
         };
 
@@ -135,14 +144,18 @@ impl CamClient {
             // and little endian. lz4 data is written as defined at https://code.google.com/p/lz4/ without any additional data like
             // block size etc."
             "bs32-lz4<" | "bs16-lz4<" | "bs8-lz4<" => match type_ {
-                PixelType::Uint8 => slf.decompress_bslz4_impl(handle, arr_u8.unwrap())?,
-                PixelType::Uint16 => slf.decompress_bslz4_impl(handle, arr_u16.unwrap())?,
-                PixelType::Uint32 => slf.decompress_bslz4_impl(handle, arr_u32.unwrap())?,
+                PixelType::Uint8 => slf.decompress_bslz4_impl(handle_inner, arr_u8.unwrap())?,
+                PixelType::Uint16 => slf.decompress_bslz4_impl(handle_inner, arr_u16.unwrap())?,
+                PixelType::Uint32 => slf.decompress_bslz4_impl(handle_inner, arr_u32.unwrap())?,
             },
             "lz4<" => match type_ {
-                PixelType::Uint8 => slf.decompress_plain_lz4_impl(handle, arr_u8.unwrap())?,
-                PixelType::Uint16 => slf.decompress_plain_lz4_impl(handle, arr_u16.unwrap())?,
-                PixelType::Uint32 => slf.decompress_plain_lz4_impl(handle, arr_u32.unwrap())?,
+                PixelType::Uint8 => slf.decompress_plain_lz4_impl(handle_inner, arr_u8.unwrap())?,
+                PixelType::Uint16 => {
+                    slf.decompress_plain_lz4_impl(handle_inner, arr_u16.unwrap())?
+                }
+                PixelType::Uint32 => {
+                    slf.decompress_plain_lz4_impl(handle_inner, arr_u32.unwrap())?
+                }
             },
             e => {
                 let msg = format!("can't deal with encoding {e}");
@@ -152,11 +165,16 @@ impl CamClient {
         Ok(())
     }
 
-    fn done(mut slf: PyRefMut<Self>, handle: &FrameStackHandle) -> PyResult<()> {
-        let slot_idx = handle.slot.slot_idx;
-        if let Some(shm) = &mut slf.shm {
-            shm.free_idx(slot_idx);
-            Ok(())
+    fn done(&mut self, handle: &mut PyFrameStackHandle) -> PyResult<()> {
+        if let Some(shm) = &mut self.shm {
+            if let Some(inner) = handle.take() {
+                inner.free_slot(shm);
+                Ok(())
+            } else {
+                Err(PyRuntimeError::new_err(
+                    "`done` called twice on the same handle",
+                ))
+            }
         } else {
             Err(PyRuntimeError::new_err(
                 "CamClient.done called with SHM closed",
@@ -177,8 +195,9 @@ impl Drop for CamClient {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{convert::Infallible, io::Write, path::PathBuf};
 
+    use common::frame_stack::{FrameStackForWriting, FrameStackHandle};
     use lz4::block::CompressionMode;
     use numpy::{PyArray, PyArrayMethods};
     use tempfile::tempdir;
@@ -187,10 +206,7 @@ mod tests {
     use pyo3::{prepare_freethreaded_python, Python};
     use zerocopy::AsBytes;
 
-    use crate::{
-        cam_client::CamClient,
-        frame_stack::{FrameStackForWriting, FrameStackHandle},
-    };
+    use crate::{cam_client::CamClient, common::DectrisFrameMeta};
     use tempfile::TempDir;
 
     fn get_socket_path() -> (TempDir, PathBuf) {
@@ -238,11 +254,24 @@ mod tests {
         data_with_prefix.iter().take(12).for_each(|&e| {
             assert_eq!(e, 0);
         });
-        println!("{:x?}", &compressed_data);
-        println!("{:x?}", &data_with_prefix[12..]);
-        assert_eq!(fs.cursor, 0);
-        fs.frame_done(dimage, dimaged, dconfig, &data_with_prefix);
-        assert_eq!(fs.cursor, data_with_prefix.len());
+        println!("compressed_data:        {:x?}", &compressed_data);
+        println!("data_with_prefix[12..]: {:x?}", &data_with_prefix[12..]);
+        assert_eq!(fs.get_cursor(), 0);
+
+        let meta = DectrisFrameMeta {
+            dimage,
+            dimaged,
+            dconfig,
+            data_length_bytes: data_with_prefix.len(),
+        };
+
+        fs.write_frame(&meta, |mut b| -> Result<(), Infallible> {
+            b.write_all(&data_with_prefix).unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(fs.get_cursor(), data_with_prefix.len());
 
         // we have one frame in there:
         assert_eq!(fs.len(), 1);
@@ -256,34 +285,35 @@ mod tests {
         prepare_freethreaded_python();
 
         // roundtrip serialize/deserialize:
-        Python::with_gil(|py| {
-            let bytes = fs_handle.serialize(py).unwrap();
+        Python::with_gil(|_py| {
+            let bytes = fs_handle.serialize().unwrap();
             let new_handle = FrameStackHandle::deserialize_impl(&bytes).unwrap();
             assert_eq!(fs_handle, new_handle);
         });
 
         let client = CamClient::new(socket_as_path.to_str().unwrap()).unwrap();
 
-        let slot_r: ipc_test::Slot = shm.get(fs_handle.slot.slot_idx);
-        let slice = slot_r.as_slice();
-        println!("{:x?}", slice);
+        fs_handle.with_slot(&shm, |slot_r| {
+            let slice = slot_r.as_slice();
+            println!("slice: {:x?}", slice);
 
-        Python::with_gil(|py| {
-            let flat: Vec<u16> = (0..256).collect();
-            let out = PyArray::from_vec_bound(py, flat)
-                .reshape((1, 16, 16))
-                .unwrap();
-            client.decompress_bslz4_impl(&fs_handle, &out).unwrap();
+            Python::with_gil(|py| {
+                let flat: Vec<u16> = (0..256).collect();
+                let out = PyArray::from_vec_bound(py, flat)
+                    .reshape((1, 16, 16))
+                    .unwrap();
+                client.decompress_bslz4_impl(&fs_handle, &out).unwrap();
 
-            out.readonly()
-                .as_slice()
-                .unwrap()
-                .iter()
-                .zip(0..)
-                .for_each(|(&item, idx)| {
-                    assert_eq!(item, in_[idx]);
-                    assert_eq!(item, (idx % 16) as u16);
-                });
+                out.readonly()
+                    .as_slice()
+                    .unwrap()
+                    .iter()
+                    .zip(0..)
+                    .for_each(|(&item, idx)| {
+                        assert_eq!(item, in_[idx]);
+                        assert_eq!(item, (idx % 16) as u16);
+                    });
+            });
         });
     }
 
@@ -318,10 +348,23 @@ mod tests {
         let compressed_data =
             lz4::block::compress(in_bytes, Some(CompressionMode::DEFAULT), false).unwrap();
 
-        println!("{:x?}", &compressed_data);
-        assert_eq!(fs.cursor, 0);
-        fs.frame_done(dimage, dimaged, dconfig, &compressed_data);
-        assert_eq!(fs.cursor, compressed_data.len());
+        println!("compressed_data: {:x?}", &compressed_data);
+        assert_eq!(fs.get_cursor(), 0);
+
+        let meta = DectrisFrameMeta {
+            dimage,
+            dimaged,
+            dconfig,
+            data_length_bytes: compressed_data.len(),
+        };
+
+        fs.write_frame(&meta, |buf| {
+            buf.copy_from_slice(&compressed_data);
+            Ok::<_, Infallible>(())
+        })
+        .unwrap();
+
+        assert_eq!(fs.get_cursor(), compressed_data.len());
 
         // we have one frame in there:
         assert_eq!(fs.len(), 1);
@@ -335,47 +378,48 @@ mod tests {
         prepare_freethreaded_python();
 
         // roundtrip serialize/deserialize:
-        Python::with_gil(|py| {
-            let bytes = fs_handle.serialize(py).unwrap();
+        Python::with_gil(|_py| {
+            let bytes = fs_handle.serialize().unwrap();
             let new_handle = FrameStackHandle::deserialize_impl(&bytes).unwrap();
             assert_eq!(fs_handle, new_handle);
         });
 
         let client = CamClient::new(socket_as_path.to_str().unwrap()).unwrap();
 
-        let slot_r: ipc_test::Slot = shm.get(fs_handle.slot.slot_idx);
-        let slice = slot_r.as_slice();
-        let slice_for_frame = fs_handle.get_slice_for_frame(0, &slot_r);
+        fs_handle.with_slot(&shm, |slot_r| {
+            let slice = slot_r.as_slice();
+            let slice_for_frame = fs_handle.get_slice_for_frame(0, slot_r);
 
-        // try decompression directly:
-        let out_size = 256 * TryInto::<i32>::try_into(std::mem::size_of::<u16>()).unwrap();
-        println!(
-            "slice_for_frame.len(): {}, uncompressed_size: {}",
-            slice_for_frame.len(),
-            out_size
-        );
-        lz4::block::decompress(slice_for_frame, Some(out_size)).unwrap();
+            // try decompression directly:
+            let out_size = 256 * TryInto::<i32>::try_into(std::mem::size_of::<u16>()).unwrap();
+            println!(
+                "slice_for_frame.len(): {}, uncompressed_size: {}",
+                slice_for_frame.len(),
+                out_size
+            );
+            lz4::block::decompress(slice_for_frame, Some(out_size)).unwrap();
 
-        println!("{:x?}", slice_for_frame);
-        println!("{:x?}", slice);
+            println!("slice_for_frame: {:x?}", slice_for_frame);
+            println!("slice:           {:x?}", slice);
 
-        Python::with_gil(|py| {
-            let flat: Vec<u16> = (0..256).collect();
-            let out = PyArray::from_vec_bound(py, flat)
-                .reshape((1, 16, 16))
-                .unwrap();
+            Python::with_gil(|py| {
+                let flat: Vec<u16> = (0..256).collect();
+                let out = PyArray::from_vec_bound(py, flat)
+                    .reshape((1, 16, 16))
+                    .unwrap();
 
-            client.decompress_plain_lz4_impl(&fs_handle, &out).unwrap();
+                client.decompress_plain_lz4_impl(&fs_handle, &out).unwrap();
 
-            out.readonly()
-                .as_slice()
-                .unwrap()
-                .iter()
-                .zip(0..)
-                .for_each(|(&item, idx)| {
-                    assert_eq!(item, in_[idx]);
-                    assert_eq!(item, (idx % 16) as u16);
-                });
+                out.readonly()
+                    .as_slice()
+                    .unwrap()
+                    .iter()
+                    .zip(0..)
+                    .for_each(|(&item, idx)| {
+                        assert_eq!(item, in_[idx]);
+                        assert_eq!(item, (idx % 16) as u16);
+                    });
+            });
         });
     }
 }

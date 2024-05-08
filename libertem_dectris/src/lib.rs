@@ -8,4 +8,3 @@ pub mod receiver;
 pub mod sim;
 pub mod sim_data_source;
 pub mod sim_gen;
-pub mod stats;
