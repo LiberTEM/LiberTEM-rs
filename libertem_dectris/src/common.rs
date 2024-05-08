@@ -1,5 +1,6 @@
 #![allow(clippy::borrow_deref_ref)]
 
+use common::frame_stack::FrameMeta;
 use log::info;
 use serde::{Deserialize, Serialize};
 
@@ -177,17 +178,23 @@ impl DConfig {
 }
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Debug)]
-pub struct FrameMeta {
+pub struct DectrisFrameMeta {
     pub dimage: DImage,
     pub dimaged: DImageD,
     pub dconfig: DConfig,
     pub data_length_bytes: usize,
 }
 
-impl FrameMeta {
-    /// Get the number of elements in this frame (`prod(shape)`)
-    pub fn get_size(&self) -> u64 {
-        self.dimaged.shape.iter().product()
+impl DectrisFrameMeta {
+    /// number of pixels in the uncompressed frame (from the shape)
+    pub fn get_number_of_pixels(&self) -> usize {
+        self.dimaged.shape.iter().product::<u64>() as usize
+    }
+}
+
+impl FrameMeta for DectrisFrameMeta {
+    fn get_data_length_bytes(&self) -> usize {
+        self.data_length_bytes
     }
 }
 

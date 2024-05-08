@@ -1,21 +1,20 @@
 use std::{
+    convert::Infallible,
     fmt::Display,
     mem::replace,
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
+use common::frame_stack::{FrameStackForWriting, FrameStackHandle};
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
 use zmq::{Message, Socket};
 
-use crate::{
-    common::{
-        setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesAndType, DSeriesEnd,
-        DetectorConfig,
-    },
-    frame_stack::{FrameStackForWriting, FrameStackHandle},
+use crate::common::{
+    setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesAndType, DSeriesEnd, DectrisFrameMeta,
+    DetectorConfig,
 };
 
 ///
@@ -33,10 +32,10 @@ pub enum ResultMsg {
         detector_config: DetectorConfig,
     },
     FrameStack {
-        frame_stack: FrameStackHandle,
+        frame_stack: FrameStackHandle<DectrisFrameMeta>,
     },
     End {
-        frame_stack: FrameStackHandle,
+        frame_stack: FrameStackHandle<DectrisFrameMeta>,
     },
 }
 
@@ -342,12 +341,24 @@ fn acquisition(
             }
         }
 
-        let frame = frame_stack.frame_done(dimage, dimaged, dconfig, &msg_image);
+        let meta = DectrisFrameMeta {
+            dimage,
+            dimaged,
+            dconfig,
+            data_length_bytes: msg_image.len(),
+        };
+
+        frame_stack
+            .write_frame(&meta, |buf| {
+                buf.copy_from_slice(&msg_image);
+                Ok::<_, Infallible>(())
+            })
+            .unwrap();
 
         expected_frame_id += 1;
 
         // we will be done after this frame:
-        let done = frame.dimage.frame == detector_config.get_num_images() - 1;
+        let done = meta.dimage.frame == detector_config.get_num_images() - 1;
 
         if done {
             let elapsed = t0.elapsed();

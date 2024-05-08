@@ -9,14 +9,16 @@ use std::{
 use crate::{
     cam_client::CamClient,
     common::{
-        DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig, PixelType, TriggerMode,
+        DConfig, DHeader, DImage, DImageD, DSeriesEnd, DectrisFrameMeta, DetectorConfig, PixelType,
+        TriggerMode,
     },
     exceptions::{ConnectionError, DecompressError, TimeoutError},
-    frame_stack::FrameStackHandle,
+    frame_stack::PyFrameStackHandle,
     receiver::{DectrisReceiver, ReceiverStatus, ResultMsg},
     sim::DectrisSim,
 };
 
+use common::frame_stack::FrameStackHandle;
 use ipc_test::SharedSlabAllocator;
 use log::{info, trace};
 use pyo3::{
@@ -26,12 +28,12 @@ use pyo3::{
 use stats::Stats;
 
 #[pymodule]
-fn libertem_dectris<'py>(py: Python, m: Bound<'py, PyModule>) -> PyResult<()> {
+fn libertem_dectris(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     // FIXME: logging integration deadlocks on close(), when trying to acquire
     // the GIL
     // pyo3_log::init();
 
-    m.add_class::<FrameStackHandle>()?;
+    m.add_class::<PyFrameStackHandle>()?;
     m.add_class::<DectrisConnection>()?;
     m.add_class::<PixelType>()?;
     m.add_class::<DectrisSim>()?;
@@ -51,10 +53,7 @@ fn libertem_dectris<'py>(py: Python, m: Bound<'py, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-fn register_header_module<'py>(
-    py: Python<'_>,
-    parent_module: &Bound<'py, PyModule>,
-) -> PyResult<()> {
+fn register_header_module(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let headers_module = PyModule::new_bound(py, "headers")?;
     headers_module.add_class::<DHeader>()?;
     headers_module.add_class::<DImage>()?;
@@ -68,7 +67,7 @@ fn register_header_module<'py>(
 struct FrameChunkedIterator<'a, 'b, 'c, 'd> {
     receiver: &'a mut DectrisReceiver,
     shm: &'b mut SharedSlabAllocator,
-    remainder: &'c mut Vec<FrameStackHandle>,
+    remainder: &'c mut Vec<FrameStackHandle<DectrisFrameMeta>>,
     stats: &'d mut Stats,
 }
 
@@ -79,7 +78,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
         &mut self,
         py: Python,
         max_size: usize,
-    ) -> PyResult<Option<FrameStackHandle>> {
+    ) -> PyResult<Option<FrameStackHandle<DectrisFrameMeta>>> {
         let res = self.recv_next_stack_impl(py);
         match res {
             Ok(Some(frame_stack)) => {
@@ -105,7 +104,10 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
 
     /// Receive the next frame stack from the background thread and handle any
     /// other control messages.
-    fn recv_next_stack_impl(&mut self, py: Python) -> PyResult<Option<FrameStackHandle>> {
+    fn recv_next_stack_impl(
+        &mut self,
+        py: Python,
+    ) -> PyResult<Option<FrameStackHandle<DectrisFrameMeta>>> {
         // first, check if there is anything on the remainder list:
         if let Some(frame_stack) = self.remainder.pop() {
             return Ok(Some(frame_stack));
@@ -166,7 +168,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
     fn new(
         receiver: &'a mut DectrisReceiver,
         shm: &'b mut SharedSlabAllocator,
-        remainder: &'c mut Vec<FrameStackHandle>,
+        remainder: &'c mut Vec<FrameStackHandle<DectrisFrameMeta>>,
         stats: &'d mut Stats,
     ) -> PyResult<Self> {
         Ok(FrameChunkedIterator {
@@ -181,7 +183,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
 #[pyclass]
 struct DectrisConnection {
     receiver: DectrisReceiver,
-    remainder: Vec<FrameStackHandle>,
+    remainder: Vec<FrameStackHandle<DectrisFrameMeta>>,
     local_shm: SharedSlabAllocator,
     stats: Stats,
 }
@@ -316,7 +318,7 @@ impl DectrisConnection {
         &mut self,
         py: Python,
         max_size: usize,
-    ) -> PyResult<Option<FrameStackHandle>> {
+    ) -> PyResult<Option<PyFrameStackHandle>> {
         let mut iter = FrameChunkedIterator::new(
             &mut self.receiver,
             &mut self.local_shm,
@@ -327,7 +329,7 @@ impl DectrisConnection {
             if let Some(frame_stack) = &maybe_stack {
                 self.stats.count_stats_item(frame_stack);
             }
-            maybe_stack
+            maybe_stack.map(PyFrameStackHandle::new)
         })
     }
 
