@@ -24,6 +24,7 @@ serde = { version = "1.0.143", features = ["derive"] }
 ipc-test = { path = "../ipc_test" }
 serval-client = { path = "../serval-client" }
 stats = { path = "../stats" }
+common = { path = "../common" }
 
 [features]
 extension-module = ["pyo3/extension-module"]

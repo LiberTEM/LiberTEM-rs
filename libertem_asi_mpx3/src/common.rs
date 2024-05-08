@@ -1,3 +1,4 @@
+use common::frame_stack::FrameMeta;
 use pyo3::{pyclass, pymethods};
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +37,7 @@ impl DType {
 }
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Debug)]
-pub struct FrameMeta {
+pub struct ASIMpxFrameMeta {
     pub sequence: u64,
     pub dtype: DType,
     pub width: u16,
@@ -49,9 +50,15 @@ pub struct FrameMeta {
     pub header_length_bytes: usize,
 }
 
-impl FrameMeta {
+impl ASIMpxFrameMeta {
     /// Get the number of elements in this frame (`prod(shape)`)
-    pub fn get_size(&self) -> u64 {
-        self.width as u64 * self.height as u64
+    pub fn get_size(&self) -> usize {
+        self.width as usize * self.height as usize
+    }
+}
+
+impl FrameMeta for ASIMpxFrameMeta {
+    fn get_data_length_bytes(&self) -> usize {
+        self.data_length_bytes
     }
 }

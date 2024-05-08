@@ -13,7 +13,7 @@ use crate::{
         TriggerMode,
     },
     exceptions::{ConnectionError, DecompressError, TimeoutError},
-    frame_stack::PyFrameStackHandle,
+    frame_stack_py::PyFrameStackHandle,
     receiver::{DectrisReceiver, ReceiverStatus, ResultMsg},
     sim::DectrisSim,
 };
