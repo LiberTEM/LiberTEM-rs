@@ -20,6 +20,9 @@ code in submodules. After cloning, remember to enable pre-commit hooks using
 - `libertem_asi_mpx3`: A Rust+Python library for receiving data from Amsterdam Scientific Instruments frame-based detectors (experimental).
 - `serval-client`: A rust crate for speaking to the ASI Serval API
 - `libertem_dectris`: This is a Python package for efficiently receiving data from DECTRIS detectors with the zeromq interface.
+- `libertem_k2is`: A Python package for receiving data from K2IS cameras.
+- `k2o`: A rust library for receiving data from K2IS cameras.
+- `stats`: Small crate for keeping simple stats on shared memory usage.
 - `playegui`: `egui`-based prototype for efficient on-line visualization of 4D STEM reconstructions
 
 

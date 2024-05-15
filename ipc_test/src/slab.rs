@@ -174,6 +174,16 @@ impl SharedSlabAllocator {
         let free_list_ptr = unsafe { ptr.offset(Self::MUTEX_SIZE.try_into().unwrap()) };
 
         let (_lock, bg_thread) = if init_structures {
+            if true {
+                let full_slice = unsafe { from_raw_parts_mut(ptr, slab_info.total_size) };
+                for i in full_slice.iter_mut() {
+                    *i = 0xFF;
+                }
+                for i in full_slice.iter_mut() {
+                    *i = 0;
+                }
+            }
+
             let (lock, used_size) = unsafe { Mutex::new(ptr, free_list_ptr).unwrap() };
 
             if used_size > Self::MUTEX_SIZE {
@@ -204,8 +214,8 @@ impl SharedSlabAllocator {
                 data_ptr: free_list_ptr,
             };
             let j = std::thread::spawn(move || {
-                let b = b;
-                let _mtx = unsafe { Mutex::from_existing(b.mutex_ptr, b.data_ptr) };
+                let b2 = b;
+                let _mtx = unsafe { Mutex::from_existing(b2.mutex_ptr, b2.data_ptr) };
                 // we are done initializing...
                 init_chan_s.send(()).unwrap();
                 // so we just keep the mutex open and wait until we are cleaned up:
