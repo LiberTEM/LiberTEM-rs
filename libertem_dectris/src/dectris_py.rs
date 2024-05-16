@@ -64,122 +64,6 @@ fn register_header_module(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -
     Ok(())
 }
 
-struct FrameChunkedIterator<'a, 'b, 'c, 'd> {
-    receiver: &'a mut DectrisReceiver,
-    shm: &'b mut SharedSlabAllocator,
-    remainder: &'c mut Vec<FrameStackHandle<DectrisFrameMeta>>,
-    stats: &'d mut Stats,
-}
-
-impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
-    /// Get the next frame stack. Mainly handles splitting logic for boundary
-    /// conditions and delegates communication with the background thread to `recv_next_stack_impl`
-    pub fn get_next_stack_impl(
-        &mut self,
-        py: Python,
-        max_size: usize,
-    ) -> PyResult<Option<FrameStackHandle<DectrisFrameMeta>>> {
-        let res = self.recv_next_stack_impl(py);
-        match res {
-            Ok(Some(frame_stack)) => {
-                if frame_stack.len() > max_size {
-                    // split `FrameStackHandle` into two:
-                    trace!(
-                        "FrameStackHandle::split_at({max_size}); len={}",
-                        frame_stack.len()
-                    );
-                    self.stats.count_split();
-                    let (left, right) = frame_stack.split_at(max_size, self.shm);
-                    self.remainder.push(right);
-                    assert!(left.len() <= max_size);
-                    return Ok(Some(left));
-                }
-                assert!(frame_stack.len() <= max_size);
-                Ok(Some(frame_stack))
-            }
-            Ok(None) => Ok(None),
-            e @ Err(_) => e,
-        }
-    }
-
-    /// Receive the next frame stack from the background thread and handle any
-    /// other control messages.
-    fn recv_next_stack_impl(
-        &mut self,
-        py: Python,
-    ) -> PyResult<Option<FrameStackHandle<DectrisFrameMeta>>> {
-        // first, check if there is anything on the remainder list:
-        if let Some(frame_stack) = self.remainder.pop() {
-            return Ok(Some(frame_stack));
-        }
-
-        match self.receiver.status {
-            ReceiverStatus::Closed => {
-                return Err(exceptions::PyRuntimeError::new_err("receiver is closed"))
-            }
-            ReceiverStatus::Idle => return Ok(None),
-            ReceiverStatus::Running => {}
-        }
-
-        let recv = &mut self.receiver;
-
-        loop {
-            py.check_signals()?;
-
-            let recv_result = py.allow_threads(|| {
-                let next: Result<Option<ResultMsg>, Infallible> =
-                    Ok(recv.next_timeout(Duration::from_millis(100)));
-                next
-            })?;
-
-            match recv_result {
-                None => {
-                    continue;
-                }
-                Some(ResultMsg::AcquisitionStart {
-                    series: _,
-                    detector_config: _,
-                }) => {
-                    // FIXME: in case of "passive" mode, we should actually not hit this,
-                    // as the "outer" structure (`DectrisConnection`) handles it?
-                    continue;
-                }
-                Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(format!(
-                        "serialization error: {}, message: {}",
-                        msg, recvd_msg
-                    )))
-                }
-                Some(ResultMsg::Error { msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(msg))
-                }
-                Some(ResultMsg::End { frame_stack }) => {
-                    self.stats.log_stats();
-                    self.stats.reset();
-                    return Ok(Some(frame_stack));
-                }
-                Some(ResultMsg::FrameStack { frame_stack }) => {
-                    return Ok(Some(frame_stack));
-                }
-            }
-        }
-    }
-
-    fn new(
-        receiver: &'a mut DectrisReceiver,
-        shm: &'b mut SharedSlabAllocator,
-        remainder: &'c mut Vec<FrameStackHandle<DectrisFrameMeta>>,
-        stats: &'d mut Stats,
-    ) -> PyResult<Self> {
-        Ok(FrameChunkedIterator {
-            receiver,
-            shm,
-            remainder,
-            stats,
-        })
-    }
-}
-
 #[pyclass]
 struct DectrisConnection {
     receiver: DectrisReceiver,
@@ -325,11 +209,13 @@ impl DectrisConnection {
             &mut self.remainder,
             &mut self.stats,
         )?;
-        iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
-            if let Some(frame_stack) = &maybe_stack {
-                self.stats.count_stats_item(frame_stack);
-            }
-            maybe_stack.map(PyFrameStackHandle::new)
+        py.allow_threads(|| {
+            iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
+                if let Some(frame_stack) = &maybe_stack {
+                    self.stats.count_stats_item(frame_stack);
+                }
+                maybe_stack.map(PyFrameStackHandle::new)
+            })
         })
     }
 

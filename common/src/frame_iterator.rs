@@ -6,7 +6,7 @@ use stats::Stats;
 
 use crate::{
     frame_stack::{FrameMeta, FrameStackHandle},
-    generic_receiver::{Receiver, ReceiverStatus},
+    generic_receiver::{Receiver, ReceiverMsg, ReceiverStatus},
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -16,12 +16,15 @@ pub enum ChunkedIterError {
 
     #[error("unrecoverable error: {0}")]
     UnrecoverableError(Box<dyn Error>),
+
+    #[error("periodic callback error: {0}")]
+    PeriodicCallbackError(Box<dyn Error>),
 }
 
-struct FrameChunkedIterator<'a, 'b, 'c, 'd, M, R>
+pub struct FrameChunkedIterator<'a, 'b, 'c, 'd, M, R>
 where
     M: FrameMeta,
-    R: Receiver,
+    R: Receiver<M>,
 {
     receiver: &'a mut R,
     shm: &'b mut SharedSlabAllocator,
@@ -32,15 +35,27 @@ where
 impl<'a, 'b, 'c, 'd, M, R> FrameChunkedIterator<'a, 'b, 'c, 'd, M, R>
 where
     M: FrameMeta,
-    R: Receiver,
+    R: Receiver<M>,
 {
+    /// Create a ``FrameChunkedIterator``. The iterator doesn't have its own
+    /// state, and it's meant to be instantiated only temporarily.
+    pub fn new(
+        receiver: &'a mut R,
+        shm: &'b mut SharedSlabAllocator,
+        remainder: &'c mut Vec<FrameStackHandle<M>>,
+        stats: &'d mut Stats,
+    ) -> Self {
+        Self { receiver, shm, remainder, stats }
+    }
+
     /// Get the next frame stack. Mainly handles splitting logic for boundary
     /// conditions and delegates communication with the background thread to `recv_next_stack_impl`
-    pub fn get_next_stack_impl(
+    pub fn get_next_stack_impl<E: std::error::Error>(
         &mut self,
         max_size: usize,
+        periodic_callback: dyn Fn() -> Result<(), E>,
     ) -> Result<Option<FrameStackHandle<M>>, ChunkedIterError> {
-        let res = self.recv_next_stack_impl();
+        let res = self.recv_next_stack_impl(periodic_callback);
         match res {
             Ok(Some(frame_stack)) => {
                 if frame_stack.len() > max_size {
@@ -65,7 +80,10 @@ where
 
     /// Receive the next frame stack from the background thread and handle any
     /// other control messages.
-    fn recv_next_stack_impl(&mut self) -> Result<Option<FrameStackHandle<M>>, ChunkedIterError> {
+    fn recv_next_stack_impl<E: std::error::Error>(
+        &mut self,
+        periodic_callback: dyn Fn() -> Result<(), E>,
+    ) -> Result<Option<FrameStackHandle<M>>, ChunkedIterError> {
         // first, check if there is anything on the remainder list:
         if let Some(frame_stack) = self.remainder.pop() {
             return Ok(Some(frame_stack));
@@ -88,22 +106,23 @@ where
         let recv = &mut self.receiver;
 
         loop {
-            // FIXME: should we add a generic "check for cancel" callback instead?
-            py.check_signals()?;
+            if let Err(e) = periodic_callback() {
+                let a = Box::new(e);
+                return Err(ChunkedIterError::PeriodicCallbackError(Box::new(e)));
+            }
 
-            // FIXME: how do we allow Python threads here, in generic code?
-            // FIXME: do we need to pass down the `Python` object??
-            let recv_result = py.allow_threads(|| {
-                let next: Result<Option<ResultMsg>, Infallible> =
-                    Ok(recv.next_timeout(Duration::from_millis(100)));
-                next
-            })?;
+            // FIXME: need to drop the GIL while receiving the next frame stack!
+            // need to figure out how to do this, if we can just wrap the whole
+            // thing into an `allow_threads` scope, or if we need yet another
+            // "callback"-like pattern...
+
+            let recv_result = recv.next_timeout(Duration::from_millis(100));
 
             match recv_result {
                 None => {
                     continue;
                 }
-                Some(ResultMsg::AcquisitionStart {
+                Some(ReceiverMsg::AcquisitionStart {
                     series: _,
                     detector_config: _,
                 }) => {
