@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::Result as AnyResult;
 use crossbeam::channel::{bounded, Sender};
 use raw_sync::locks::{LockImpl, LockInit, Mutex};
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,9 @@ pub struct SharedSlabAllocator {
     bg_thread: Option<(JoinHandle<()>, Sender<()>)>,
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum SlabInitError {}
+
 ///
 /// Single-producer multiple consumer communication via shared memory
 ///
@@ -140,7 +143,7 @@ impl SharedSlabAllocator {
         slot_size: usize,
         huge_pages: bool,
         shm_path: &Path,
-    ) -> Result<Self> {
+    ) -> Result<Self, SlabInitError> {
         let free_list_size = std::mem::size_of::<usize>() * (1 + num_slots);
         let slot_sync_size = Self::SYNC_SLOT_SIZE * num_slots;
         let overhead: usize = align_to(
@@ -169,7 +172,7 @@ impl SharedSlabAllocator {
         shm: Shm,
         slab_info: SlabInfo,
         init_structures: bool,
-    ) -> Result<Self> {
+    ) -> Result<Self, SlabInitError> {
         let ptr = shm.as_mut_ptr();
         let free_list_ptr = unsafe { ptr.offset(Self::MUTEX_SIZE.try_into().unwrap()) };
 
@@ -238,12 +241,12 @@ impl SharedSlabAllocator {
         })
     }
 
-    pub fn connect(handle_path: &str) -> Result<Self> {
+    pub fn connect(handle_path: &str) -> AnyResult<Self> {
         let (shm, slab_info): (_, SlabInfo) = Shm::connect(handle_path);
-        Self::from_shm_and_slab_info(shm, slab_info, false)
+        Ok(Self::from_shm_and_slab_info(shm, slab_info, false)?)
     }
 
-    pub fn clone_and_connect(&self) -> Result<Self> {
+    pub fn clone_and_connect(&self) -> AnyResult<Self> {
         let handle = self.get_handle();
         Self::connect(&handle.os_handle)
     }
