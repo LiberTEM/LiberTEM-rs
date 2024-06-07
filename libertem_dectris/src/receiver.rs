@@ -6,7 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::frame_stack::{FrameStackForWriting, FrameStackHandle};
+use common::{
+    frame_stack::{FrameStackForWriting, FrameStackHandle},
+    generic_receiver,
+};
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};

@@ -18,11 +18,12 @@ use crate::{
     sim::DectrisSim,
 };
 
-use common::frame_stack::FrameStackHandle;
+use common::{frame_iterator::FrameChunkedIterator, frame_stack::FrameStackHandle};
 use ipc_test::SharedSlabAllocator;
 use log::{info, trace};
 use pyo3::{
-    exceptions::{self, PyRuntimeError},
+    create_exception,
+    exceptions::{self, PyException, PyRuntimeError},
     prelude::*,
 };
 use stats::Stats;
@@ -63,6 +64,15 @@ fn register_header_module(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -
     parent_module.add_submodule(&headers_module)?;
     Ok(())
 }
+
+common::impl_py_frame_stack!(PyDectrisFrameStack, DectrisFrameMeta);
+common::impl_py_connection!(
+    PyDectrisConnection,
+    PyDectrisFrameStack,
+    DectrisFrameMeta,
+    DectrisReceiver,
+    libertem_dectris
+);
 
 #[pyclass]
 struct DectrisConnection {
@@ -196,27 +206,6 @@ impl DectrisConnection {
         slf.stats.log_stats();
         slf.stats.reset();
         slf.close_impl();
-    }
-
-    fn get_next_stack(
-        &mut self,
-        py: Python,
-        max_size: usize,
-    ) -> PyResult<Option<PyFrameStackHandle>> {
-        let mut iter = FrameChunkedIterator::new(
-            &mut self.receiver,
-            &mut self.local_shm,
-            &mut self.remainder,
-            &mut self.stats,
-        )?;
-        py.allow_threads(|| {
-            iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
-                if let Some(frame_stack) = &maybe_stack {
-                    self.stats.count_stats_item(frame_stack);
-                }
-                maybe_stack.map(PyFrameStackHandle::new)
-            })
-        })
     }
 
     fn log_shm_stats(&self) {

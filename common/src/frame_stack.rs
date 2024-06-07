@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use ipc_test::{SharedSlabAllocator, Slot, SlotForWriting, SlotInfo};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -5,7 +7,7 @@ use pyo3::{
 };
 use serde::{Deserialize, Serialize};
 
-pub trait FrameMeta: Clone + Serialize {
+pub trait FrameMeta: Clone + Serialize + Debug {
     /// Length of the data that belongs to the frame corresponding to this meta object
     fn get_data_length_bytes(&self) -> usize;
 }
@@ -131,10 +133,7 @@ where
     pub(crate) bytes_per_frame: usize,
 }
 
-impl<M> FrameStackHandle<M>
-where
-    M: FrameMeta,
-{
+impl<M: FrameMeta> FrameStackHandle<M> {
     pub fn len(&self) -> usize {
         self.meta.len()
     }
@@ -249,7 +248,7 @@ mod tests {
 
     use super::FrameMeta;
 
-    #[derive(Serialize, Deserialize, Clone)]
+    #[derive(Serialize, Deserialize, Clone, Debug)]
     struct MyMeta {
         data_length: usize,
     }

@@ -5,8 +5,9 @@ use log::trace;
 use stats::Stats;
 
 use crate::{
+    background_thread::{BackgroundThread, ReceiverMsg},
     frame_stack::{FrameMeta, FrameStackHandle},
-    generic_receiver::{Receiver, ReceiverMsg, ReceiverStatus},
+    generic_connection::{GenericConnection, PendingAcquisition},
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -15,45 +16,35 @@ pub enum ChunkedIterError {
     ReceiverClosed,
 
     #[error("unrecoverable error: {0}")]
-    UnrecoverableError(Box<dyn Error>),
+    UnrecoverableError(Box<dyn Error + 'static + Send + Sync>),
 
     #[error("periodic callback error: {0}")]
-    PeriodicCallbackError(Box<dyn Error>),
+    PeriodicCallbackError(Box<dyn Error + 'static + Send + Sync>),
 }
 
-pub struct FrameChunkedIterator<'a, 'b, 'c, 'd, M, R>
+pub struct FrameChunkedIterator<'a, 'b, 'c, M, B, P>
 where
     M: FrameMeta,
-    R: Receiver<M>,
+    B: BackgroundThread<M, P>,
+    P: PendingAcquisition,
 {
-    receiver: &'a mut R,
+    receiver: &'a mut GenericConnection<M, B, P>,
     shm: &'b mut SharedSlabAllocator,
-    remainder: &'c mut Vec<FrameStackHandle<M>>,
-    stats: &'d mut Stats,
+    stats: &'c mut Stats,
 }
 
-impl<'a, 'b, 'c, 'd, M, R> FrameChunkedIterator<'a, 'b, 'c, 'd, M, R>
+impl<'a, 'b, 'c, M, B, P> FrameChunkedIterator<'a, 'b, 'c, M, B, P>
 where
     M: FrameMeta,
-    R: Receiver<M>,
+    B: BackgroundThread<M, P>,
+    P: PendingAcquisition,
 {
-    /// Create a ``FrameChunkedIterator``. The iterator doesn't have its own
-    /// state, and it's meant to be instantiated only temporarily.
-    pub fn new(
-        receiver: &'a mut R,
-        shm: &'b mut SharedSlabAllocator,
-        remainder: &'c mut Vec<FrameStackHandle<M>>,
-        stats: &'d mut Stats,
-    ) -> Self {
-        Self { receiver, shm, remainder, stats }
-    }
-
     /// Get the next frame stack. Mainly handles splitting logic for boundary
     /// conditions and delegates communication with the background thread to `recv_next_stack_impl`
-    pub fn get_next_stack_impl<E: std::error::Error>(
+    pub fn get_next_stack_impl<E: std::error::Error + 'static + Send + Sync>(
         &mut self,
         max_size: usize,
-        periodic_callback: dyn Fn() -> Result<(), E>,
+        periodic_callback: impl Fn() -> Result<(), E>,
     ) -> Result<Option<FrameStackHandle<M>>, ChunkedIterError> {
         let res = self.recv_next_stack_impl(periodic_callback);
         match res {
@@ -66,7 +57,7 @@ where
                     );
                     self.stats.count_split();
                     let (left, right) = frame_stack.split_at(max_size, self.shm);
-                    self.remainder.push(right);
+                    self.receiver.get_remainder_mut().push(right);
                     assert!(left.len() <= max_size);
                     return Ok(Some(left));
                 }
@@ -80,12 +71,12 @@ where
 
     /// Receive the next frame stack from the background thread and handle any
     /// other control messages.
-    fn recv_next_stack_impl<E: std::error::Error>(
+    fn recv_next_stack_impl<E: std::error::Error + 'static + Send + Sync>(
         &mut self,
-        periodic_callback: dyn Fn() -> Result<(), E>,
+        periodic_callback: impl Fn() -> Result<(), E>,
     ) -> Result<Option<FrameStackHandle<M>>, ChunkedIterError> {
         // first, check if there is anything on the remainder list:
-        if let Some(frame_stack) = self.remainder.pop() {
+        if let Some(frame_stack) = self.receiver.get_remainder_mut().pop() {
             return Ok(Some(frame_stack));
         }
 
@@ -107,14 +98,8 @@ where
 
         loop {
             if let Err(e) = periodic_callback() {
-                let a = Box::new(e);
                 return Err(ChunkedIterError::PeriodicCallbackError(Box::new(e)));
             }
-
-            // FIXME: need to drop the GIL while receiving the next frame stack!
-            // need to figure out how to do this, if we can just wrap the whole
-            // thing into an `allow_threads` scope, or if we need yet another
-            // "callback"-like pattern...
 
             let recv_result = recv.next_timeout(Duration::from_millis(100));
 
@@ -122,46 +107,37 @@ where
                 None => {
                     continue;
                 }
-                Some(ReceiverMsg::AcquisitionStart {
-                    series: _,
-                    detector_config: _,
-                }) => {
+                Some(ReceiverMsg::AcquisitionStart { .. }) => {
                     // FIXME: in case of "passive" mode, we should actually not hit this,
                     // as the "outer" structure (`DectrisConnection`) handles it?
                     continue;
                 }
-                Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(format!(
-                        "serialization error: {}, message: {}",
-                        msg, recvd_msg
-                    )))
+                Some(ReceiverMsg::FatalError { error }) => {
+                    return Err(ChunkedIterError::UnrecoverableError(error));
                 }
-                Some(ResultMsg::Error { msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(msg))
-                }
-                Some(ResultMsg::End { frame_stack }) => {
+                Some(ReceiverMsg::Finished { frame_stack }) => {
                     self.stats.log_stats();
                     self.stats.reset();
                     return Ok(Some(frame_stack));
                 }
-                Some(ResultMsg::FrameStack { frame_stack }) => {
+                Some(ReceiverMsg::FrameStack { frame_stack }) => {
                     return Ok(Some(frame_stack));
                 }
             }
         }
     }
 
-    fn new(
-        receiver: &'a mut DectrisReceiver,
+    /// Create a ``FrameChunkedIterator``. The iterator doesn't have its own
+    /// state, and it's meant to be instantiated only temporarily.
+    pub fn new(
+        receiver: &'a mut R,
         shm: &'b mut SharedSlabAllocator,
-        remainder: &'c mut Vec<FrameStackHandle<DectrisFrameMeta>>,
-        stats: &'d mut Stats,
-    ) -> PyResult<Self> {
-        Ok(FrameChunkedIterator {
+        stats: &'c mut Stats,
+    ) -> Self {
+        FrameChunkedIterator {
             receiver,
             shm,
-            remainder,
             stats,
-        })
+        }
     }
 }
