@@ -14,3 +14,4 @@ serde = "1.0.199"
 tempfile = "3.10.1"
 thiserror = "1.0.59"
 log = "0.4.21"
+ndarray = { version = "0.15.6" }

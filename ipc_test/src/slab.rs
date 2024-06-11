@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result as AnyResult;
 use crossbeam::channel::{bounded, Sender};
 use raw_sync::locks::{LockImpl, LockInit, Mutex};
 use serde::{Deserialize, Serialize};
@@ -241,12 +240,12 @@ impl SharedSlabAllocator {
         })
     }
 
-    pub fn connect(handle_path: &str) -> AnyResult<Self> {
+    pub fn connect(handle_path: &str) -> Result<Self, SlabInitError> {
         let (shm, slab_info): (_, SlabInfo) = Shm::connect(handle_path);
-        Ok(Self::from_shm_and_slab_info(shm, slab_info, false)?)
+        Self::from_shm_and_slab_info(shm, slab_info, false)
     }
 
-    pub fn clone_and_connect(&self) -> AnyResult<Self> {
+    pub fn clone_and_connect(&self) -> Result<Self, SlabInitError> {
         let handle = self.get_handle();
         Self::connect(&handle.os_handle)
     }

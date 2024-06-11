@@ -1,6 +1,8 @@
 #![allow(clippy::borrow_deref_ref)]
 
-use common::frame_stack::FrameMeta;
+use std::ops::Deref;
+
+use common::{frame_stack::FrameMeta, generic_connection::AcquisitionConfig};
 use log::info;
 use serde::{Deserialize, Serialize};
 
@@ -8,18 +10,48 @@ use pyo3::prelude::*;
 use uuid::Uuid;
 use zmq::{Context, Message, Socket, SocketEvent};
 
+#[derive(Deserialize, Serialize, PartialEq, Eq, Debug, Clone)]
+#[serde(try_from = "String")]
+pub struct NonEmptyString(String);
+
+impl TryFrom<String> for NonEmptyString {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            Ok(NonEmptyString(value))
+        } else {
+            Err("empty string provided where non-empty was expected".to_owned())
+        }
+    }
+}
+
+impl ToString for NonEmptyString {
+    fn to_string(&self) -> String {
+        self.0.clone()
+    }
+}
+
+impl Deref for NonEmptyString {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[pyclass]
 pub struct DSeriesAndType {
     pub series: u64,
-    pub htype: String,
+    pub htype: NonEmptyString,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[pyclass]
 pub struct DHeader {
-    pub htype: String,
-    pub header_detail: String,
+    pub htype: NonEmptyString,
+    pub header_detail: NonEmptyString,
     pub series: u64,
 }
 
@@ -28,8 +60,8 @@ impl DHeader {
     #[new]
     fn new(series: u64) -> Self {
         DHeader {
-            htype: "dheader-1.0".to_string(),
-            header_detail: "basic".to_string(),
+            htype: "dheader-1.0".to_owned().try_into().unwrap(),
+            header_detail: "basic".to_owned().try_into().unwrap(),
             series,
         }
     }
@@ -92,10 +124,44 @@ impl DetectorConfig {
     }
 }
 
+#[derive(Debug)]
+#[pyclass]
+pub struct DectrisPendingAcquisition {
+    detector_config: DetectorConfig,
+    series: u64,
+}
+
+#[pymethods]
+impl DectrisPendingAcquisition {
+    pub fn get_series(&self) -> u64 {
+        self.series
+    }
+}
+
+impl DectrisPendingAcquisition {
+    pub fn new(detector_config: DetectorConfig, series: u64) -> Self {
+        Self {
+            detector_config,
+            series,
+        }
+    }
+
+    pub fn get_detector_config(&self) -> DetectorConfig {
+        self.detector_config.clone()
+    }
+}
+
+impl AcquisitionConfig for DectrisPendingAcquisition {
+    fn num_frames(&self) -> usize {
+        self.detector_config.get_num_images() as usize
+    }
+}
+
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[pyclass]
 pub struct DImage {
-    pub htype: String,
+    pub htype: NonEmptyString,
 
     /// the current series id
     pub series: u64,
@@ -104,7 +170,7 @@ pub struct DImage {
     pub frame: u64,
 
     /// md5 hash of the image data
-    pub hash: String,
+    pub hash: NonEmptyString,
 }
 
 #[pymethods]
@@ -112,10 +178,10 @@ impl DImage {
     #[new]
     fn new(frame: u64, series: u64, hash: &str) -> Self {
         DImage {
-            htype: "dimage-1.0".to_string(),
+            htype: "dimage-1.0".to_owned().try_into().unwrap(),
             series,
             frame,
-            hash: hash.to_string(),
+            hash: hash.to_owned().try_into().unwrap(),
         }
     }
 }
@@ -134,22 +200,22 @@ pub enum PixelType {
 #[derive(PartialEq, Eq, Serialize, Deserialize, Debug, Clone)]
 #[pyclass]
 pub struct DImageD {
-    pub htype: String,
-    pub shape: Vec<u64>,
+    pub htype: NonEmptyString,
+    pub shape: (u64, u64),
     #[serde(rename = "type")]
     pub type_: PixelType,
-    pub encoding: String, // [bs<BIT>][[-]lz4][<|>]
+    pub encoding: NonEmptyString, // [bs<BIT>][[-]lz4][<|>]
 }
 
 #[pymethods]
 impl DImageD {
     #[new]
-    fn new(shape: Vec<u64>, type_: PixelType, encoding: &str) -> Self {
+    fn new(shape: (u64, u64), type_: PixelType, encoding: &str) -> Self {
         DImageD {
-            htype: "dimage_d-1.0".to_string(),
+            htype: "dimage_d-1.0".to_string().try_into().unwrap(),
             shape,
             type_,
-            encoding: encoding.to_string(),
+            encoding: encoding.to_string().try_into().unwrap(),
         }
     }
 }
@@ -158,7 +224,7 @@ impl DImageD {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[pyclass]
 pub struct DConfig {
-    pub htype: String, // constant dconfig-1.0
+    pub htype: NonEmptyString, // constant dconfig-1.0
     pub start_time: u64,
     pub stop_time: u64,
     pub real_time: u64,
@@ -169,7 +235,7 @@ impl DConfig {
     #[new]
     fn new(start_time: u64, stop_time: u64, real_time: u64) -> Self {
         DConfig {
-            htype: "dconfig-1.0".to_string(),
+            htype: "dconfig-1.0".to_string().try_into().unwrap(),
             start_time,
             stop_time,
             real_time,
@@ -185,10 +251,31 @@ pub struct DectrisFrameMeta {
     pub data_length_bytes: usize,
 }
 
+#[derive(Debug)]
+pub enum Endianess {
+    Little,
+    Big,
+}
+
 impl DectrisFrameMeta {
     /// number of pixels in the uncompressed frame (from the shape)
     pub fn get_number_of_pixels(&self) -> usize {
-        self.dimaged.shape.iter().product::<u64>() as usize
+        self.dimaged.shape.0 as usize * self.dimaged.shape.1 as usize
+    }
+
+    /// endianess after decompression (little/big)
+    fn get_endianess(&self) -> Endianess {
+        match self.dimaged.encoding.chars().last().unwrap() {
+            '>' => {
+                Endianess::Big
+            },
+            '<' => {
+                Endianess::Little
+            },
+            _ => {
+                panic!("malformed encoding field");
+            },
+        }
     }
 }
 
@@ -196,12 +283,29 @@ impl FrameMeta for DectrisFrameMeta {
     fn get_data_length_bytes(&self) -> usize {
         self.data_length_bytes
     }
+
+    fn get_dtype_string(&self) -> String {
+        let endianess = self.get_endianess();
+        // TODO: &'static str instead?
+        match (endianess, &self.dimaged.type_) {
+            (Endianess::Little, PixelType::Uint8) => "<uint8".to_owned(),
+            (Endianess::Little, PixelType::Uint16) => "<uint16".to_owned(),
+            (Endianess::Little, PixelType::Uint32) => "<uint32".to_owned(),
+            (Endianess::Big, PixelType::Uint8) => ">uint8".to_owned(),
+            (Endianess::Big, PixelType::Uint16) => ">uint16".to_owned(),
+            (Endianess::Big, PixelType::Uint32) => ">uint32".to_owned(),
+        }
+    }
+    
+    fn get_shape(&self) -> (u64, u64) {
+        self.dimaged.shape
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[pyclass]
 pub struct DSeriesEnd {
-    pub htype: String,
+    pub htype: NonEmptyString,
     pub series: u64,
 }
 
@@ -210,7 +314,7 @@ impl DSeriesEnd {
     #[new]
     fn new(series: u64) -> Self {
         DSeriesEnd {
-            htype: "dseries_end-1.0".to_string(),
+            htype: "dseries_end-1.0".to_string().try_into().unwrap(),
             series,
         }
     }
