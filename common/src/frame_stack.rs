@@ -1,22 +1,27 @@
 use std::fmt::Debug;
 
-use ipc_test::{SharedSlabAllocator, Slot, SlotForWriting, SlotInfo};
+use ipc_test::{SharedSlabAllocator, SlotForWriting};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     PyErr,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 pub trait FrameMeta: Clone + Serialize + Debug {
     /// Length of the data that belongs to the frame corresponding to this meta object
     fn get_data_length_bytes(&self) -> usize;
+
+    /// numpy-like dtype of the data as string
+    /// (this is supposed to be the dtype closest to the raw data; the actual
+    /// data in the frame stack may be encoded and/or compressed)
+    fn get_dtype_string(&self) -> String;
+
+    /// 2D shape of a single frame (assumes same shape for all frames)
+    fn get_shape(&self) -> (u64, u64);
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum FrameStackError {
-    #[error("no frames in this stack")]
-    Empty,
-
     #[error("could not serialize / deserialize: {0}")]
     SerdeError(#[from] bincode::Error),
 }
@@ -24,8 +29,21 @@ pub enum FrameStackError {
 impl From<FrameStackError> for PyErr {
     fn from(value: FrameStackError) -> Self {
         match value {
-            FrameStackError::Empty => PyValueError::new_err(value.to_string()),
             FrameStackError::SerdeError(e) => PyRuntimeError::new_err(e.to_string()),
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum FrameStackWriteError {
+    #[error("will not construct empty FrameStackHandle")]
+    Empty,
+}
+
+impl From<FrameStackWriteError> for PyErr {
+    fn from(value: FrameStackWriteError) -> Self {
+        match value {
+            FrameStackWriteError::Empty => PyValueError::new_err(value.to_string()),
         }
     }
 }
@@ -109,132 +127,160 @@ where
         Ok(())
     }
 
-    pub fn writing_done(self, shm: &mut SharedSlabAllocator) -> FrameStackHandle<M> {
+    pub fn writing_done(self, shm: &mut SharedSlabAllocator) -> Result<FrameStackHandle<M>, FrameStackWriteError> {
+        if self.is_empty() {
+            let slot_info = shm.writing_done(self.slot);
+            shm.free_idx(slot_info.slot_idx);
+            return Err(FrameStackWriteError::Empty);
+        }
+
         let slot_info = shm.writing_done(self.slot);
 
-        FrameStackHandle {
-            slot: slot_info,
-            meta: self.meta,
-            offsets: self.offsets,
-            bytes_per_frame: self.bytes_per_frame,
+        Ok(FrameStackHandle::new(
+            slot_info,
+            self.meta,
+            self.offsets,
+            self.bytes_per_frame,
+        ))
+    }
+}
+
+// inner mod to enforce invariants via constructor
+mod inner {
+    use ipc_test::{SharedSlabAllocator, Slot, SlotInfo};
+    use serde::{Deserialize, Serialize};
+
+    use super::{FrameMeta, FrameStackError};
+
+
+    /// serializable handle for a stack of frames that live in shm
+    #[derive(PartialEq, Eq, Serialize, Deserialize, Debug)]
+    pub struct FrameStackHandle<M>
+    where
+        M: FrameMeta,
+    {
+        pub(crate) slot: SlotInfo,
+        meta: Vec<M>,
+        pub(crate) offsets: Vec<usize>,
+        pub(crate) bytes_per_frame: usize,
+    }
+
+    impl<M: FrameMeta> FrameStackHandle<M> {
+        pub fn new(slot: SlotInfo, meta: Vec<M>, offsets: Vec<usize>, bytes_per_frame: usize) -> Self {
+            assert!(meta.len() == offsets.len());
+            assert!(!meta.is_empty());
+            Self {
+                slot,
+                meta,
+                offsets,
+                bytes_per_frame,
+            }
+        }
+
+        pub fn len(&self) -> usize {
+            self.meta.len()
+        }
+
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        /// total number of _useful_ bytes in this frame stack
+        pub fn payload_size(&self) -> usize {
+            self.meta.iter().map(|fm| fm.get_data_length_bytes()).sum()
+        }
+
+        /// total number of bytes allocated for the slot
+        pub fn slot_size(&self) -> usize {
+            self.slot.size
+        }
+
+        pub fn get_meta(&self) -> &Vec<M> {
+            &self.meta
+        }
+
+        pub fn deserialize_impl(serialized: &[u8]) -> Result<Self, FrameStackError>
+        where
+            M: for<'a> Deserialize<'a>,
+        {
+            Ok(bincode::deserialize(serialized)?)
+        }
+
+        pub fn serialize(&self) -> Result<Vec<u8>, FrameStackError> {
+            Ok(bincode::serialize(self)?)
+        }
+
+        pub fn get_slice_for_frame<'a>(&'a self, frame_idx: usize, slot: &'a ipc_test::Slot) -> &[u8] {
+            let slice = slot.as_slice();
+            let in_offset = self.offsets[frame_idx];
+            let size = self.meta[frame_idx].get_data_length_bytes();
+            &slice[in_offset..in_offset + size]
+        }
+
+        /// Split self at `mid` and create two new `FrameStackHandle`s.
+        /// The first will contain frames with indices [0..mid), the second [mid..len)`
+        pub fn split_at(self, mid: usize, shm: &mut SharedSlabAllocator) -> (Self, Self) {
+            // FIXME: this whole thing is falliable, so modify return type to Result<> (or PyResult<>?)
+            let bytes_mid = self.offsets[mid];
+            let (left, right) = {
+                let slot: ipc_test::Slot = shm.get(self.slot.slot_idx);
+                let slice = slot.as_slice();
+
+                let mut slot_left = shm.get_mut().expect("shm slot for writing");
+                let slice_left = slot_left.as_slice_mut();
+
+                let mut slot_right = shm.get_mut().expect("shm slot for writing");
+                let slice_right = slot_right.as_slice_mut();
+
+                slice_left[..bytes_mid].copy_from_slice(&slice[..bytes_mid]);
+                slice_right[..(slice.len() - bytes_mid)].copy_from_slice(&slice[bytes_mid..]);
+
+                let left = shm.writing_done(slot_left);
+                let right = shm.writing_done(slot_right);
+
+                shm.free_idx(self.slot.slot_idx);
+
+                (left, right)
+            };
+
+            let (left_meta, right_meta) = self.meta.split_at(mid);
+            let (left_offsets, right_offsets) = self.offsets.split_at(mid);
+
+            (
+                FrameStackHandle::new(
+                    left,
+                    left_meta.to_vec(),
+                    left_offsets.to_vec(),
+                    self.bytes_per_frame,
+                ),
+                FrameStackHandle::new(
+                    right,
+                    right_meta.to_vec(),
+                    right_offsets.iter().map(|o| o - bytes_mid).collect(),
+                    self.bytes_per_frame,
+                ),
+            )
+        }
+
+        pub fn first_meta(&self) -> &M {
+            self.meta
+                .first()
+                .expect("FrameStackHandle is non-empty by design")
+        }
+
+        pub fn with_slot<T>(&self, shm: &SharedSlabAllocator, mut f: impl FnMut(&Slot) -> T) -> T {
+            let slot_r = shm.get(self.slot.slot_idx);
+            f(&slot_r)
+        }
+
+        pub fn free_slot(self, shm: &mut SharedSlabAllocator) {
+            shm.free_idx(self.slot.slot_idx);
         }
     }
 }
 
-/// serializable handle for a stack of frames that live in shm
-#[derive(PartialEq, Eq, Serialize, Deserialize, Debug)]
-pub struct FrameStackHandle<M>
-where
-    M: FrameMeta,
-{
-    pub(crate) slot: SlotInfo,
-    meta: Vec<M>,
-    pub(crate) offsets: Vec<usize>,
-    pub(crate) bytes_per_frame: usize,
-}
-
-impl<M: FrameMeta> FrameStackHandle<M> {
-    pub fn len(&self) -> usize {
-        self.meta.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// total number of _useful_ bytes in this frame stack
-    pub fn payload_size(&self) -> usize {
-        self.meta.iter().map(|fm| fm.get_data_length_bytes()).sum()
-    }
-
-    /// total number of bytes allocated for the slot
-    pub fn slot_size(&self) -> usize {
-        self.slot.size
-    }
-
-    pub fn get_meta(&self) -> &Vec<M> {
-        &self.meta
-    }
-
-    pub fn deserialize_impl(serialized: &[u8]) -> Result<Self, FrameStackError>
-    where
-        M: for<'a> Deserialize<'a>,
-    {
-        Ok(bincode::deserialize(serialized)?)
-    }
-
-    pub fn serialize(&self) -> Result<Vec<u8>, FrameStackError> {
-        Ok(bincode::serialize(self)?)
-    }
-
-    pub fn get_slice_for_frame<'a>(&'a self, frame_idx: usize, slot: &'a ipc_test::Slot) -> &[u8] {
-        let slice = slot.as_slice();
-        let in_offset = self.offsets[frame_idx];
-        let size = self.meta[frame_idx].get_data_length_bytes();
-        &slice[in_offset..in_offset + size]
-    }
-
-    /// Split self at `mid` and create two new `FrameStackHandle`s.
-    /// The first will contain frames with indices [0..mid), the second [mid..len)`
-    pub fn split_at(self, mid: usize, shm: &mut SharedSlabAllocator) -> (Self, Self) {
-        // FIXME: this whole thing is falliable, so modify return type to Result<> (or PyResult<>?)
-        let bytes_mid = self.offsets[mid];
-        let (left, right) = {
-            let slot: ipc_test::Slot = shm.get(self.slot.slot_idx);
-            let slice = slot.as_slice();
-
-            let mut slot_left = shm.get_mut().expect("shm slot for writing");
-            let slice_left = slot_left.as_slice_mut();
-
-            let mut slot_right = shm.get_mut().expect("shm slot for writing");
-            let slice_right = slot_right.as_slice_mut();
-
-            slice_left[..bytes_mid].copy_from_slice(&slice[..bytes_mid]);
-            slice_right[..(slice.len() - bytes_mid)].copy_from_slice(&slice[bytes_mid..]);
-
-            let left = shm.writing_done(slot_left);
-            let right = shm.writing_done(slot_right);
-
-            shm.free_idx(self.slot.slot_idx);
-
-            (left, right)
-        };
-
-        let (left_meta, right_meta) = self.meta.split_at(mid);
-        let (left_offsets, right_offsets) = self.offsets.split_at(mid);
-
-        (
-            FrameStackHandle {
-                slot: left,
-                meta: left_meta.to_vec(),
-                offsets: left_offsets.to_vec(),
-                bytes_per_frame: self.bytes_per_frame,
-            },
-            FrameStackHandle {
-                slot: right,
-                meta: right_meta.to_vec(),
-                offsets: right_offsets.iter().map(|o| o - bytes_mid).collect(),
-                bytes_per_frame: self.bytes_per_frame,
-            },
-        )
-    }
-
-    pub fn first_meta(&self) -> Result<&M, FrameStackError> {
-        self.meta
-            .first()
-            .map_or_else(|| Err(FrameStackError::Empty), Ok)
-    }
-
-    pub fn with_slot<T>(&self, shm: &SharedSlabAllocator, mut f: impl FnMut(&Slot) -> T) -> T {
-        let slot_r = shm.get(self.slot.slot_idx);
-        f(&slot_r)
-    }
-
-    pub fn free_slot(self, shm: &mut SharedSlabAllocator) {
-        shm.free_idx(self.slot.slot_idx);
-    }
-}
+pub use inner::FrameStackHandle;
 
 #[cfg(test)]
 mod tests {
@@ -256,6 +302,15 @@ mod tests {
     impl FrameMeta for MyMeta {
         fn get_data_length_bytes(&self) -> usize {
             self.data_length
+        }
+
+        fn get_dtype_string(&self) -> String {
+            "uint8".to_string()
+        }
+        
+        fn get_shape(&self) -> (u64, u64) {
+            // this is a weird detector, yeah
+            (16, 32)
         }
     }
 
@@ -304,7 +359,7 @@ mod tests {
 
         println!("{:?}", fs.slot.as_slice());
 
-        let fs_handle = fs.writing_done(&mut shm);
+        let fs_handle = fs.writing_done(&mut shm).unwrap();
 
         let slot_r = shm.get(fs_handle.slot.slot_idx);
         let slice_0 = fs_handle.get_slice_for_frame(0, &slot_r);
@@ -318,7 +373,7 @@ mod tests {
             assert_eq!(elem, 2);
         }
 
-        let old_meta_len = fs_handle.meta.len();
+        let old_meta_len = fs_handle.get_meta().len();
 
         let (a, b) = fs_handle.split_at(1, &mut shm);
 
@@ -337,7 +392,7 @@ mod tests {
         assert_eq!(slice_a, a.get_slice_for_frame(0, &slot_a));
         assert_eq!(slice_b, b.get_slice_for_frame(0, &slot_b));
 
-        assert_eq!(a.meta.len() + b.meta.len(), old_meta_len);
+        assert_eq!(a.get_meta().len() + b.get_meta().len(), old_meta_len);
         assert_eq!(a.offsets.len() + b.offsets.len(), 2);
 
         // when the split is done, there should be one free shm slot:

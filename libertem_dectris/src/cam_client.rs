@@ -1,4 +1,4 @@
-use common::frame_stack::FrameStackHandle;
+use common::{decoder::Decoder, frame_stack::FrameStackHandle, impl_py_cam_client};
 use ipc_test::SharedSlabAllocator;
 use log::trace;
 use numpy::{PyArray3, PyArrayMethods};
@@ -10,9 +10,29 @@ use zerocopy::{AsBytes, FromBytes};
 
 use crate::{
     common::{DectrisFrameMeta, PixelType},
+    dectris_py::DectrisFrameStack,
     exceptions::{ConnectionError, DecompressError},
-    frame_stack_py::PyFrameStackHandle,
 };
+
+#[derive(Debug, Default)]
+struct DectrisDecoder {}
+
+impl Decoder for DectrisDecoder {
+    fn decode<M, T>(
+        &self,
+        input: &FrameStackHandle<M>,
+        dest: numpy::ndarray::ArrayViewMut3<'_, T>,
+        start_idx: usize,
+        end_idx: usize,
+    ) -> Result<(), common::decoder::DecoderError>
+    where
+        M: common::frame_stack::FrameMeta,
+    {
+        todo!("DectrisDecoder::decode")
+    }
+}
+
+impl_py_cam_client!(_PyCamClient, DectrisDecoder, DectrisFrameMeta, libertem_dectris);
 
 #[pyclass]
 pub struct CamClient {
@@ -122,7 +142,7 @@ impl CamClient {
 
     fn decompress_frame_stack<'py>(
         slf: PyRef<Self>,
-        handle: &PyFrameStackHandle,
+        handle: &DectrisFrameStack,
         out: Bound<'py, PyAny>,
     ) -> PyResult<()> {
         let arr_u8: Result<&Bound<'py, PyArray3<u8>>, _> = out.downcast();
@@ -134,7 +154,7 @@ impl CamClient {
         let (encoding, type_) = if handle_inner.is_empty() {
             return Ok(());
         } else {
-            let dimaged = &handle_inner.first_meta().unwrap().dimaged;
+            let dimaged = &handle_inner.first_meta().dimaged;
             (&dimaged.encoding, &dimaged.type_)
         };
 
@@ -165,7 +185,7 @@ impl CamClient {
         Ok(())
     }
 
-    fn done(&mut self, handle: &mut PyFrameStackHandle) -> PyResult<()> {
+    fn done(&mut self, handle: &mut DectrisFrameStack) -> PyResult<()> {
         if let Some(shm) = &mut self.shm {
             if let Some(inner) = handle.take() {
                 inner.free_slot(shm);
@@ -223,19 +243,19 @@ mod tests {
         let slot = shm.get_mut().expect("get a free shm slot");
         let mut fs = FrameStackForWriting::new(slot, 1, 512);
         let dimage = crate::common::DImage {
-            htype: "".to_string(),
+            htype: "dimage-1.0".to_string().try_into().unwrap(),
             series: 1,
             frame: 1,
-            hash: "".to_string(),
+            hash: "aaaabbbb".to_string().try_into().unwrap(),
         };
         let dimaged = crate::common::DImageD {
-            htype: "".to_string(),
-            shape: vec![16, 16],
+            htype: "d-image_d-1.0".to_string().try_into().unwrap(),
+            shape: (16, 16),
             type_: crate::common::PixelType::Uint16,
-            encoding: "bs16-lz4<".to_string(),
+            encoding: "bs16-lz4<".to_string().try_into().unwrap(),
         };
         let dconfig = crate::common::DConfig {
-            htype: "".to_string(),
+            htype: "dconfig-1.0".to_string().try_into().unwrap(),
             start_time: 0,
             stop_time: 0,
             real_time: 0,
@@ -276,7 +296,7 @@ mod tests {
         // we have one frame in there:
         assert_eq!(fs.len(), 1);
 
-        let fs_handle = fs.writing_done(&mut shm);
+        let fs_handle = fs.writing_done(&mut shm).unwrap();
 
         // we still have one frame in there:
         assert_eq!(fs_handle.len(), 1);
@@ -324,19 +344,19 @@ mod tests {
         let slot = shm.get_mut().expect("get a free shm slot");
         let mut fs = FrameStackForWriting::new(slot, 1, 512);
         let dimage = crate::common::DImage {
-            htype: "".to_string(),
+            htype: "dimage-1.0".to_string().try_into().unwrap(),
             series: 1,
             frame: 1,
-            hash: "".to_string(),
+            hash: "aaaabbbb".to_string().try_into().unwrap(),
         };
         let dimaged = crate::common::DImageD {
-            htype: "".to_string(),
-            shape: vec![16, 16],
+            htype: "dimage_d-1.0".to_string().try_into().unwrap(),
+            shape: (16, 16),
             type_: crate::common::PixelType::Uint16,
-            encoding: "lz4<".to_string(),
+            encoding: "lz4<".to_string().try_into().unwrap(),
         };
         let dconfig = crate::common::DConfig {
-            htype: "".to_string(),
+            htype: "dconfig-1.0".to_string().try_into().unwrap(),
             start_time: 0,
             stop_time: 0,
             real_time: 0,
@@ -369,7 +389,7 @@ mod tests {
         // we have one frame in there:
         assert_eq!(fs.len(), 1);
 
-        let fs_handle = fs.writing_done(&mut shm);
+        let fs_handle = fs.writing_done(&mut shm).unwrap();
 
         // we still have one frame in there:
         assert_eq!(fs_handle.len(), 1);

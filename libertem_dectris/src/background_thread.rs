@@ -2,70 +2,32 @@ use std::{
     convert::Infallible,
     fmt::Display,
     mem::replace,
+    ops::Deref,
+    sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
 use common::{
-    frame_stack::{FrameStackForWriting, FrameStackHandle},
-    generic_receiver,
+    background_thread::{self, BackgroundThread, ControlMsg, ReceiverMsg},
+    frame_stack::{FrameStackForWriting, FrameStackWriteError},
+    generic_connection::DetectorConnectionConfig,
 };
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
-use ipc_test::{SHMHandle, SharedSlabAllocator};
+use ipc_test::SharedSlabAllocator;
 use log::{debug, error, info, trace, warn};
 use zmq::{Message, Socket};
 
 use crate::common::{
     setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesAndType, DSeriesEnd, DectrisFrameMeta,
-    DetectorConfig,
+    DectrisPendingAcquisition, DetectorConfig,
 };
 
-///
-#[derive(PartialEq, Eq, Debug)]
-pub enum ResultMsg {
-    Error {
-        msg: String,
-    }, // generic error response, might need to specialize later
-    SerdeError {
-        msg: String,
-        recvd_msg: String,
-    },
-    AcquisitionStart {
-        series: u64,
-        detector_config: DetectorConfig,
-    },
-    FrameStack {
-        frame_stack: FrameStackHandle<DectrisFrameMeta>,
-    },
-    End {
-        frame_stack: FrameStackHandle<DectrisFrameMeta>,
-    },
-}
-
-pub enum ControlMsg {
-    StopThread,
-
-    /// Wait for DHeader messages and latch onto acquisitions,
-    /// until the background thread is stopped.
-    StartAcquisitionPassive,
-
-    /// Wait for a specific series to start
-    StartAcquisition {
-        series: u64,
-    },
-}
-
-#[derive(PartialEq, Eq)]
-pub enum ReceiverStatus {
-    Idle,
-    Running,
-    Closed,
-}
+type DectrisControlMsg = ControlMsg<DectrisExtraControl>;
 
 fn recv_part(
     msg: &mut Message,
     socket: &Socket,
-    control_channel: &Receiver<ControlMsg>,
+    control_channel: &Receiver<DectrisControlMsg>,
 ) -> Result<(), AcquisitionError> {
     loop {
         match socket.recv(msg, 0) {
@@ -84,7 +46,7 @@ fn recv_part(
 /// that are passed in.
 fn recv_frame_into(
     socket: &Socket,
-    control_channel: &Receiver<ControlMsg>,
+    control_channel: &Receiver<DectrisControlMsg>,
     msg: &mut Message,
     msg_image: &mut Message,
 ) -> Result<(DImage, DImageD, DConfig), AcquisitionError> {
@@ -128,7 +90,7 @@ fn recv_frame_into(
     Ok((dimage, dimaged, dconfig))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 enum AcquisitionError {
     Disconnected,
     SeriesMismatch,
@@ -178,11 +140,21 @@ impl Display for AcquisitionError {
     }
 }
 
+impl<T> From<SendError<T>> for AcquisitionError {
+    fn from(value: SendError<T>) -> Self {
+        AcquisitionError::Disconnected
+    }
+}
+
 /// With a running acquisition, check for control messages;
 /// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
-fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), AcquisitionError> {
+fn check_for_control(
+    control_channel: &Receiver<DectrisControlMsg>,
+) -> Result<(), AcquisitionError> {
     match control_channel.try_recv() {
-        Ok(ControlMsg::StartAcquisition { series: _ }) => Err(AcquisitionError::StateError {
+        Ok(ControlMsg::SpecializedControlMsg {
+            msg: DectrisExtraControl::StartAcquisitionWithSeries { series: _ },
+        }) => Err(AcquisitionError::StateError {
             msg: "received StartAcquisition while an acquisition was already running".to_string(),
         }),
         Ok(ControlMsg::StartAcquisitionPassive) => Err(AcquisitionError::StateError {
@@ -198,8 +170,8 @@ fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), Acqui
 /// Passively listen for global acquisition headers
 /// and automatically latch on to them.
 fn passive_acquisition(
-    control_channel: &Receiver<ControlMsg>,
-    from_thread_s: &Sender<ResultMsg>,
+    control_channel: &Receiver<DectrisControlMsg>,
+    from_thread_s: &Sender<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
     socket: &Socket,
     frame_stack_size: usize,
     shm: &mut SharedSlabAllocator,
@@ -221,7 +193,7 @@ fn passive_acquisition(
             };
             debug!("dheader: {dheader:?}");
 
-            if dheader.header_detail == "none" {
+            if dheader.header_detail.deref() == "none" {
                 return Err(AcquisitionError::ConfigurationError {
                     msg: "header_detail must be 'basic' or 'all', is 'none'".to_string(),
                 });
@@ -265,8 +237,8 @@ fn passive_acquisition(
 
 fn acquisition(
     detector_config: DetectorConfig,
-    to_thread_r: &Receiver<ControlMsg>,
-    from_thread_s: &Sender<ResultMsg>,
+    to_thread_r: &Receiver<DectrisControlMsg>,
+    from_thread_s: &Sender<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
     socket: &Socket,
     series: u64,
     frame_stack_size: usize,
@@ -277,9 +249,8 @@ fn acquisition(
 
     let mut expected_frame_id = 0;
 
-    match from_thread_s.send(ResultMsg::AcquisitionStart {
-        series,
-        detector_config: detector_config.clone(),
+    match from_thread_s.send(ReceiverMsg::AcquisitionStart {
+        pending_acquisition: DectrisPendingAcquisition::new(detector_config.clone(), series),
     }) {
         Ok(_) => (),
         Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
@@ -336,11 +307,13 @@ fn acquisition(
                 let old_frame_stack = replace(&mut frame_stack, new_frame_stack);
                 old_frame_stack.writing_done(shm)
             };
-            match from_thread_s.send(ResultMsg::FrameStack {
-                frame_stack: handle,
-            }) {
-                Ok(_) => (),
-                Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
+            match handle {
+                Ok(frame_stack) => {
+                    from_thread_s.send(ReceiverMsg::FrameStack { frame_stack })?;
+                }
+                Err(FrameStackWriteError::Empty) => {
+                    warn!("acquisition: unexpected empty frame stack")
+                }
             }
         }
 
@@ -376,13 +349,15 @@ fn acquisition(
             info!("series {series} done");
 
             let handle = frame_stack.writing_done(shm);
-
-            match from_thread_s.send(ResultMsg::End {
-                frame_stack: handle,
-            }) {
-                Ok(_) => (),
-                Err(SendError(_)) => return Err(AcquisitionError::Disconnected),
+            match handle {
+                Ok(frame_stack) => from_thread_s.send(ReceiverMsg::Finished {
+                    frame_stack,
+                })?,
+                Err(FrameStackWriteError::Empty) => {
+                    warn!("acquisition: unexpected empty frame stack")
+                }
             }
+
             return Ok(());
         }
     }
@@ -390,8 +365,8 @@ fn acquisition(
 
 /// convert `AcquisitionError`s to messages on `from_threads_s`
 fn background_thread_wrap(
-    to_thread_r: &Receiver<ControlMsg>,
-    from_thread_s: &Sender<ResultMsg>,
+    to_thread_r: &Receiver<DectrisControlMsg>,
+    from_thread_s: &Sender<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
     uri: String,
     frame_stack_size: usize,
     shm: SharedSlabAllocator,
@@ -401,8 +376,8 @@ fn background_thread_wrap(
         // NOTE: `shm` is dropped in case of an error, so anyone who tries to connect afterwards
         // will get an error
         from_thread_s
-            .send(ResultMsg::Error {
-                msg: err.to_string(),
+            .send(ReceiverMsg::FatalError {
+                error: Box::new(err),
             })
             .unwrap();
     }
@@ -412,14 +387,14 @@ fn drain_if_mismatch(
     msg: &mut Message,
     socket: &Socket,
     series: u64,
-    control_channel: &Receiver<ControlMsg>,
+    control_channel: &Receiver<DectrisControlMsg>,
 ) -> Result<(), AcquisitionError> {
     loop {
         let series_res: Result<DSeriesAndType, _> = serde_json::from_str(msg.as_str().unwrap());
 
         if let Ok(recvd_series) = series_res {
             // everything is ok, we can go ahead:
-            if recvd_series.series == series && recvd_series.htype == "dheader-1.0" {
+            if recvd_series.series == series && recvd_series.htype.deref() == "dheader-1.0" {
                 return Ok(());
             }
         }
@@ -447,8 +422,8 @@ fn drain_if_mismatch(
 }
 
 fn background_thread(
-    to_thread_r: &Receiver<ControlMsg>,
-    from_thread_s: &Sender<ResultMsg>,
+    to_thread_r: &Receiver<DectrisControlMsg>,
+    from_thread_s: &Sender<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
     uri: String,
     frame_stack_size: usize,
     mut shm: SharedSlabAllocator,
@@ -467,6 +442,7 @@ fn background_thread(
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
                 Ok(ControlMsg::StartAcquisitionPassive) => {
+                    from_thread_s.send(ReceiverMsg::ReceiverArmed).unwrap();
                     match passive_acquisition(
                         to_thread_r,
                         from_thread_s,
@@ -479,14 +455,21 @@ fn background_thread(
                             return Ok(());
                         }
                         Err(e) => {
-                            let msg = format!("passive_acquisition error: {}", e);
-                            from_thread_s.send(ResultMsg::Error { msg }).unwrap();
+                            from_thread_s
+                                .send(ReceiverMsg::FatalError {
+                                    error: Box::new(e.clone()),
+                                })
+                                .unwrap();
                             error!("background_thread: error: {}; re-connecting", e);
                             continue 'outer;
                         }
                     }
                 }
-                Ok(ControlMsg::StartAcquisition { series }) => {
+                Ok(ControlMsg::SpecializedControlMsg {
+                    msg: DectrisExtraControl::StartAcquisitionWithSeries { series },
+                }) => {
+                    from_thread_s.send(ReceiverMsg::ReceiverArmed).unwrap();
+
                     let mut msg: Message = Message::new();
                     recv_part(&mut msg, &socket, to_thread_r)?;
 
@@ -498,11 +481,13 @@ fn background_thread(
                         Ok(header) => header,
                         Err(err) => {
                             from_thread_s
-                                .send(ResultMsg::SerdeError {
-                                    msg: err.to_string(),
-                                    recvd_msg: msg
-                                        .as_str()
-                                        .map_or_else(|| "".to_string(), |m| m.to_string()),
+                                .send(ReceiverMsg::FatalError {
+                                    error: Box::new(AcquisitionError::SerdeError {
+                                        recvd_msg: msg
+                                            .as_str()
+                                            .map_or_else(|| "".to_string(), |m| m.to_string()),
+                                        msg: err.to_string(),
+                                    }),
                                 })
                                 .unwrap();
                             log::error!(
@@ -540,8 +525,11 @@ fn background_thread(
                             return Ok(());
                         }
                         Err(e) => {
-                            let msg = format!("acquisition error: {}", e);
-                            from_thread_s.send(ResultMsg::Error { msg }).unwrap();
+                            from_thread_s
+                                .send(ReceiverMsg::FatalError {
+                                    error: Box::new(e.clone()),
+                                })
+                                .unwrap();
                             error!("background_thread: error: {}; re-connecting", e);
                             continue 'outer;
                         }
@@ -574,123 +562,130 @@ impl Display for ReceiverError {
     }
 }
 
-/// Start a background thread that received data from the zeromq socket and
-/// puts it into shared memory.
-pub struct DectrisReceiver {
-    bg_thread: Option<JoinHandle<()>>,
-    to_thread: Sender<ControlMsg>,
-    from_thread: Receiver<ResultMsg>,
-    pub status: ReceiverStatus,
-    pub shm_handle: SHMHandle,
+#[derive(Debug)]
+pub enum DectrisExtraControl {
+    StartAcquisitionWithSeries { series: u64 },
 }
 
-impl DectrisReceiver {
-    pub fn new(uri: &str, frame_stack_size: usize, shm: SharedSlabAllocator) -> Self {
-        let (to_thread_s, to_thread_r) = unbounded();
-        let (from_thread_s, from_thread_r) = unbounded();
+pub struct DectrisBackgroundThread {
+    bg_thread: JoinHandle<()>,
+    to_thread: Sender<ControlMsg<DectrisExtraControl>>,
+    from_thread: Receiver<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
+}
 
+impl BackgroundThread for DectrisBackgroundThread {
+    type FrameMetaImpl = DectrisFrameMeta;
+    type AcquisitionConfigImpl = DectrisPendingAcquisition;
+    type ExtraControl = DectrisExtraControl;
+
+    fn channel_to_thread(
+        &mut self,
+    ) -> &mut Sender<background_thread::ControlMsg<Self::ExtraControl>> {
+        &mut self.to_thread
+    }
+
+    fn channel_from_thread(
+        &mut self,
+    ) -> &mut Receiver<
+        background_thread::ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>,
+    > {
+        &mut self.from_thread
+    }
+
+    fn join(self) {
+        if let Err(e) = self.bg_thread.join() {
+            // FIXME: should we have an error boundary here instead and stop the panic?
+            std::panic::resume_unwind(e)
+        }
+    }
+}
+
+impl DectrisBackgroundThread {
+    pub fn spawn(
+        config: &DectrisDetectorConnConfig,
+        shm: &SharedSlabAllocator,
+    ) -> Result<Self, background_thread::BackgroundThreadSpawnError>
+    where
+        Self: std::marker::Sized,
+    {
+        let (to_thread_s, to_thread_r) = channel();
+        let (from_thread_s, from_thread_r) = channel();
         let builder = std::thread::Builder::new();
-        let uri = uri.to_string();
 
-        let shm_handle = shm.get_handle();
+        let shm = shm.clone_and_connect()?;
 
-        DectrisReceiver {
-            bg_thread: Some(
-                builder
-                    .name("bg_thread".to_string())
-                    .spawn(move || {
-                        background_thread_wrap(
-                            &to_thread_r,
-                            &from_thread_s,
-                            uri.to_string(),
-                            frame_stack_size,
-                            shm,
-                        )
-                    })
-                    .expect("failed to start background thread"),
-            ),
-            from_thread: from_thread_r,
+        let config = config.clone();
+
+        Ok(Self {
+            bg_thread: builder
+                .name("bg_thread".to_string())
+                .spawn(move || {
+                    background_thread_wrap(
+                        &to_thread_r,
+                        &from_thread_s,
+                        config.uri.clone(),
+                        config.frame_stack_size,
+                        shm,
+                    )
+                })
+                .expect("failed to start background thread"),
             to_thread: to_thread_s,
-            status: ReceiverStatus::Idle,
-            shm_handle,
+            from_thread: from_thread_r,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DectrisDetectorConnConfig {
+    /// zmq URI of the DCU
+    pub uri: String,
+
+    /// number of frames per frame stack; approximated because of compression
+    pub frame_stack_size: usize,
+
+    /// approx. number of bytes per frame, used for sizing frame stacks together
+    /// with `frame_stack_size`
+    pub bytes_per_frame: usize,
+
+    num_slots: usize,
+    enable_huge_pages: bool,
+    shm_handle_path: String,
+}
+
+impl DectrisDetectorConnConfig {
+    pub fn new(
+        uri: &str,
+        frame_stack_size: usize,
+        bytes_per_frame: usize,
+        num_slots: usize,
+        enable_huge_pages: bool,
+        shm_handle_path: &str,
+    ) -> Self {
+        Self {
+            uri: uri.to_owned(),
+            frame_stack_size,
+            bytes_per_frame,
+            num_slots,
+            enable_huge_pages,
+            shm_handle_path: shm_handle_path.to_owned(),
         }
     }
+}
 
-    fn adjust_status(&mut self, msg: &ResultMsg) {
-        match msg {
-            ResultMsg::AcquisitionStart { .. } => {
-                self.status = ReceiverStatus::Running;
-            }
-            ResultMsg::End { .. } => {
-                self.status = ReceiverStatus::Idle;
-            }
-            _ => {}
-        }
+impl DetectorConnectionConfig for DectrisDetectorConnConfig {
+    fn get_shm_num_slots(&self) -> usize {
+        self.num_slots
     }
 
-    pub fn recv(&mut self) -> ResultMsg {
-        let result_msg = self
-            .from_thread
-            .recv()
-            .expect("background thread should be running");
-        self.adjust_status(&result_msg);
-        result_msg
+    fn get_shm_slot_size(&self) -> usize {
+        self.frame_stack_size * self.bytes_per_frame
     }
 
-    pub fn next_timeout(&mut self, timeout: Duration) -> Option<ResultMsg> {
-        let result_msg = self.from_thread.recv_timeout(timeout);
-
-        match result_msg {
-            Ok(result) => {
-                self.adjust_status(&result);
-                Some(result)
-            }
-            Err(e) => match e {
-                RecvTimeoutError::Disconnected => {
-                    panic!("background thread should be running")
-                }
-                RecvTimeoutError::Timeout => None,
-            },
-        }
+    fn get_shm_enable_huge_pages(&self) -> bool {
+        self.enable_huge_pages
     }
 
-    pub fn start_series(&mut self, series: u64) -> Result<(), ReceiverError> {
-        if self.status == ReceiverStatus::Closed {
-            return Err(ReceiverError {
-                msg: "receiver is closed".to_string(),
-            });
-        }
-        self.to_thread
-            .send(ControlMsg::StartAcquisition { series })
-            .expect("background thread should be running");
-        self.status = ReceiverStatus::Running;
-        Ok(())
-    }
-
-    pub fn start_passive(&mut self) -> Result<(), ReceiverError> {
-        if self.status == ReceiverStatus::Closed {
-            return Err(ReceiverError {
-                msg: "receiver is closed".to_string(),
-            });
-        }
-        self.to_thread
-            .send(ControlMsg::StartAcquisitionPassive)
-            .expect("background thread should be running");
-        self.status = ReceiverStatus::Running;
-        Ok(())
-    }
-
-    pub fn close(&mut self) {
-        if self.to_thread.send(ControlMsg::StopThread).is_err() {
-            warn!("could not stop background thread, probably already dead");
-        }
-        if let Some(join_handle) = self.bg_thread.take() {
-            join_handle
-                .join()
-                .expect("could not join background thread!");
-        } else {
-            warn!("did not have a bg thread join handle, cannot join!");
-        }
-        self.status = ReceiverStatus::Closed;
+    fn get_shm_handle_path(&self) -> String {
+        self.shm_handle_path.clone()
     }
 }
