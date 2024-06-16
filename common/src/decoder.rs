@@ -10,7 +10,8 @@ pub trait Decoder: Default {
         start_idx: usize,
         end_idx: usize,
     ) -> Result<(), DecoderError>
-    where M: FrameMeta;
+    where
+        M: FrameMeta;
 }
 
 #[derive(Debug, thiserror::Error)]

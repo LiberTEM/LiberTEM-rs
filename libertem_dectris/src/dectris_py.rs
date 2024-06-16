@@ -5,11 +5,10 @@
 use std::time::Duration;
 
 use common::{
-    generic_connection::{GenericConnection, ConnectionStatus},
     background_thread::BackgroundThread,
     frame_stack::FrameMeta,
+    generic_connection::{ConnectionStatus, GenericConnection},
 };
-
 
 use crate::{
     background_thread::{DectrisBackgroundThread, DectrisDetectorConnConfig, DectrisExtraControl},
@@ -133,8 +132,10 @@ impl DectrisConnection {
     }
 
     fn start(&mut self, series: u64) -> PyResult<()> {
-        self.conn.send_specialized(DectrisExtraControl::StartAcquisitionWithSeries { series })?;
-        self.conn.wait_for_status(ConnectionStatus::Armed, Duration::from_millis(100))?;
+        self.conn
+            .send_specialized(DectrisExtraControl::StartAcquisitionWithSeries { series })?;
+        self.conn
+            .wait_for_status(ConnectionStatus::Armed, Duration::from_millis(100))?;
         Ok(())
     }
 
@@ -152,12 +153,15 @@ impl DectrisConnection {
         self.conn.log_shm_stats()
     }
 
-    fn get_next_stack(&mut self, max_size: usize, py: Python<'_>) -> PyResult<Option<DectrisFrameStack>> {
+    fn get_next_stack(
+        &mut self,
+        max_size: usize,
+        py: Python<'_>,
+    ) -> PyResult<Option<DectrisFrameStack>> {
         let stack_inner = self.conn.get_next_stack(max_size, py)?;
         Ok(stack_inner.map(DectrisFrameStack::new))
     }
 }
-
 
 #[pyclass(name = "FrameStackHandle")]
 pub struct DectrisFrameStack {
@@ -165,11 +169,10 @@ pub struct DectrisFrameStack {
 }
 
 impl DectrisFrameStack {
-    pub fn new(inner: _PyDectrisFrameStack) -> Self { 
+    pub fn new(inner: _PyDectrisFrameStack) -> Self {
         Self { inner }
     }
 }
-
 
 #[pymethods]
 impl DectrisFrameStack {
@@ -192,6 +195,4 @@ impl DectrisFrameStack {
 }
 
 #[pyclass(name = "CamClient")]
-pub struct DectrisCamClient {
-
-}
+pub struct DectrisCamClient {}

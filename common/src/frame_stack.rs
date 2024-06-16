@@ -127,7 +127,10 @@ where
         Ok(())
     }
 
-    pub fn writing_done(self, shm: &mut SharedSlabAllocator) -> Result<FrameStackHandle<M>, FrameStackWriteError> {
+    pub fn writing_done(
+        self,
+        shm: &mut SharedSlabAllocator,
+    ) -> Result<FrameStackHandle<M>, FrameStackWriteError> {
         if self.is_empty() {
             let slot_info = shm.writing_done(self.slot);
             shm.free_idx(slot_info.slot_idx);
@@ -152,7 +155,6 @@ mod inner {
 
     use super::{FrameMeta, FrameStackError};
 
-
     /// serializable handle for a stack of frames that live in shm
     #[derive(PartialEq, Eq, Serialize, Deserialize, Debug)]
     pub struct FrameStackHandle<M>
@@ -166,7 +168,12 @@ mod inner {
     }
 
     impl<M: FrameMeta> FrameStackHandle<M> {
-        pub fn new(slot: SlotInfo, meta: Vec<M>, offsets: Vec<usize>, bytes_per_frame: usize) -> Self {
+        pub fn new(
+            slot: SlotInfo,
+            meta: Vec<M>,
+            offsets: Vec<usize>,
+            bytes_per_frame: usize,
+        ) -> Self {
             assert!(meta.len() == offsets.len());
             assert!(!meta.is_empty());
             Self {
@@ -211,7 +218,11 @@ mod inner {
             Ok(bincode::serialize(self)?)
         }
 
-        pub fn get_slice_for_frame<'a>(&'a self, frame_idx: usize, slot: &'a ipc_test::Slot) -> &[u8] {
+        pub fn get_slice_for_frame<'a>(
+            &'a self,
+            frame_idx: usize,
+            slot: &'a ipc_test::Slot,
+        ) -> &[u8] {
             let slice = slot.as_slice();
             let in_offset = self.offsets[frame_idx];
             let size = self.meta[frame_idx].get_data_length_bytes();
@@ -307,7 +318,7 @@ mod tests {
         fn get_dtype_string(&self) -> String {
             "uint8".to_string()
         }
-        
+
         fn get_shape(&self) -> (u64, u64) {
             // this is a weird detector, yeah
             (16, 32)

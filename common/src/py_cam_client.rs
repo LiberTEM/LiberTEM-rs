@@ -13,16 +13,11 @@ macro_rules! impl_py_cam_client {
         $mod: ident
     ) => {
         mod impl_cam_client {
-            use pyo3::{
-                create_exception,
-                exceptions::PyException,
-                prelude::*,
-            };
             use common::{
-                cam_client::GenericCamClient,
-                decoder::Decoder,
-                frame_stack::FrameStackHandle,
+                cam_client::GenericCamClient, decoder::Decoder, frame_stack::FrameStackHandle,
             };
+            use numpy::PyArray3;
+            use pyo3::{create_exception, exceptions::PyException, prelude::*};
 
             create_exception!($mod, PyCamClientError, PyException);
 
@@ -64,7 +59,7 @@ macro_rules! impl_py_cam_client {
                 pub fn decode_range_into_buffer(
                     &self,
                     input: &FrameStackHandle<$frame_meta_type>,
-                    out: ArrayViewMut3<'_, T>,
+                    out: PyArray3,
                     start_idx: usize,
                     end_idx: usize,
                 ) -> PyResult<()> {
@@ -83,9 +78,9 @@ macro_rules! impl_py_cam_client {
                 }
 
                 pub fn close(&mut self) -> PyResult<()> {
-                    self.client_impl.close().map_err(|e| {
-                        PyCamClientError::new_err(format!("close failed: {e}"))
-                    })
+                    self.client_impl
+                        .close()
+                        .map_err(|e| PyCamClientError::new_err(format!("close failed: {e}")))
                 }
             }
         }

@@ -32,7 +32,12 @@ impl Decoder for DectrisDecoder {
     }
 }
 
-impl_py_cam_client!(_PyCamClient, DectrisDecoder, DectrisFrameMeta, libertem_dectris);
+impl_py_cam_client!(
+    _PyCamClient,
+    DectrisDecoder,
+    DectrisFrameMeta,
+    libertem_dectris
+);
 
 #[pyclass]
 pub struct CamClient {

@@ -157,7 +157,6 @@ impl AcquisitionConfig for DectrisPendingAcquisition {
     }
 }
 
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[pyclass]
 pub struct DImage {
@@ -266,15 +265,11 @@ impl DectrisFrameMeta {
     /// endianess after decompression (little/big)
     fn get_endianess(&self) -> Endianess {
         match self.dimaged.encoding.chars().last().unwrap() {
-            '>' => {
-                Endianess::Big
-            },
-            '<' => {
-                Endianess::Little
-            },
+            '>' => Endianess::Big,
+            '<' => Endianess::Little,
             _ => {
                 panic!("malformed encoding field");
-            },
+            }
         }
     }
 }
@@ -296,7 +291,7 @@ impl FrameMeta for DectrisFrameMeta {
             (Endianess::Big, PixelType::Uint32) => ">uint32".to_owned(),
         }
     }
-    
+
     fn get_shape(&self) -> (u64, u64) {
         self.dimaged.shape
     }
