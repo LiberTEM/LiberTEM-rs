@@ -263,7 +263,7 @@ where
             let res = res?;
             self.adjust_status(&res);
             if self.status == desired_status {
-                return Ok(())
+                return Ok(());
             }
         }
     }
@@ -280,7 +280,11 @@ where
             .send(ControlMsg::StartAcquisitionPassive)
             .map_err(|_e| ConnectionError::Disconnected)?;
 
-        self.wait_for_status(ConnectionStatus::Armed, Duration::from_millis(100), periodic_callback)
+        self.wait_for_status(
+            ConnectionStatus::Armed,
+            Duration::from_millis(100),
+            periodic_callback,
+        )
     }
 
     /// Receive the next frame stack from the background thread and handle any

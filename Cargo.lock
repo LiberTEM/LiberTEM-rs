@@ -857,6 +857,7 @@ dependencies = [
  "ipc-test",
  "log",
  "ndarray",
+ "numpy",
  "pyo3",
  "serde",
  "stats",

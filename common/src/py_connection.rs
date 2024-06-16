@@ -1,8 +1,6 @@
 // we can't have generics in pyclasses, so we have to generate impls via macros
 // see also: https://pyo3.rs/v0.21.2/class.html#no-generic-parameters
 
-
-
 /// This macro generates Python-specific business logic, like dropping the GIL
 /// or type conversions. All other logic is implemented in `GenericConnection`.
 #[macro_export]
