@@ -2,7 +2,7 @@ use ipc_test::SharedSlabAllocator;
 use log::trace;
 use std::ffi::c_int;
 
-use crate::{common::DType, exceptions::ConnectionError, frame_stack::FrameStackHandle};
+use crate::{common::DType, exceptions::ConnectionError, frame_stack_py::FrameStackHandle};
 use pyo3::{exceptions::PyRuntimeError, ffi::PyMemoryView_FromMemory, prelude::*, FromPyPointer};
 
 #[pyclass]

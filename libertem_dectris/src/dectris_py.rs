@@ -1,37 +1,38 @@
-#![allow(clippy::borrow_deref_ref)]
+//! This module should be a wrapper around the generic functionality of the `common`
+//! crate, and only contain logic that is specific to the detector. The interface
+//! exported to Python should be as uniform as possible compared to other detectors,
+//! pending future unification with full compatability between detectors.
+use std::time::Duration;
 
-use std::{
-    convert::Infallible,
-    path::PathBuf,
-    time::{Duration, Instant},
+use common::{
+    background_thread::BackgroundThread,
+    frame_stack::FrameMeta,
+    generic_connection::{ConnectionStatus, GenericConnection},
 };
 
 use crate::{
+    background_thread::{DectrisBackgroundThread, DectrisDetectorConnConfig, DectrisExtraControl},
     cam_client::CamClient,
     common::{
-        DConfig, DHeader, DImage, DImageD, DSeriesEnd, DetectorConfig, PixelType, TriggerMode,
+        DConfig, DHeader, DImage, DImageD, DSeriesEnd, DectrisFrameMeta, DectrisPendingAcquisition,
+        DetectorConfig, PixelType, TriggerMode,
     },
-    exceptions::{ConnectionError, DecompressError, TimeoutError},
-    frame_stack::FrameStackHandle,
-    receiver::{DectrisReceiver, ReceiverStatus, ResultMsg},
+    exceptions::{DecompressError, TimeoutError},
     sim::DectrisSim,
 };
 
+use common::{frame_stack::FrameStackHandle, impl_py_connection};
 use ipc_test::SharedSlabAllocator;
-use log::{info, trace};
-use pyo3::{
-    exceptions::{self, PyRuntimeError},
-    prelude::*,
-};
+use pyo3::{create_exception, exceptions::PyException, prelude::*};
 use stats::Stats;
 
 #[pymodule]
-fn libertem_dectris<'py>(py: Python, m: Bound<'py, PyModule>) -> PyResult<()> {
+fn libertem_dectris(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     // FIXME: logging integration deadlocks on close(), when trying to acquire
     // the GIL
     // pyo3_log::init();
 
-    m.add_class::<FrameStackHandle>()?;
+    m.add_class::<DectrisFrameStack>()?;
     m.add_class::<DectrisConnection>()?;
     m.add_class::<PixelType>()?;
     m.add_class::<DectrisSim>()?;
@@ -51,10 +52,7 @@ fn libertem_dectris<'py>(py: Python, m: Bound<'py, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-fn register_header_module<'py>(
-    py: Python<'_>,
-    parent_module: &Bound<'py, PyModule>,
-) -> PyResult<()> {
+fn register_header_module(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let headers_module = PyModule::new_bound(py, "headers")?;
     headers_module.add_class::<DHeader>()?;
     headers_module.add_class::<DImage>()?;
@@ -65,143 +63,18 @@ fn register_header_module<'py>(
     Ok(())
 }
 
-struct FrameChunkedIterator<'a, 'b, 'c, 'd> {
-    receiver: &'a mut DectrisReceiver,
-    shm: &'b mut SharedSlabAllocator,
-    remainder: &'c mut Vec<FrameStackHandle>,
-    stats: &'d mut Stats,
-}
-
-impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
-    /// Get the next frame stack. Mainly handles splitting logic for boundary
-    /// conditions and delegates communication with the background thread to `recv_next_stack_impl`
-    pub fn get_next_stack_impl(
-        &mut self,
-        py: Python,
-        max_size: usize,
-    ) -> PyResult<Option<FrameStackHandle>> {
-        let res = self.recv_next_stack_impl(py);
-        match res {
-            Ok(Some(frame_stack)) => {
-                if frame_stack.len() > max_size {
-                    // split `FrameStackHandle` into two:
-                    trace!(
-                        "FrameStackHandle::split_at({max_size}); len={}",
-                        frame_stack.len()
-                    );
-                    self.stats.count_split();
-                    let (left, right) = frame_stack.split_at(max_size, self.shm);
-                    self.remainder.push(right);
-                    assert!(left.len() <= max_size);
-                    return Ok(Some(left));
-                }
-                assert!(frame_stack.len() <= max_size);
-                Ok(Some(frame_stack))
-            }
-            Ok(None) => Ok(None),
-            e @ Err(_) => e,
-        }
-    }
-
-    /// Receive the next frame stack from the background thread and handle any
-    /// other control messages.
-    fn recv_next_stack_impl(&mut self, py: Python) -> PyResult<Option<FrameStackHandle>> {
-        // first, check if there is anything on the remainder list:
-        if let Some(frame_stack) = self.remainder.pop() {
-            return Ok(Some(frame_stack));
-        }
-
-        match self.receiver.status {
-            ReceiverStatus::Closed => {
-                return Err(exceptions::PyRuntimeError::new_err("receiver is closed"))
-            }
-            ReceiverStatus::Idle => return Ok(None),
-            ReceiverStatus::Running => {}
-        }
-
-        let recv = &mut self.receiver;
-
-        loop {
-            py.check_signals()?;
-
-            let recv_result = py.allow_threads(|| {
-                let next: Result<Option<ResultMsg>, Infallible> =
-                    Ok(recv.next_timeout(Duration::from_millis(100)));
-                next
-            })?;
-
-            match recv_result {
-                None => {
-                    continue;
-                }
-                Some(ResultMsg::AcquisitionStart {
-                    series: _,
-                    detector_config: _,
-                }) => {
-                    // FIXME: in case of "passive" mode, we should actually not hit this,
-                    // as the "outer" structure (`DectrisConnection`) handles it?
-                    continue;
-                }
-                Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(format!(
-                        "serialization error: {}, message: {}",
-                        msg, recvd_msg
-                    )))
-                }
-                Some(ResultMsg::Error { msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(msg))
-                }
-                Some(ResultMsg::End { frame_stack }) => {
-                    self.stats.log_stats();
-                    self.stats.reset();
-                    return Ok(Some(frame_stack));
-                }
-                Some(ResultMsg::FrameStack { frame_stack }) => {
-                    return Ok(Some(frame_stack));
-                }
-            }
-        }
-    }
-
-    fn new(
-        receiver: &'a mut DectrisReceiver,
-        shm: &'b mut SharedSlabAllocator,
-        remainder: &'c mut Vec<FrameStackHandle>,
-        stats: &'d mut Stats,
-    ) -> PyResult<Self> {
-        Ok(FrameChunkedIterator {
-            receiver,
-            shm,
-            remainder,
-            stats,
-        })
-    }
-}
+impl_py_connection!(
+    _PyDectrisConnection,
+    _PyDectrisFrameStack,
+    DectrisFrameMeta,
+    DectrisBackgroundThread,
+    DectrisPendingAcquisition,
+    libertem_dectris
+);
 
 #[pyclass]
 struct DectrisConnection {
-    receiver: DectrisReceiver,
-    remainder: Vec<FrameStackHandle>,
-    local_shm: SharedSlabAllocator,
-    stats: Stats,
-}
-
-impl DectrisConnection {
-    fn start_series_impl(&mut self, series: u64) -> PyResult<()> {
-        self.receiver
-            .start_series(series)
-            .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
-    }
-
-    fn start_passive_impl(&mut self) -> PyResult<()> {
-        self.receiver
-            .start_passive()
-            .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
-    }
-
-    fn close_impl(&mut self) {
-        self.receiver.close();
-    }
+    conn: _PyDectrisConnection,
 }
 
 #[pymethods]
@@ -210,131 +83,116 @@ impl DectrisConnection {
     fn new(
         uri: &str,
         frame_stack_size: usize,
-        handle_path: String,
+        handle_path: &str,
         num_slots: Option<usize>,
         bytes_per_frame: Option<usize>,
         huge: Option<bool>,
     ) -> PyResult<Self> {
         let num_slots = num_slots.map_or_else(|| 2000, |x| x);
         let bytes_per_frame = bytes_per_frame.map_or_else(|| 512 * 512 * 2, |x| x);
-        let slot_size = frame_stack_size * bytes_per_frame;
-        let shm = match SharedSlabAllocator::new(
+        let config = DectrisDetectorConnConfig::new(
+            uri,
+            frame_stack_size,
+            bytes_per_frame,
             num_slots,
-            slot_size,
             huge.map_or_else(|| false, |x| x),
-            &PathBuf::from(handle_path),
-        ) {
-            Ok(shm) => shm,
-            Err(e) => {
-                let total_size = num_slots * slot_size;
-                let msg = format!("could not create SHM area (num_slots={num_slots}, slot_size={slot_size} total_size={total_size} huge={huge:?}): {e:?}");
-                return Err(ConnectionError::new_err(msg));
-            }
-        };
+            handle_path,
+        );
 
-        let local_shm = shm.clone_and_connect().expect("clone SHM");
+        let shm = GenericConnection::<DectrisBackgroundThread, DectrisPendingAcquisition>::shm_from_config(&config).map_err(|e| {
+            PyConnectionError::new_err(format!("could not init shm: {}", e))
+        })?;
+        let bg_thread = DectrisBackgroundThread::spawn(&config, &shm)
+            .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
+        let generic_conn =
+            GenericConnection::<DectrisBackgroundThread, DectrisPendingAcquisition>::new(
+                bg_thread, &shm,
+            )
+            .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
 
-        Ok(Self {
-            receiver: DectrisReceiver::new(uri, frame_stack_size, shm),
-            remainder: Vec::new(),
-            local_shm,
-            stats: Stats::new(),
-        })
+        let conn = _PyDectrisConnection::new(shm, generic_conn);
+
+        Ok(Self { conn })
     }
 
     /// Wait until the detector is armed, or until the timeout expires (in seconds)
     /// Returns `None` in case of timeout, the detector config otherwise.
     /// This method drops the GIL to allow concurrent Python threads.
-    fn wait_for_arm(
-        &mut self,
-        timeout: f32,
-        py: Python,
-    ) -> PyResult<Option<(DetectorConfig, u64)>> {
-        let timeout = Duration::from_secs_f32(timeout);
-        let deadline = Instant::now() + timeout;
-        let step = Duration::from_millis(100);
-
-        loop {
-            py.check_signals()?;
-
-            let res = py.allow_threads(|| {
-                let timeout_rem = deadline - Instant::now();
-                let this_timeout = timeout_rem.min(step);
-                self.receiver.next_timeout(this_timeout)
-            });
-
-            match res {
-                Some(ResultMsg::AcquisitionStart {
-                    series,
-                    detector_config,
-                }) => return Ok(Some((detector_config, series))),
-                msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {
-                    let err = format!("unexpected message: {:?}", msg);
-                    return Err(PyRuntimeError::new_err(err));
-                }
-                Some(ResultMsg::Error { msg }) => return Err(PyRuntimeError::new_err(msg)),
-                Some(ResultMsg::SerdeError { msg, recvd_msg: _ }) => {
-                    return Err(PyRuntimeError::new_err(msg))
-                }
-                None => {
-                    // timeout
-                    if Instant::now() > deadline {
-                        return Ok(None);
-                    } else {
-                        continue;
-                    }
-                }
-            }
-        }
+    fn wait_for_arm(&mut self, timeout: f32) -> PyResult<Option<(DetectorConfig, u64)>> {
+        let res = self.conn.wait_for_arm(timeout)?;
+        Ok(res.map(|config| (config.get_detector_config(), config.get_series())))
     }
 
     fn get_socket_path(&self) -> PyResult<String> {
-        Ok(self.local_shm.get_handle().os_handle)
+        self.conn.get_socket_path()
     }
 
-    fn is_running(slf: PyRef<Self>) -> bool {
-        slf.receiver.status == ReceiverStatus::Running
+    fn is_running(&self) -> PyResult<bool> {
+        self.conn.is_running()
     }
 
-    fn start(mut slf: PyRefMut<Self>, series: u64) -> PyResult<()> {
-        slf.start_series_impl(series)
+    fn start(&mut self, series: u64) -> PyResult<()> {
+        self.conn
+            .send_specialized(DectrisExtraControl::StartAcquisitionWithSeries { series })?;
+        self.conn
+            .wait_for_status(ConnectionStatus::Armed, Duration::from_millis(100))?;
+        Ok(())
     }
 
     /// Start listening for global acquisition headers on the zeromq socket.
-    /// Call `wait_for_arm` to wait
-    fn start_passive(mut slf: PyRefMut<Self>) -> PyResult<()> {
-        slf.start_passive_impl()
+    fn start_passive(&mut self) -> PyResult<()> {
+        self.conn.start_passive()
     }
 
-    fn close(mut slf: PyRefMut<Self>) {
-        slf.stats.log_stats();
-        slf.stats.reset();
-        slf.close_impl();
+    fn close(&mut self) -> PyResult<()> {
+        self.conn.close()?;
+        Ok(())
+    }
+
+    fn log_shm_stats(&self) -> PyResult<()> {
+        self.conn.log_shm_stats()
     }
 
     fn get_next_stack(
         &mut self,
-        py: Python,
         max_size: usize,
-    ) -> PyResult<Option<FrameStackHandle>> {
-        let mut iter = FrameChunkedIterator::new(
-            &mut self.receiver,
-            &mut self.local_shm,
-            &mut self.remainder,
-            &mut self.stats,
-        )?;
-        iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
-            if let Some(frame_stack) = &maybe_stack {
-                self.stats.count_stats_item(frame_stack);
-            }
-            maybe_stack
-        })
-    }
-
-    fn log_shm_stats(&self) {
-        let free = self.local_shm.num_slots_free();
-        let total = self.local_shm.num_slots_total();
-        self.stats.log_stats();
-        info!("shm stats free/total: {}/{}", free, total);
+        py: Python<'_>,
+    ) -> PyResult<Option<DectrisFrameStack>> {
+        let stack_inner = self.conn.get_next_stack(max_size, py)?;
+        Ok(stack_inner.map(DectrisFrameStack::new))
     }
 }
+
+#[pyclass(name = "FrameStackHandle")]
+pub struct DectrisFrameStack {
+    inner: _PyDectrisFrameStack,
+}
+
+impl DectrisFrameStack {
+    pub fn new(inner: _PyDectrisFrameStack) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl DectrisFrameStack {
+    fn __len__(&self) -> PyResult<usize> {
+        self.inner.__len__()
+    }
+
+    fn get_dtype_string(&self) -> PyResult<String> {
+        self.inner.get_dtype_string()
+    }
+
+    fn get_shape(&self) -> PyResult<(u64, u64)> {
+        self.inner.get_shape()
+    }
+
+    // fn get_series_id
+    // fn get_frame_id
+    // fn get_hash
+    // anything else?
+}
+
+#[pyclass(name = "CamClient")]
+pub struct DectrisCamClient {}

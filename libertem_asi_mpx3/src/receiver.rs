@@ -14,8 +14,8 @@ use log::{debug, error, info, trace, warn};
 use serval_client::{DetectorConfig, ServalClient, ServalError};
 
 use crate::{
-    common::{DType, FrameMeta},
-    frame_stack::{FrameStackForWriting, FrameStackHandle},
+    common::{ASIMpxFrameMeta, DType},
+    frame_stack_py::{FrameStackForWriting, FrameStackHandle},
 };
 
 #[derive(PartialEq, Debug)]
@@ -31,7 +31,7 @@ pub enum ResultMsg {
 
     AcquisitionStart {
         detector_config: DetectorConfig,
-        first_frame_meta: FrameMeta,
+        first_frame_meta: ASIMpxFrameMeta,
     },
 
     /// A stack of frames, part of an acquisition
@@ -81,7 +81,7 @@ where
 }
 
 /// Peek and parse the first frame header
-fn peek_header(stream: &mut TcpStream) -> Result<FrameMeta, AcquisitionError> {
+fn peek_header(stream: &mut TcpStream) -> Result<ASIMpxFrameMeta, AcquisitionError> {
     let mut buf: [u8; HEADER_BUF_SIZE] = [0; HEADER_BUF_SIZE];
     // FIXME: error handling, timeout, ...
 
@@ -107,7 +107,7 @@ fn peek_header(stream: &mut TcpStream) -> Result<FrameMeta, AcquisitionError> {
 
 const HEADER_BUF_SIZE: usize = 512;
 
-fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<FrameMeta, ParseError> {
+fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<ASIMpxFrameMeta, ParseError> {
     let mut pos: usize = 0;
 
     // Each PGM image consists of the following:
@@ -175,7 +175,7 @@ fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<FrameMeta,
 
     let header_length_bytes: usize = pos + 1;
 
-    let meta = FrameMeta {
+    let meta = ASIMpxFrameMeta {
         sequence,
         dtype,
         width,
@@ -201,7 +201,7 @@ fn recv_frame(
     control_channel: &Receiver<ControlMsg>,
     frame_stack: &mut FrameStackForWriting,
     extra_frame_stack: &mut FrameStackForWriting,
-) -> Result<FrameMeta, AcquisitionError> {
+) -> Result<ASIMpxFrameMeta, AcquisitionError> {
     // TODO:
     // - timeout handling
     // - error handling (parsing, receiving)
@@ -422,7 +422,7 @@ fn acquisition(
     to_thread_r: &Receiver<ControlMsg>,
     from_thread_s: &Sender<ResultMsg>,
     detector_config: &DetectorConfig,
-    first_frame_meta: &FrameMeta,
+    first_frame_meta: &ASIMpxFrameMeta,
     stream: &mut TcpStream,
     frame_stack_size: usize,
     shm: &mut SharedSlabAllocator,

@@ -8,12 +8,13 @@ use std::{
 
 use crate::{
     cam_client::CamClient,
-    common::{DType, FrameMeta},
+    common::{ASIMpxFrameMeta, DType},
     exceptions::{ConnectionError, TimeoutError},
-    frame_stack::FrameStackHandle,
+    frame_stack_py::PyFrameStackHandle,
     receiver::{ReceiverStatus, ResultMsg, ServalReceiver},
 };
 
+use common::frame_stack::FrameStackHandle;
 use ipc_test::SharedSlabAllocator;
 use log::{info, trace};
 use pyo3::{
@@ -29,7 +30,7 @@ fn libertem_asi_mpx3(py: Python, m: &PyModule) -> PyResult<()> {
     // the GIL
     // pyo3_log::init();
 
-    m.add_class::<FrameStackHandle>()?;
+    m.add_class::<PyFrameStackHandle>()?;
     m.add_class::<ServalConnection>()?;
     m.add_class::<DType>()?;
     m.add_class::<PyDetectorConfig>()?;
@@ -141,7 +142,7 @@ impl PyServalClient {
 struct FrameChunkedIterator<'a, 'b, 'c, 'd> {
     receiver: &'a mut ServalReceiver,
     shm: &'b mut SharedSlabAllocator,
-    remainder: &'c mut Vec<FrameStackHandle>,
+    remainder: &'c mut Vec<FrameStackHandle<ASIMpxFrameMeta>>,
     stats: &'d mut Stats,
 }
 
@@ -152,7 +153,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
         &mut self,
         py: Python,
         max_size: usize,
-    ) -> PyResult<Option<FrameStackHandle>> {
+    ) -> PyResult<Option<PyFrameStackHandle>> {
         let res = self.recv_next_stack_impl(py);
         match res {
             Ok(Some(frame_stack)) => {
@@ -178,7 +179,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
 
     /// Receive the next frame stack from the background thread and handle any
     /// other control messages.
-    fn recv_next_stack_impl(&mut self, py: Python) -> PyResult<Option<FrameStackHandle>> {
+    fn recv_next_stack_impl(&mut self, py: Python) -> PyResult<Option<PyFrameStackHandle>> {
         // first, check if there is anything on the remainder list:
         if let Some(frame_stack) = self.remainder.pop() {
             return Ok(Some(frame_stack));
@@ -236,7 +237,7 @@ impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
     fn new(
         receiver: &'a mut ServalReceiver,
         shm: &'b mut SharedSlabAllocator,
-        remainder: &'c mut Vec<FrameStackHandle>,
+        remainder: &'c mut Vec<PyFrameStackHandle>,
         stats: &'d mut Stats,
     ) -> PyResult<Self> {
         Ok(FrameChunkedIterator {
@@ -271,7 +272,7 @@ impl ServalConnection {
 #[pyclass]
 struct PendingAcquisition {
     config: DetectorConfig,
-    first_frame_meta: FrameMeta,
+    first_frame_meta: ASIMpxFrameMeta,
 }
 
 #[pymethods]

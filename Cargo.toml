@@ -3,12 +3,14 @@ members = [
     "libertem_dectris",
     "libertem_asi_tpx3",
     "libertem_asi_mpx3",
+    "libertem_qd_mpx",
     "ipc_test",
     "playegui",
     "bs-sys",
     "stats",
-    "serval-client",
+    "serval-client", "common",
 ]
+resolver = "2"
 
 [profile.release]
 debug = true

@@ -17,11 +17,10 @@ name = "libertem-dectris-tool"
 path = "src/main.rs"
 
 [dependencies]
+thiserror = "1.0.59"
 bincode = "1.3.3"
 bs_sys = { path = "../bs-sys" }
 clap = { version = "3.2.16", features = ["derive"] }
-crossbeam = "0.8.2"
-crossbeam-channel = "0.5.6"
 env_logger = "0.9.3"
 log = "0.4.17"
 memmap2 = "0.5.6"
@@ -34,6 +33,7 @@ uuid = { version = "1.1.2", features = ["v4", "fast-rng"] }
 zmq = { version = "0.10.0", features = [] }
 ipc-test = { path = "../ipc_test" }
 stats = { path = "../stats" }
+common = { path = "../common" }
 nix = "0.26.1"
 lz4 = "1.24.0"
 zerocopy = "0.6.1"

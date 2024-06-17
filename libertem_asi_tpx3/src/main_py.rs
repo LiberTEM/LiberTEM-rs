@@ -299,7 +299,7 @@ impl ASITpx3Connection {
         slf.receiver.status == ReceiverStatus::Running
     }
 
-    /// Start listening for global acquisition headers on the zeromq socket.
+    /// Start listening for global acquisition headers on the tcp socket.
     /// Call `wait_for_arm` to wait
     fn start_passive(mut slf: PyRefMut<Self>) -> PyResult<()> {
         slf.start_passive_impl()

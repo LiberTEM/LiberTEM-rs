@@ -1,4 +1,4 @@
-///! Raw memory backend using memfd with huge page support
+//! Raw memory backend using memfd with huge page support
 // TODO:
 // #![forbid(clippy::unwrap_used)]
 use std::{
