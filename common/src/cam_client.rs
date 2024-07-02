@@ -1,5 +1,7 @@
 use ipc_test::{slab::SlabInitError, SharedSlabAllocator};
-use ndarray::{ArrayViewMut, ArrayViewMut3, Dimension};
+use ndarray::ArrayViewMut3;
+use num::{cast::AsPrimitive, Num, NumCast};
+use zerocopy::{AsBytes, FromBytes};
 
 use crate::{
     decoder::{Decoder, DecoderError},
@@ -67,45 +69,42 @@ where
     }
 
     /// Is the data already in a native integer/float format which we can
-    /// directly use from numpy?
+    /// directly use from numpy? Also requires the data to be in a C-contiguous layout.
     ///
     /// In case it is available, use `get_array_zero_copy` to get access to the
     /// array.
-    pub fn zero_copy_available<M>(
+    pub fn zero_copy_available(
         &self,
-        handle: &FrameStackHandle<M>,
-    ) -> Result<bool, CamClientError>
-    where
-        M: FrameMeta,
-    {
-        todo!("implement zero_copy_available; delegate to decoder!");
+        handle: &FrameStackHandle<D::FrameMeta>,
+    ) -> Result<bool, CamClientError> {
+        Ok(self.decoder.zero_copy_available(handle)?)
     }
 
-    /// Get an array of the whole frame stack as a strided array.
+    /// Get an array of the whole frame stack as a C-contiguous array.
     ///
-    /// This requires that the data is already layed out as a strided array
+    /// This requires that the data is already layed out as a C-contiguous array
     /// in the `FrameStackHandle`.
     pub fn get_array_zero_copy<M>(&self, handle: &FrameStackHandle<M>) -> Result<(), CamClientError>
     where
         M: FrameMeta,
     {
         // FIXME: we need to make sure we only loan out the buffer underlying `handle` as long as
-        // the `FrameStackHandle` is valid, i.e.
+        // the `FrameStackHandle` is valid
         todo!("implement get_array_zero_copy; delegate to decoder!");
     }
 
     /// Decode into a pre-allocated array.
     ///
     /// This supports user-allocated memory, which enables things like copying
-    /// directly into CUDA locked memory and thus getting rid of a memcpy in the
-    /// case of CUDA.
-    pub fn decode_into_buffer<M, T>(
+    /// directly into CUDA locked host memory and thus getting rid of a memcpy
+    /// in the case of CUDA.
+    pub fn decode_into_buffer<T>(
         &self,
-        input: &FrameStackHandle<M>,
-        dest: ArrayViewMut3<'_, T>,
+        input: &FrameStackHandle<D::FrameMeta>,
+        dest: &mut ArrayViewMut3<'_, T>,
     ) -> Result<(), CamClientError>
     where
-        M: FrameMeta,
+        T: 'static + AsBytes + FromBytes + Copy + NumCast,
     {
         self.decode_range_into_buffer(input, dest, 0, input.len() - 1)
     }
@@ -114,17 +113,18 @@ where
     ///
     /// This allows for decoding only the data that will be processed
     /// immediately afterwards, allowing for more cache-efficient operations.
-    pub fn decode_range_into_buffer<M, T>(
+    pub fn decode_range_into_buffer<T>(
         &self,
-        input: &FrameStackHandle<M>,
-        dest: ArrayViewMut3<'_, T>,
+        input: &FrameStackHandle<D::FrameMeta>,
+        dest: &mut ArrayViewMut3<'_, T>,
         start_idx: usize,
         end_idx: usize,
     ) -> Result<(), CamClientError>
     where
-        M: FrameMeta,
+        T: 'static + AsBytes + FromBytes + Copy + NumCast,
     {
-        Ok(self.decoder.decode(input, dest, start_idx, end_idx)?)
+        let shm = self.get_shm()?;
+        Ok(self.decoder.decode(shm, input, dest, start_idx, end_idx)?)
     }
 
     /// Free the given `FrameStackHandle`. When calling this, no Python objects

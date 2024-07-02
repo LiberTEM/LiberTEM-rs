@@ -11,7 +11,7 @@ pub trait FrameMeta: Clone + Serialize + Debug {
     /// Length of the data that belongs to the frame corresponding to this meta object
     fn get_data_length_bytes(&self) -> usize;
 
-    /// numpy-like dtype of the data as string
+    /// numpy-like dtype of the data as string, including endianess
     /// (this is supposed to be the dtype closest to the raw data; the actual
     /// data in the frame stack may be encoded and/or compressed)
     fn get_dtype_string(&self) -> String;

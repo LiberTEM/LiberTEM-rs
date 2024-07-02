@@ -4,15 +4,10 @@
 //! pending future unification with full compatability between detectors.
 use std::time::Duration;
 
-use common::{
-    background_thread::BackgroundThread,
-    frame_stack::FrameMeta,
-    generic_connection::{ConnectionStatus, GenericConnection},
-};
+use common::generic_connection::{ConnectionStatus, GenericConnection};
 
 use crate::{
     background_thread::{DectrisBackgroundThread, DectrisDetectorConnConfig, DectrisExtraControl},
-    cam_client::CamClient,
     common::{
         DConfig, DHeader, DImage, DImageD, DSeriesEnd, DectrisFrameMeta, DectrisPendingAcquisition,
         DetectorConfig, PixelType, TriggerMode,
@@ -21,10 +16,17 @@ use crate::{
     sim::DectrisSim,
 };
 
-use common::{frame_stack::FrameStackHandle, impl_py_connection};
-use ipc_test::SharedSlabAllocator;
-use pyo3::{create_exception, exceptions::PyException, prelude::*};
-use stats::Stats;
+use common::{impl_py_cam_client, impl_py_connection};
+
+use pyo3::{
+    prelude::*,
+    types::{PyBytes, PyType},
+};
+
+use log::trace;
+use numpy::PyUntypedArray;
+
+use crate::decoder::DectrisDecoder;
 
 #[pymodule]
 fn libertem_dectris(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
@@ -172,6 +174,14 @@ impl DectrisFrameStack {
     pub fn new(inner: _PyDectrisFrameStack) -> Self {
         Self { inner }
     }
+
+    pub fn get_inner(&self) -> &_PyDectrisFrameStack {
+        &self.inner
+    }
+
+    pub fn get_inner_mut(&mut self) -> &mut _PyDectrisFrameStack {
+        &mut self.inner
+    }
 }
 
 #[pymethods]
@@ -184,8 +194,58 @@ impl DectrisFrameStack {
         self.inner.get_dtype_string()
     }
 
+    /// use `get_dtype_string` instead
+    #[deprecated]
+    fn get_pixel_type(&self) -> PyResult<String> {
+        let meta = self.inner.try_get_inner()?.first_meta();
+
+        Ok(match meta.dimaged.type_ {
+            PixelType::Uint8 => "uint8",
+            PixelType::Uint16 => "uint16",
+            PixelType::Uint32 => "uint32",
+        }
+        .to_owned())
+    }
+
+    /// use `get_dtype_string` instead, that should include endianess
+    #[deprecated]
+    fn get_endianess(&self) -> PyResult<String> {
+        Ok(self
+            .inner
+            .try_get_inner()?
+            .first_meta()
+            .get_endianess()
+            .as_string())
+    }
+
+    /// implementation detail that Python shouldn't care about
+    #[deprecated]
+    fn get_encoding(&self) -> PyResult<String> {
+        Ok(self
+            .inner
+            .try_get_inner()?
+            .first_meta()
+            .dimaged
+            .encoding
+            .to_string())
+    }
+
     fn get_shape(&self) -> PyResult<(u64, u64)> {
         self.inner.get_shape()
+    }
+
+    fn serialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner.serialize(py)
+    }
+
+    #[classmethod]
+    fn deserialize<'py>(
+        _cls: Bound<'py, PyType>,
+        serialized: Bound<'py, PyBytes>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: _PyDectrisFrameStack::deserialize_impl(serialized)?,
+        })
     }
 
     // fn get_series_id
@@ -196,3 +256,297 @@ impl DectrisFrameStack {
 
 #[pyclass(name = "CamClient")]
 pub struct DectrisCamClient {}
+
+impl_py_cam_client!(
+    _PyDectrisCamClient,
+    DectrisDecoder,
+    _PyDectrisFrameStack,
+    DectrisFrameMeta,
+    libertem_dectris
+);
+
+#[pyclass]
+pub struct CamClient {
+    inner: _PyDectrisCamClient,
+}
+
+#[pymethods]
+impl CamClient {
+    #[new]
+    fn new(handle_path: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: _PyDectrisCamClient::new(handle_path)?,
+        })
+    }
+
+    fn decode_into_buffer<'py>(
+        &self,
+        input: &DectrisFrameStack,
+        out: &Bound<'py, PyUntypedArray>,
+        py: Python<'py>,
+    ) -> PyResult<()> {
+        self.inner.decode_into_buffer(input.get_inner(), out, py)
+    }
+
+    #[deprecated]
+    fn decompress_frame_stack<'py>(
+        &self,
+        handle: &DectrisFrameStack,
+        out: &Bound<'py, PyUntypedArray>,
+        py: Python<'py>,
+    ) -> PyResult<()> {
+        self.inner.decode_into_buffer(handle.get_inner(), out, py)
+    }
+
+    fn done(&mut self, handle: &mut DectrisFrameStack) -> PyResult<()> {
+        self.inner.frame_stack_done(handle.get_inner_mut())
+    }
+
+    fn close(&mut self) -> PyResult<()> {
+        self.inner.close()
+    }
+}
+
+impl Drop for CamClient {
+    fn drop(&mut self) {
+        trace!("CamClient::drop");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{convert::Infallible, io::Write, path::PathBuf};
+
+    use common::frame_stack::{FrameStackForWriting, FrameStackHandle};
+    use lz4::block::CompressionMode;
+    use numpy::{PyArray, PyArrayMethods};
+    use tempfile::tempdir;
+
+    use ipc_test::SharedSlabAllocator;
+    use pyo3::{prepare_freethreaded_python, Python};
+    use zerocopy::AsBytes;
+
+    use crate::{
+        common::DectrisFrameMeta,
+        dectris_py::{CamClient, DectrisFrameStack, _PyDectrisFrameStack},
+    };
+    use tempfile::TempDir;
+
+    fn get_socket_path() -> (TempDir, PathBuf) {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.path().join("stuff.socket");
+
+        (socket_dir, socket_as_path)
+    }
+
+    #[test]
+    fn test_cam_client() {
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 1, 512);
+        let dimage = crate::common::DImage {
+            htype: "dimage-1.0".to_string().try_into().unwrap(),
+            series: 1,
+            frame: 1,
+            hash: "aaaabbbb".to_string().try_into().unwrap(),
+        };
+        let dimaged = crate::common::DImageD {
+            htype: "d-image_d-1.0".to_string().try_into().unwrap(),
+            shape: (16, 16),
+            type_: crate::common::PixelType::Uint16,
+            encoding: "bs16-lz4<".to_string().try_into().unwrap(),
+        };
+        let dconfig = crate::common::DConfig {
+            htype: "dconfig-1.0".to_string().try_into().unwrap(),
+            start_time: 0,
+            stop_time: 0,
+            real_time: 0,
+        };
+
+        // some predictable test data:
+        let in_: Vec<u16> = (0..256).map(|i| i % 16).collect();
+        let compressed_data = bs_sys::compress_lz4(&in_, None).unwrap();
+
+        // compressed dectris data stream has an (unknown)
+        // header in front of the compressed data, which we just cut off,
+        // so here we just prepend 12 zero-bytes
+        let mut data_with_prefix = vec![0; 12];
+        data_with_prefix.extend_from_slice(&compressed_data);
+        assert!(data_with_prefix.len() < 512);
+        data_with_prefix.iter().take(12).for_each(|&e| {
+            assert_eq!(e, 0);
+        });
+        println!("compressed_data:        {:x?}", &compressed_data);
+        println!("data_with_prefix[12..]: {:x?}", &data_with_prefix[12..]);
+        assert_eq!(fs.get_cursor(), 0);
+
+        let meta = DectrisFrameMeta {
+            dimage,
+            dimaged,
+            dconfig,
+            data_length_bytes: data_with_prefix.len(),
+        };
+
+        fs.write_frame(&meta, |mut b| -> Result<(), Infallible> {
+            b.write_all(&data_with_prefix).unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(fs.get_cursor(), data_with_prefix.len());
+
+        // we have one frame in there:
+        assert_eq!(fs.len(), 1);
+
+        let fs_handle = fs.writing_done(&mut shm).unwrap();
+
+        // we still have one frame in there:
+        assert_eq!(fs_handle.len(), 1);
+
+        // initialize a Python interpreter so we are able to construct a PyBytes instance:
+        prepare_freethreaded_python();
+
+        // roundtrip serialize/deserialize:
+        Python::with_gil(|_py| {
+            let bytes = fs_handle.serialize().unwrap();
+            let new_handle = FrameStackHandle::deserialize_impl(&bytes).unwrap();
+            assert_eq!(fs_handle, new_handle);
+        });
+
+        let client = CamClient::new(socket_as_path.to_str().unwrap()).unwrap();
+
+        fs_handle.with_slot(&shm, |slot_r| {
+            let slice = slot_r.as_slice();
+            println!("slice: {:x?}", slice);
+
+            Python::with_gil(|py| {
+                let flat: Vec<u16> = (0..256).collect();
+                let out = PyArray::from_vec_bound(py, flat)
+                    .reshape((1, 16, 16))
+                    .unwrap();
+
+                let out_untyped = out.as_untyped();
+                let dfsh = DectrisFrameStack::new(_PyDectrisFrameStack::new(fs_handle));
+                client.decode_into_buffer(&dfsh, out_untyped, py).unwrap();
+
+                out.readonly()
+                    .as_slice()
+                    .unwrap()
+                    .iter()
+                    .zip(0..)
+                    .for_each(|(&item, idx)| {
+                        assert_eq!(item, in_[idx]);
+                        assert_eq!(item, (idx % 16) as u16);
+                    });
+            });
+        });
+    }
+
+    #[test]
+    fn test_cam_client_lz4() {
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 1, 512);
+        let dimage = crate::common::DImage {
+            htype: "dimage-1.0".to_string().try_into().unwrap(),
+            series: 1,
+            frame: 1,
+            hash: "aaaabbbb".to_string().try_into().unwrap(),
+        };
+        let dimaged = crate::common::DImageD {
+            htype: "dimage_d-1.0".to_string().try_into().unwrap(),
+            shape: (16, 16),
+            type_: crate::common::PixelType::Uint16,
+            encoding: "lz4<".to_string().try_into().unwrap(),
+        };
+        let dconfig = crate::common::DConfig {
+            htype: "dconfig-1.0".to_string().try_into().unwrap(),
+            start_time: 0,
+            stop_time: 0,
+            real_time: 0,
+        };
+
+        // some predictable test data:
+        let in_: Vec<u16> = (0..256).map(|i| i % 16).collect();
+        let in_bytes = in_.as_bytes();
+        let compressed_data =
+            lz4::block::compress(in_bytes, Some(CompressionMode::DEFAULT), false).unwrap();
+
+        println!("compressed_data: {:x?}", &compressed_data);
+        assert_eq!(fs.get_cursor(), 0);
+
+        let meta = DectrisFrameMeta {
+            dimage,
+            dimaged,
+            dconfig,
+            data_length_bytes: compressed_data.len(),
+        };
+
+        fs.write_frame(&meta, |buf| {
+            buf.copy_from_slice(&compressed_data);
+            Ok::<_, Infallible>(())
+        })
+        .unwrap();
+
+        assert_eq!(fs.get_cursor(), compressed_data.len());
+
+        // we have one frame in there:
+        assert_eq!(fs.len(), 1);
+
+        let fs_handle = fs.writing_done(&mut shm).unwrap();
+
+        // we still have one frame in there:
+        assert_eq!(fs_handle.len(), 1);
+
+        // initialize a Python interpreter so we are able to construct a PyBytes instance:
+        prepare_freethreaded_python();
+
+        // roundtrip serialize/deserialize:
+        Python::with_gil(|_py| {
+            let bytes = fs_handle.serialize().unwrap();
+            let new_handle = FrameStackHandle::deserialize_impl(&bytes).unwrap();
+            assert_eq!(fs_handle, new_handle);
+        });
+
+        let client = CamClient::new(socket_as_path.to_str().unwrap()).unwrap();
+
+        fs_handle.with_slot(&shm, |slot_r| {
+            let slice = slot_r.as_slice();
+            let slice_for_frame = fs_handle.get_slice_for_frame(0, slot_r);
+
+            // try decompression directly:
+            let out_size = 256 * TryInto::<i32>::try_into(std::mem::size_of::<u16>()).unwrap();
+            println!(
+                "slice_for_frame.len(): {}, uncompressed_size: {}",
+                slice_for_frame.len(),
+                out_size
+            );
+            lz4::block::decompress(slice_for_frame, Some(out_size)).unwrap();
+
+            println!("slice_for_frame: {:x?}", slice_for_frame);
+            println!("slice:           {:x?}", slice);
+
+            Python::with_gil(|py| {
+                let flat: Vec<u16> = (0..256).collect();
+                let out = PyArray::from_vec_bound(py, flat)
+                    .reshape((1, 16, 16))
+                    .unwrap();
+                let out_untyped = out.as_untyped();
+                let dfsh = DectrisFrameStack::new(_PyDectrisFrameStack::new(fs_handle));
+                client.decode_into_buffer(&dfsh, &out_untyped, py).unwrap();
+
+                out.readonly()
+                    .as_slice()
+                    .unwrap()
+                    .iter()
+                    .zip(0..)
+                    .for_each(|(&item, idx)| {
+                        assert_eq!(item, in_[idx]);
+                        assert_eq!(item, (idx % 16) as u16);
+                    });
+            });
+        });
+    }
+}

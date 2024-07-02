@@ -24,6 +24,9 @@ use crate::common::{
 
 type DectrisControlMsg = ControlMsg<DectrisExtraControl>;
 
+/// Receive a message into `msg`, and periodically check for control messages on
+/// `control_channel` which are converted into `AcquisitionError`s. Return once
+/// a message has been read into `msg`.
 fn recv_part(
     msg: &mut Message,
     socket: &Socket,
@@ -52,40 +55,19 @@ fn recv_frame_into(
 ) -> Result<(DImage, DImageD, DConfig), AcquisitionError> {
     recv_part(msg, socket, control_channel)?;
     let dimage_res: Result<DImage, _> = serde_json::from_str(msg.as_str().unwrap());
-
-    let dimage = match dimage_res {
-        Ok(image) => image,
-        Err(err) => {
-            return Err(AcquisitionError::SerdeError {
-                msg: err.to_string(),
-                recvd_msg: msg
-                    .as_str()
-                    .map_or_else(|| "".to_string(), |m| m.to_string()),
-            });
-        }
-    };
+    let dimage = dimage_res.map_err(|err| AcquisitionError::serde_from_msg(&err, msg))?;
 
     recv_part(msg, socket, control_channel)?;
     let dimaged_res: Result<DImageD, _> = serde_json::from_str(msg.as_str().unwrap());
-
-    let dimaged = match dimaged_res {
-        Ok(image) => image,
-        Err(err) => {
-            return Err(AcquisitionError::SerdeError {
-                msg: err.to_string(),
-                recvd_msg: msg
-                    .as_str()
-                    .map_or_else(|| "".to_string(), |m| m.to_string()),
-            });
-        }
-    };
+    let dimaged = dimaged_res.map_err(|err| AcquisitionError::serde_from_msg(&err, msg))?;
 
     // compressed image data:
     recv_part(msg_image, socket, control_channel)?;
 
     // DConfig:
     recv_part(msg, socket, control_channel)?;
-    let dconfig: DConfig = serde_json::from_str(msg.as_str().unwrap()).unwrap();
+    let dconfig: DConfig = serde_json::from_str(msg.as_str().unwrap())
+        .map_err(|err| AcquisitionError::serde_from_msg(&err, msg))?;
 
     Ok((dimage, dimaged, dconfig))
 }
@@ -141,8 +123,19 @@ impl Display for AcquisitionError {
 }
 
 impl<T> From<SendError<T>> for AcquisitionError {
-    fn from(value: SendError<T>) -> Self {
+    fn from(_value: SendError<T>) -> Self {
         AcquisitionError::Disconnected
+    }
+}
+
+impl AcquisitionError {
+    fn serde_from_msg(err: &serde_json::Error, msg: &Message) -> Self {
+        Self::SerdeError {
+            msg: err.to_string(),
+            recvd_msg: msg
+                .as_str()
+                .map_or_else(|| "".to_string(), |m| m.to_string()),
+        }
     }
 }
 
@@ -165,6 +158,27 @@ fn check_for_control(
         Err(TryRecvError::Disconnected) => Err(AcquisitionError::Cancelled),
         Err(TryRecvError::Empty) => Ok(()),
     }
+}
+
+fn serialization_error(
+    from_thread_s: &Sender<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
+    msg: &Message,
+    err: &serde_json::Error,
+) {
+    from_thread_s
+        .send(ReceiverMsg::FatalError {
+            error: Box::new(AcquisitionError::SerdeError {
+                recvd_msg: msg
+                    .as_str()
+                    .map_or_else(|| "".to_string(), |m| m.to_string()),
+                msg: err.to_string(),
+            }),
+        })
+        .unwrap();
+    log::error!(
+        "background_thread: serialization error: {}",
+        err.to_string()
+    );
 }
 
 /// Passively listen for global acquisition headers
@@ -202,16 +216,19 @@ fn passive_acquisition(
             // second message: the header itself
             recv_part(&mut msg, socket, control_channel)?;
 
-            if let Some(msg_str) = msg.as_str() {
+            let detector_config: DetectorConfig = if let Some(msg_str) = msg.as_str() {
                 debug!("detector config: {}", msg_str);
+                match serde_json::from_str(msg_str) {
+                    Ok(header) => header,
+                    Err(err) => {
+                        serialization_error(from_thread_s, &msg, &err);
+                        continue;
+                    }
+                }
             } else {
-                warn!("non-string received as detector config!")
-            }
-
-            let detector_config: DetectorConfig =
-                serde_json::from_str(msg.as_str().unwrap()).unwrap();
-
-            debug!("detector config: {}", msg.as_str().unwrap());
+                warn!("non-string received as detector config! ignoring message.");
+                continue;
+            };
 
             acquisition(
                 detector_config,
@@ -397,7 +414,7 @@ fn drain_if_mismatch(
             }
         }
 
-        debug!(
+        trace!(
             "drained message header: {} expected series {}",
             msg.as_str().unwrap(),
             series
@@ -408,9 +425,9 @@ fn drain_if_mismatch(
             recv_part(msg, socket, control_channel)?;
 
             if let Some(msg_str) = msg.as_str() {
-                debug!("drained message part: {}", msg_str);
+                trace!("drained message part: {}", msg_str);
             } else {
-                debug!("drained non-utf message part");
+                trace!("drained non-utf message part");
             }
         }
 
@@ -478,20 +495,7 @@ fn background_thread(
                     let dheader: DHeader = match dheader_res {
                         Ok(header) => header,
                         Err(err) => {
-                            from_thread_s
-                                .send(ReceiverMsg::FatalError {
-                                    error: Box::new(AcquisitionError::SerdeError {
-                                        recvd_msg: msg
-                                            .as_str()
-                                            .map_or_else(|| "".to_string(), |m| m.to_string()),
-                                        msg: err.to_string(),
-                                    }),
-                                })
-                                .unwrap();
-                            log::error!(
-                                "background_thread: serialization error: {}",
-                                err.to_string()
-                            );
+                            serialization_error(from_thread_s, &msg, &err);
                             break;
                         }
                     };
@@ -500,14 +504,19 @@ fn background_thread(
                     // second message: the header itself
                     recv_part(&mut msg, &socket, to_thread_r)?;
 
-                    if let Some(msg_str) = msg.as_str() {
+                    let detector_config: DetectorConfig = if let Some(msg_str) = msg.as_str() {
                         debug!("detector config: {}", msg_str);
+                        match serde_json::from_str(msg_str) {
+                            Ok(header) => header,
+                            Err(err) => {
+                                serialization_error(from_thread_s, &msg, &err);
+                                break;
+                            }
+                        }
                     } else {
-                        warn!("non-string received as detector config!")
-                    }
-
-                    let detector_config: DetectorConfig =
-                        serde_json::from_str(msg.as_str().unwrap()).unwrap();
+                        warn!("non-string received as detector config! re-connecting");
+                        continue 'outer;
+                    };
 
                     match acquisition(
                         detector_config,
@@ -538,7 +547,7 @@ fn background_thread(
                     break 'outer;
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    debug!("background_thread: control channel has disconnected");
+                    warn!("background_thread: control channel has disconnected");
                     break 'outer;
                 }
                 Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do

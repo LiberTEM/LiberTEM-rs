@@ -9,6 +9,7 @@ macro_rules! impl_py_cam_client {
     (
         $name: ident,
         $decoder_type: ident,
+        $py_frame_stack: ident,
         $frame_meta_type: ident,
         $mod: ident
     ) => {
@@ -16,17 +17,36 @@ macro_rules! impl_py_cam_client {
             use common::{
                 cam_client::GenericCamClient, decoder::Decoder, frame_stack::FrameStackHandle,
             };
-            use numpy::PyArray3;
+            use num::NumCast;
+            use numpy::{
+                dtype_bound, Element, PyArray3, PyArrayDescrMethods, PyArrayMethods,
+                PyUntypedArray, PyUntypedArrayMethods,
+            };
             use pyo3::{create_exception, exceptions::PyException, prelude::*};
+            use zerocopy::{AsBytes, FromBytes};
 
             create_exception!($mod, PyCamClientError, PyException);
 
             #[pyclass]
             pub struct $name {
-                client_impl: GenericCamClient<$decoder_type>,
+                client_impl: GenericCamClient<super::$decoder_type>,
             }
 
-            impl $name {}
+            impl $name {
+                fn decode_impl<'py, T: Element + AsBytes + FromBytes + Copy + NumCast + 'static>(
+                    &self,
+                    input: &super::$py_frame_stack,
+                    out: &Bound<'py, PyArray3<T>>,
+                    py: Python<'_>,
+                ) -> PyResult<()> {
+                    let mut out_rw = out.try_readwrite()?;
+                    let mut out_arr = out_rw.as_array_mut();
+                    return self
+                        .client_impl
+                        .decode_into_buffer(input.try_get_inner()?, &mut out_arr)
+                        .map_err(|e| PyCamClientError::new_err(format!("decode failed: {e}")));
+                }
+            }
 
             #[pymethods]
             impl $name {
@@ -40,41 +60,63 @@ macro_rules! impl_py_cam_client {
 
                 /// Decode into a pre-allocated array.
                 ///
-                /// This supports user-allocated memory, which enables things like copying
-                /// directly into CUDA locked memory and thus getting rid of a memcpy in the
-                /// case of CUDA.
-                pub fn decode_into_buffer(
+                /// Fow now, this has to be a numpy array, but using the buffer
+                /// protocol, this can, for example, be a reference to pinned
+                /// memory for efficient use with CUDA.
+                pub fn decode_into_buffer<'py>(
                     &self,
-                    input: &FrameStackHandle<$frame_meta_type>,
-                    out: Bound<'py, PyAny>,
+                    input: &super::$py_frame_stack,
+                    out: &Bound<'py, PyUntypedArray>,
+                    py: Python<'_>,
                 ) -> PyResult<()> {
-                    todo!("decode_into_buffer: Python types; error handling; dtype dispatch");
-                    self.client_impl.decode_into_buffer(input, out)
+                    if out.dtype().is_equiv_to(&dtype_bound::<u8>(py)) {
+                        let out_u8 = out.downcast::<PyArray3<u8>>()?;
+                    }
+
+                    let arr_u16: Result<&Bound<'py, PyArray3<u16>>, _> = out.downcast();
+                    let arr_u32: Result<&Bound<'py, PyArray3<u32>>, _> = out.downcast();
+                    let arr_i8: Result<&Bound<'py, PyArray3<i8>>, _> = out.downcast();
+                    let arr_i16: Result<&Bound<'py, PyArray3<i16>>, _> = out.downcast();
+                    let arr_i32: Result<&Bound<'py, PyArray3<i32>>, _> = out.downcast();
+
+                    // todo!("decode_into_buffer: Python types; error handling; dtype dispatch");
+
+                    Ok(())
                 }
 
                 /// Decode a range of frames into a pre-allocated array.
                 ///
                 /// This allows for decoding only the data that will be processed
                 /// immediately afterwards, allowing for more cache-efficient operations.
-                pub fn decode_range_into_buffer(
+                pub fn decode_range_into_buffer<'py>(
                     &self,
-                    input: &FrameStackHandle<$frame_meta_type>,
-                    out: PyArray3,
+                    input: &super::$py_frame_stack,
+                    out: Bound<'py, PyAny>,
                     start_idx: usize,
                     end_idx: usize,
                 ) -> PyResult<()> {
                     todo!("decode_range_into_buffer: Python types; dtype dispatch");
-                    Ok(self.decoder.decode(input, out, start_idx, end_idx)?)
+                    //Ok(self.client_impl.decode_range_into_buffer(input, out, start_idx, end_idx)?)
                 }
 
                 /// Free the given `FrameStackHandle`. When calling this, no Python objects
                 /// may have references to the memory of the `handle`.
                 pub fn frame_stack_done(
                     &mut self,
-                    handle: FrameStackHandle<$frame_meta_type>,
+                    handle: &mut super::$py_frame_stack,
                 ) -> PyResult<()> {
-                    todo!("frame_stack_done: Python types; err handling");
-                    self.client_impl.frame_stack_done(handle)
+                    let inner_handle = handle.take().ok_or_else(|| {
+                        PyCamClientError::new_err(
+                            "trying to take already free'd frame stack handle",
+                        )
+                    })?;
+                    self.client_impl
+                        .frame_stack_done(inner_handle)
+                        .map_err(|e| {
+                            PyCamClientError::new_err(format!(
+                                "GenericCamClient::frame_stack_done: {e}"
+                            ))
+                        })
                 }
 
                 pub fn close(&mut self) -> PyResult<()> {
