@@ -7,7 +7,7 @@ use std::{
 };
 
 use ipc_test::{slab::SlabInitError, SharedSlabAllocator};
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use stats::Stats;
 
 use crate::{
@@ -158,22 +158,36 @@ where
     fn adjust_status(&mut self, msg: &ReceiverMsg<B::FrameMetaImpl, B::AcquisitionConfigImpl>) {
         match msg {
             ReceiverMsg::AcquisitionStart { .. } => {
+                debug!("adjust_status: now Running");
                 self.status = ConnectionStatus::Running;
             }
             ReceiverMsg::Finished { .. } => {
+                debug!("adjust_status: now Idle");
                 self.status = ConnectionStatus::Idle;
             }
             ReceiverMsg::ReceiverArmed => {
+                debug!("adjust_status: now Armed");
                 self.status = ConnectionStatus::Armed;
             }
-            _ => {}
+            ReceiverMsg::FrameStack { .. } => {
+                trace!("adjust_status: FrameStack {{ .. }}");
+            }
+            other => {
+                trace!("adjust_status: other message: {other:?}");
+            }
         }
     }
 
     /// Get the next message from the background thread, waiting at most
     /// `timeout`.
     ///
-    /// If a `NextTimeoutError::Disconnected` error is encountered,
+    /// If a `NextTimeoutError::Disconnected` error is encountered, the background
+    /// thread is no longer running.
+    ///
+    /// When handling the results, care must be taken not to leak memory,
+    /// meaning the variants of `ReceiverMsg` that contain a `FrameStackHandle`
+    /// must be either returned to user code or free'd. When ignored, they will
+    /// fill up the shared memory.
     pub fn next_timeout(
         &mut self,
         timeout: Duration,
@@ -221,13 +235,20 @@ where
                 ReceiverMsg::AcquisitionStart {
                     pending_acquisition,
                 } => return Ok(Some(pending_acquisition)),
-                msg @ ReceiverMsg::Finished { .. } | msg @ ReceiverMsg::FrameStack { .. } => {
-                    // FIXME: we might want to log + ignore instead?
-                    let err = format!("unexpected message: {:?}", msg);
-                    return Err(ConnectionError::UnexpectedMessage(err));
-                }
                 ReceiverMsg::FatalError { error } => {
                     return Err(ConnectionError::FatalError(error))
+                }
+                ReceiverMsg::FrameStack { frame_stack } => {
+                    frame_stack.free_slot(&mut self.shm);
+                    return Err(ConnectionError::UnexpectedMessage(
+                        "ReceiverMsg::FrameStack in wait_for_arm".to_owned(),
+                    ));
+                }
+                ReceiverMsg::Finished { frame_stack } => {
+                    frame_stack.free_slot(&mut self.shm);
+                    return Err(ConnectionError::UnexpectedMessage(
+                        "ReceiverMsg::Finished in wait_for_arm".to_owned(),
+                    ));
                 }
             }
         }
@@ -242,8 +263,14 @@ where
     where
         E: std::error::Error + 'static + Send + Sync,
     {
+        debug!("wait_for_status: waiting for {desired_status:?}...");
         let deadline = Instant::now() + timeout;
         let step = Duration::from_millis(100);
+
+        if self.status == desired_status {
+            debug!("wait_for_status: already in desired status: {desired_status:?}");
+            return Ok(());
+        }
 
         loop {
             if let Err(e) = periodic_callback() {
@@ -261,8 +288,29 @@ where
                 }
             };
             let res = res?;
-            self.adjust_status(&res);
+            match res {
+                ReceiverMsg::FrameStack { frame_stack } => {
+                    trace!("wait_for_status: ignoring received FrameStackHandle");
+                    frame_stack.free_slot(&mut self.shm);
+                }
+                ReceiverMsg::Finished { frame_stack } => {
+                    warn!("wait_for_status: ignoring FrameStackHandle received in ReceiverMsg::Finished message");
+                    frame_stack.free_slot(&mut self.shm);
+                }
+                ReceiverMsg::FatalError { error } => {
+                    return Err(ConnectionError::FatalError(error));
+                }
+                ReceiverMsg::ReceiverArmed => {
+                    trace!("wait_for_status: received ReceiverMsg::ReceiverArmed");
+                }
+                ReceiverMsg::AcquisitionStart {
+                    pending_acquisition: _,
+                } => {
+                    trace!("wait_for_status: received ReceiverMsg::AcquisitionStart");
+                }
+            }
             if self.status == desired_status {
+                debug!("wait_for_status: successfully got status {desired_status:?}");
                 return Ok(());
             }
         }
@@ -282,7 +330,7 @@ where
 
         self.wait_for_status(
             ConnectionStatus::Armed,
-            Duration::from_millis(100),
+            Duration::from_millis(1000),
             periodic_callback,
         )
     }

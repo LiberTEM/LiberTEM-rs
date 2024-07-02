@@ -108,8 +108,10 @@ pub fn decompress_lz4<T>(
     let block_size = block_size.unwrap_or(0);
     let mut out: Vec<T> = Vec::with_capacity(out_size);
     let out_ptr: *mut T = out.as_mut_ptr();
-    decompress_lz4_into(in_, out_ptr, out_size, Some(block_size))?;
-    unsafe { out.set_len(out_size) };
+    unsafe {
+        decompress_lz4_into(in_, out_ptr, out_size, Some(block_size))?;
+        out.set_len(out_size)
+    };
     Ok(out)
 }
 
@@ -128,7 +130,7 @@ pub fn decompress_lz4<T>(
 ///
 /// The memory pointed to by `out` must be large enough to fit the output, i.e.
 /// at least `std::mem::size_of::<T> * out_size`.
-pub fn decompress_lz4_into<T>(
+pub unsafe fn decompress_lz4_into<T>(
     in_: &[u8],
     out: *mut T, // FIXME: replace with slice of MaybeUninit from Vec::spare_capacity_mut?
     out_size: usize, // number of elements

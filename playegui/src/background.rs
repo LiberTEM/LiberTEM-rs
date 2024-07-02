@@ -28,7 +28,7 @@ pub fn decompress_into<T>(
 ) -> Option<()> {
     let out_ptr = dest.as_mut_ptr();
     let out_size = out_size[0] * out_size[1];
-    match bs_sys::decompress_lz4_into(data, out_ptr, out_size, None) {
+    match unsafe { bs_sys::decompress_lz4_into(data, out_ptr, out_size, None) } {
         Ok(_) => Some(()),
         Err(e) => {
             error!("decompression failed: {e:?}");

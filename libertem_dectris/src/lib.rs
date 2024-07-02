@@ -2,6 +2,7 @@ pub mod background_thread;
 pub mod bin_fmt;
 pub mod cam_client;
 pub mod common;
+pub mod decoder;
 pub mod dectris_py;
 pub mod exceptions;
 pub mod frame_stack_py;

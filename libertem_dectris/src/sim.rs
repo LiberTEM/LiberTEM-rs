@@ -77,8 +77,12 @@ impl FrameSender {
 
         cursor.seek_to_first_header_of_type("dheader-1.0");
         let dheader_raw = cursor.read_raw_msg().to_owned();
-        let dheader: DHeader = serde_json::from_slice(&dheader_raw)
-            .expect("json should match our serialization schema");
+        let dheader: DHeader = serde_json::from_slice(&dheader_raw).unwrap_or_else(|e| {
+            panic!(
+                "json should match our serialization schema, got '{}' ({e})",
+                String::from_utf8_lossy(&dheader_raw)
+            )
+        });
 
         debug!("{dheader:?}");
 
@@ -255,8 +259,8 @@ impl DectrisSim {
     }
 
     #[classmethod]
-    fn new_mocked<'py>(
-        _cls: Bound<'py, PyType>,
+    fn new_mocked(
+        _cls: Bound<'_, PyType>,
         uri: &str,
         num_frames: usize,
         dwelltime: Option<u64>,

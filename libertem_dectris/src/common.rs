@@ -19,9 +19,9 @@ impl TryFrom<String> for NonEmptyString {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            Ok(NonEmptyString(value))
-        } else {
             Err("empty string provided where non-empty was expected".to_owned())
+        } else {
+            Ok(NonEmptyString(value))
         }
     }
 }
@@ -256,6 +256,15 @@ pub enum Endianess {
     Big,
 }
 
+impl Endianess {
+    pub fn as_string(&self) -> String {
+        match self {
+            Endianess::Little => "<".to_owned(),
+            Endianess::Big => ">".to_owned(),
+        }
+    }
+}
+
 impl DectrisFrameMeta {
     /// number of pixels in the uncompressed frame (from the shape)
     pub fn get_number_of_pixels(&self) -> usize {
@@ -263,7 +272,7 @@ impl DectrisFrameMeta {
     }
 
     /// endianess after decompression (little/big)
-    fn get_endianess(&self) -> Endianess {
+    pub fn get_endianess(&self) -> Endianess {
         match self.dimaged.encoding.chars().last().unwrap() {
             '>' => Endianess::Big,
             '<' => Endianess::Little,
@@ -283,12 +292,12 @@ impl FrameMeta for DectrisFrameMeta {
         let endianess = self.get_endianess();
         // TODO: &'static str instead?
         match (endianess, &self.dimaged.type_) {
-            (Endianess::Little, PixelType::Uint8) => "<uint8".to_owned(),
-            (Endianess::Little, PixelType::Uint16) => "<uint16".to_owned(),
-            (Endianess::Little, PixelType::Uint32) => "<uint32".to_owned(),
-            (Endianess::Big, PixelType::Uint8) => ">uint8".to_owned(),
-            (Endianess::Big, PixelType::Uint16) => ">uint16".to_owned(),
-            (Endianess::Big, PixelType::Uint32) => ">uint32".to_owned(),
+            (Endianess::Little, PixelType::Uint8) => "uint8".to_owned(),
+            (Endianess::Little, PixelType::Uint16) => "<u2".to_owned(),
+            (Endianess::Little, PixelType::Uint32) => "<u4".to_owned(),
+            (Endianess::Big, PixelType::Uint8) => "uint8".to_owned(),
+            (Endianess::Big, PixelType::Uint16) => ">u2".to_owned(),
+            (Endianess::Big, PixelType::Uint32) => ">u4".to_owned(),
         }
     }
 
