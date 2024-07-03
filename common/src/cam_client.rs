@@ -106,7 +106,7 @@ where
     where
         T: 'static + AsBytes + FromBytes + Copy + NumCast,
     {
-        self.decode_range_into_buffer(input, dest, 0, input.len() - 1)
+        self.decode_range_into_buffer(input, dest, 0, input.len())
     }
 
     /// Decode a range of frames into a pre-allocated array.

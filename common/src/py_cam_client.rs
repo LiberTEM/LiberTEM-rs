@@ -1,6 +1,25 @@
 // we can't have generics in pyclasses, so we have to generate impls via macros
 // see also: https://pyo3.rs/v0.21.2/class.html#no-generic-parameters
 
+#[macro_export]
+macro_rules! decode_for_dtype {
+    (
+        $dtype: ident,
+        $self: ident,
+        $input: ident,
+        $out: ident,
+        $start_idx: ident,
+        $end_idx: ident,
+        $py: ident
+    ) => {
+        if $out.dtype().is_equiv_to(&dtype_bound::<$dtype>($py)) {
+            let out_downcast = $out.downcast::<PyArray3<$dtype>>()?;
+            $self.decode_impl($input, out_downcast, $start_idx, $end_idx, $py)?;
+            return Ok(());
+        }
+    };
+}
+
 /// This macro generates Python-specific business logic, like dropping the GIL
 /// or type conversions. All other logic is implemented in `GenericCamClient`.
 ///
@@ -15,9 +34,15 @@ macro_rules! impl_py_cam_client {
     ) => {
         mod impl_cam_client {
             use common::{
-                cam_client::GenericCamClient, decoder::Decoder, frame_stack::FrameStackHandle,
+                cam_client::GenericCamClient,
+                decoder::Decoder,
+                frame_stack::FrameStackHandle,
+                // py_cam_client::decode_for_dtype,
             };
-            use num::NumCast;
+            use num::{
+                complex::{Complex32, Complex64},
+                NumCast,
+            };
             use numpy::{
                 dtype_bound, Element, PyArray3, PyArrayDescrMethods, PyArrayMethods,
                 PyUntypedArray, PyUntypedArrayMethods,
@@ -37,13 +62,20 @@ macro_rules! impl_py_cam_client {
                     &self,
                     input: &super::$py_frame_stack,
                     out: &Bound<'py, PyArray3<T>>,
+                    start_idx: usize,
+                    end_idx: usize,
                     py: Python<'_>,
                 ) -> PyResult<()> {
                     let mut out_rw = out.try_readwrite()?;
                     let mut out_arr = out_rw.as_array_mut();
                     return self
                         .client_impl
-                        .decode_into_buffer(input.try_get_inner()?, &mut out_arr)
+                        .decode_range_into_buffer(
+                            input.try_get_inner()?,
+                            &mut out_arr,
+                            start_idx,
+                            end_idx,
+                        )
                         .map_err(|e| PyCamClientError::new_err(format!("decode failed: {e}")));
                 }
             }
@@ -69,19 +101,7 @@ macro_rules! impl_py_cam_client {
                     out: &Bound<'py, PyUntypedArray>,
                     py: Python<'_>,
                 ) -> PyResult<()> {
-                    if out.dtype().is_equiv_to(&dtype_bound::<u8>(py)) {
-                        let out_u8 = out.downcast::<PyArray3<u8>>()?;
-                    }
-
-                    let arr_u16: Result<&Bound<'py, PyArray3<u16>>, _> = out.downcast();
-                    let arr_u32: Result<&Bound<'py, PyArray3<u32>>, _> = out.downcast();
-                    let arr_i8: Result<&Bound<'py, PyArray3<i8>>, _> = out.downcast();
-                    let arr_i16: Result<&Bound<'py, PyArray3<i16>>, _> = out.downcast();
-                    let arr_i32: Result<&Bound<'py, PyArray3<i32>>, _> = out.downcast();
-
-                    // todo!("decode_into_buffer: Python types; error handling; dtype dispatch");
-
-                    Ok(())
+                    self.decode_range_into_buffer(input, out, 0, input.__len__()?, py)
                 }
 
                 /// Decode a range of frames into a pre-allocated array.
@@ -91,12 +111,38 @@ macro_rules! impl_py_cam_client {
                 pub fn decode_range_into_buffer<'py>(
                     &self,
                     input: &super::$py_frame_stack,
-                    out: Bound<'py, PyAny>,
+                    out: &Bound<'py, PyUntypedArray>,
                     start_idx: usize,
                     end_idx: usize,
+                    py: Python<'_>,
                 ) -> PyResult<()> {
-                    todo!("decode_range_into_buffer: Python types; dtype dispatch");
-                    //Ok(self.client_impl.decode_range_into_buffer(input, out, start_idx, end_idx)?)
+                    if start_idx >= end_idx || end_idx > input.__len__()? {
+                        return Err(PyCamClientError::new_err(format!(
+                            "invalid start or end index: [{start_idx},{end_idx})"
+                        )));
+                    }
+
+                    $crate::decode_for_dtype!(u8, self, input, out, start_idx, end_idx, py);
+                    $crate::decode_for_dtype!(u16, self, input, out, start_idx, end_idx, py);
+                    $crate::decode_for_dtype!(u32, self, input, out, start_idx, end_idx, py);
+                    $crate::decode_for_dtype!(u64, self, input, out, start_idx, end_idx, py);
+
+                    $crate::decode_for_dtype!(i8, self, input, out, start_idx, end_idx, py);
+                    $crate::decode_for_dtype!(i16, self, input, out, start_idx, end_idx, py);
+                    $crate::decode_for_dtype!(i32, self, input, out, start_idx, end_idx, py);
+                    $crate::decode_for_dtype!(i64, self, input, out, start_idx, end_idx, py);
+
+                    $crate::decode_for_dtype!(f32, self, input, out, start_idx, end_idx, py);
+                    $crate::decode_for_dtype!(f64, self, input, out, start_idx, end_idx, py);
+
+                    // FIXME: figure out zerocopy::AsBytes for Complex types
+                    // $crate::decode_for_dtype!(Complex32, self, input, out, start_idx, end_idx, py);
+                    // $crate::decode_for_dtype!(Complex64, self, input, out, start_idx, end_idx, py);
+
+                    Err(PyCamClientError::new_err(format!(
+                        "unknown output dtype: {:?}",
+                        out.dtype()
+                    )))
                 }
 
                 /// Free the given `FrameStackHandle`. When calling this, no Python objects
