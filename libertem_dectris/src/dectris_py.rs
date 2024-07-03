@@ -279,13 +279,16 @@ impl CamClient {
         })
     }
 
-    fn decode_into_buffer<'py>(
+    fn decode_range_into_buffer<'py>(
         &self,
         input: &DectrisFrameStack,
         out: &Bound<'py, PyUntypedArray>,
+        start_idx: usize,
+        end_idx: usize,
         py: Python<'py>,
     ) -> PyResult<()> {
-        self.inner.decode_into_buffer(input.get_inner(), out, py)
+        self.inner
+            .decode_range_into_buffer(input.get_inner(), out, start_idx, end_idx, py)
     }
 
     #[deprecated]
