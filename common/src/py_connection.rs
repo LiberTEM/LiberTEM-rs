@@ -177,10 +177,14 @@ macro_rules! impl_py_connection {
                 }
 
                 pub fn close(&mut self) -> PyResult<()> {
-                    let conn_impl = self.get_conn_mut()?;
-                    conn_impl.log_shm_stats();
-                    conn_impl.reset_stats();
-                    Ok(())
+                    if let Some(mut conn_impl) = self.conn_impl.take() {
+                        conn_impl.log_shm_stats();
+                        conn_impl.reset_stats();
+                        conn_impl.close();
+                        Ok(())
+                    } else {
+                        Err(PyConnectionError::new_err("already closed".to_owned()))
+                    }
                 }
 
                 pub fn is_running(&self) -> PyResult<bool> {

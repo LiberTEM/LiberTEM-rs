@@ -376,11 +376,18 @@ where
                     return Err(ConnectionError::FatalError(error));
                 }
                 ReceiverMsg::Finished { frame_stack } => {
+                    // Finished here means we have seen all frame stacks of the acquisition,
+                    // it does _not_ mean that the data consumer has processed them all.
+
+                    // do stats update here to make sure we count the last frame stack!
+                    self.stats.count_stats_item(&frame_stack);
                     self.stats.log_stats();
                     self.stats.reset();
+
                     return Ok(Some(frame_stack));
                 }
                 ReceiverMsg::FrameStack { frame_stack } => {
+                    self.stats.count_stats_item(&frame_stack);
                     return Ok(Some(frame_stack));
                 }
             }
@@ -408,7 +415,6 @@ where
                     return Ok(Some(left));
                 }
                 assert!(frame_stack.len() <= max_size);
-                self.stats.count_stats_item(&frame_stack);
                 Ok(Some(frame_stack))
             }
             Ok(None) => Ok(None),
@@ -441,6 +447,7 @@ where
     }
 
     pub fn close(mut self) {
+        debug!("GenericConnection::close");
         if self
             .bg_thread
             .channel_to_thread()

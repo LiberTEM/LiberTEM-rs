@@ -154,8 +154,16 @@ fn check_for_control(
             msg: "received StartAcquisitionPassive while an acquisition was already running"
                 .to_string(),
         }),
-        Ok(ControlMsg::StopThread) => Err(AcquisitionError::Cancelled),
-        Err(TryRecvError::Disconnected) => Err(AcquisitionError::Cancelled),
+        Ok(ControlMsg::StopThread) => {
+            debug!("check_for_control: StopThread received");
+
+            Err(AcquisitionError::Cancelled)
+        }
+        Err(TryRecvError::Disconnected) => {
+            debug!("check_for_control: Disconnected");
+
+            Err(AcquisitionError::Cancelled)
+        }
         Err(TryRecvError::Empty) => Ok(()),
     }
 }
@@ -165,6 +173,10 @@ fn serialization_error(
     msg: &Message,
     err: &serde_json::Error,
 ) {
+    log::error!(
+        "background_thread: serialization error: {}",
+        err.to_string()
+    );
     from_thread_s
         .send(ReceiverMsg::FatalError {
             error: Box::new(AcquisitionError::SerdeError {
@@ -175,10 +187,6 @@ fn serialization_error(
             }),
         })
         .unwrap();
-    log::error!(
-        "background_thread: serialization error: {}",
-        err.to_string()
-    );
 }
 
 /// Passively listen for global acquisition headers
@@ -396,6 +404,7 @@ fn background_thread_wrap(
             })
             .unwrap();
     }
+    info!("background_thread_wrap: done");
 }
 
 fn drain_if_mismatch(
@@ -444,6 +453,8 @@ fn background_thread(
     mut shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     'outer: loop {
+        let thread_id = std::thread::current().id();
+        info!("background_thread: connecting to {uri} ({thread_id:?})");
         let ctx = zmq::Context::new();
         let socket = ctx.socket(zmq::PULL).unwrap();
         socket.set_rcvtimeo(1000).unwrap();
@@ -466,8 +477,11 @@ fn background_thread(
                         &mut shm,
                     ) {
                         Ok(_) => {}
-                        Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
-                            return Ok(());
+                        Err(
+                            msg @ (AcquisitionError::Disconnected | AcquisitionError::Cancelled),
+                        ) => {
+                            debug!("background_thread: passive_acquisition returned {msg:?}");
+                            break 'outer;
                         }
                         Err(e) => {
                             from_thread_s
@@ -496,7 +510,7 @@ fn background_thread(
                         Ok(header) => header,
                         Err(err) => {
                             serialization_error(from_thread_s, &msg, &err);
-                            break;
+                            continue 'outer;
                         }
                     };
                     debug!("dheader: {dheader:?}");
@@ -510,7 +524,7 @@ fn background_thread(
                             Ok(header) => header,
                             Err(err) => {
                                 serialization_error(from_thread_s, &msg, &err);
-                                break;
+                                continue 'outer;
                             }
                         }
                     } else {
@@ -529,7 +543,7 @@ fn background_thread(
                     ) {
                         Ok(_) => {}
                         Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
-                            return Ok(());
+                            break 'outer;
                         }
                         Err(e) => {
                             from_thread_s
