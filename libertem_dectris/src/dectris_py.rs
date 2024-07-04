@@ -19,6 +19,7 @@ use crate::{
 use common::{impl_py_cam_client, impl_py_connection};
 
 use pyo3::{
+    exceptions::PyDeprecationWarning,
     prelude::*,
     types::{PyBytes, PyType},
 };
@@ -196,8 +197,14 @@ impl DectrisFrameStack {
 
     /// use `get_dtype_string` instead
     #[deprecated]
-    fn get_pixel_type(&self) -> PyResult<String> {
+    fn get_pixel_type(&self, py: Python<'_>) -> PyResult<String> {
         let meta = self.inner.try_get_inner()?.first_meta();
+        PyErr::warn_bound(
+            py,
+            &py.get_type_bound::<PyDeprecationWarning>(),
+            "FrameStackHandle.get_pixel_type is deprecated, use get_dtype_string instead.",
+            0,
+        )?;
 
         Ok(match meta.dimaged.type_ {
             PixelType::Uint8 => "uint8",
@@ -207,9 +214,15 @@ impl DectrisFrameStack {
         .to_owned())
     }
 
-    /// use `get_dtype_string` instead, that should include endianess
+    /// use `get_dtype_string` instead, that includes endianess
     #[deprecated]
-    fn get_endianess(&self) -> PyResult<String> {
+    fn get_endianess(&self, py: Python<'_>) -> PyResult<String> {
+        PyErr::warn_bound(
+            py,
+            &py.get_type_bound::<PyDeprecationWarning>(),
+            "FrameStackHandle.get_endianess is deprecated, use get_dtype_string instead.",
+            0,
+        )?;
         Ok(self
             .inner
             .try_get_inner()?
@@ -220,7 +233,13 @@ impl DectrisFrameStack {
 
     /// implementation detail that Python shouldn't care about
     #[deprecated]
-    fn get_encoding(&self) -> PyResult<String> {
+    fn get_encoding(&self, py: Python<'_>) -> PyResult<String> {
+        PyErr::warn_bound(
+            py,
+            &py.get_type_bound::<PyDeprecationWarning>(),
+            "FrameStackHandle.get_encoding is deprecated and will be removed in the future.",
+            0,
+        )?;
         Ok(self
             .inner
             .try_get_inner()?
@@ -298,6 +317,12 @@ impl CamClient {
         out: &Bound<'py, PyUntypedArray>,
         py: Python<'py>,
     ) -> PyResult<()> {
+        PyErr::warn_bound(
+            py,
+            &py.get_type_bound::<PyDeprecationWarning>(),
+            "CamClient.decompress_frame_stack is deprecated, use decode_range_into_buffer instead.",
+            0,
+        )?;
         self.inner.decode_into_buffer(handle.get_inner(), out, py)
     }
 
@@ -422,27 +447,29 @@ mod tests {
         fs_handle.with_slot(&shm, |slot_r| {
             let slice = slot_r.as_slice();
             println!("slice: {:x?}", slice);
+        });
 
-            Python::with_gil(|py| {
-                let flat: Vec<u16> = (0..256).collect();
-                let out = PyArray::from_vec_bound(py, flat)
-                    .reshape((1, 16, 16))
-                    .unwrap();
+        Python::with_gil(|py| {
+            let flat: Vec<u16> = (0..256).collect();
+            let out = PyArray::from_vec_bound(py, flat)
+                .reshape((1, 16, 16))
+                .unwrap();
 
-                let out_untyped = out.as_untyped();
-                let dfsh = DectrisFrameStack::new(_PyDectrisFrameStack::new(fs_handle));
-                client.decode_into_buffer(&dfsh, out_untyped, py).unwrap();
+            let out_untyped = out.as_untyped();
+            let dfsh = DectrisFrameStack::new(_PyDectrisFrameStack::new(fs_handle));
+            client
+                .decode_range_into_buffer(&dfsh, out_untyped, 0, dfsh.__len__().unwrap(), py)
+                .unwrap();
 
-                out.readonly()
-                    .as_slice()
-                    .unwrap()
-                    .iter()
-                    .zip(0..)
-                    .for_each(|(&item, idx)| {
-                        assert_eq!(item, in_[idx]);
-                        assert_eq!(item, (idx % 16) as u16);
-                    });
-            });
+            out.readonly()
+                .as_slice()
+                .unwrap()
+                .iter()
+                .zip(0..)
+                .for_each(|(&item, idx)| {
+                    assert_eq!(item, in_[idx]);
+                    assert_eq!(item, (idx % 16) as u16);
+                });
         });
     }
 
@@ -530,26 +557,28 @@ mod tests {
 
             println!("slice_for_frame: {:x?}", slice_for_frame);
             println!("slice:           {:x?}", slice);
+        });
 
-            Python::with_gil(|py| {
-                let flat: Vec<u16> = (0..256).collect();
-                let out = PyArray::from_vec_bound(py, flat)
-                    .reshape((1, 16, 16))
-                    .unwrap();
-                let out_untyped = out.as_untyped();
-                let dfsh = DectrisFrameStack::new(_PyDectrisFrameStack::new(fs_handle));
-                client.decode_into_buffer(&dfsh, &out_untyped, py).unwrap();
+        Python::with_gil(|py| {
+            let flat: Vec<u16> = (0..256).collect();
+            let out = PyArray::from_vec_bound(py, flat)
+                .reshape((1, 16, 16))
+                .unwrap();
+            let out_untyped = out.as_untyped();
+            let dfsh = DectrisFrameStack::new(_PyDectrisFrameStack::new(fs_handle));
+            client
+                .decode_range_into_buffer(&dfsh, out_untyped, 0, dfsh.__len__().unwrap(), py)
+                .unwrap();
 
-                out.readonly()
-                    .as_slice()
-                    .unwrap()
-                    .iter()
-                    .zip(0..)
-                    .for_each(|(&item, idx)| {
-                        assert_eq!(item, in_[idx]);
-                        assert_eq!(item, (idx % 16) as u16);
-                    });
-            });
+            out.readonly()
+                .as_slice()
+                .unwrap()
+                .iter()
+                .zip(0..)
+                .for_each(|(&item, idx)| {
+                    assert_eq!(item, in_[idx]);
+                    assert_eq!(item, (idx % 16) as u16);
+                });
         });
     }
 }
