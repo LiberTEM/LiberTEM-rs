@@ -127,7 +127,6 @@ impl Decoder for DectrisDecoder {
                                 &mut tmp_u8,
                                 &frame_meta.dimaged.encoding,
                             )?;
-                            // from u8 to T:
                             cast_helper(&tmp_u8, out_slice)?;
                         }
                         PixelType::Uint16 => {

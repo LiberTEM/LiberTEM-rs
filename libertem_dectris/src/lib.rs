@@ -5,7 +5,6 @@ pub mod common;
 pub mod decoder;
 pub mod dectris_py;
 pub mod exceptions;
-pub mod frame_stack_py;
 pub mod sim;
 pub mod sim_data_source;
 pub mod sim_gen;

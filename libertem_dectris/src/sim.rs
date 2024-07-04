@@ -220,12 +220,6 @@ impl FrameSender {
         Ok(())
     }
 
-    pub fn send_frames(&mut self) {
-        for _ in 0..self.nimages {
-            self.send_frame().expect("send_frame should not time out");
-        }
-    }
-
     pub fn send_footer(&mut self) {
         // for simplicity, always "emulate" the footer message
         let footer_json = json!({
