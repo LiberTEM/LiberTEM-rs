@@ -1,28 +1,29 @@
 #![allow(clippy::borrow_deref_ref)]
 
-use std::{
-    convert::Infallible,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
-
 use crate::{
-    cam_client::CamClient,
-    common::{ASIMpxFrameMeta, DType},
+    base_types::{
+        ASIMpxDetectorConnConfig, ASIMpxFrameMeta, DType, PendingAcquisition, PyDetectorConfig,
+    },
     exceptions::{ConnectionError, TimeoutError},
-    frame_stack_py::PyFrameStackHandle,
-    receiver::{ReceiverStatus, ResultMsg, ServalReceiver},
 };
 
-use common::frame_stack::FrameStackHandle;
-use ipc_test::SharedSlabAllocator;
-use log::{info, trace};
+use common::{generic_connection::GenericConnection, impl_py_cam_client, impl_py_connection};
+
+use log::trace;
+use numpy::PyUntypedArray;
 use pyo3::{
-    exceptions::{self, PyRuntimeError},
+    exceptions::PyRuntimeError,
     prelude::*,
+    types::{PyBytes, PyType},
 };
-use serval_client::{DetectorConfig, DetectorInfo, DetectorLayout, ServalClient};
-use stats::Stats;
+use serval_client::{DetectorInfo, DetectorLayout, ServalClient};
+
+use crate::background_thread::ASIMpxBackgroundThread;
+use crate::decoder::ASIMpxDecoder;
+
+use std::ffi::c_int;
+
+use pyo3::{ffi::PyMemoryView_FromMemory, FromPyPointer};
 
 #[pymodule]
 fn libertem_asi_mpx3(py: Python, m: &PyModule) -> PyResult<()> {
@@ -55,23 +56,6 @@ fn register_header_module(py: Python<'_>, parent_module: &PyModule) -> PyResult<
     let headers_module = PyModule::new(py, "headers")?;
     parent_module.add_submodule(headers_module)?;
     Ok(())
-}
-
-#[derive(Debug)]
-#[pyclass(name = "DetectorConfig")]
-struct PyDetectorConfig {
-    config: DetectorConfig,
-}
-
-#[pymethods]
-impl PyDetectorConfig {
-    fn __repr__(&self) -> String {
-        format!("{:?}", self)
-    }
-
-    fn get_n_triggers(&self) -> u64 {
-        self.config.n_triggers
-    }
 }
 
 #[derive(Debug)]
@@ -128,7 +112,7 @@ impl PyServalClient {
         self.client
             .get_detector_config()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-            .map(|value| PyDetectorConfig { config: value })
+            .map(|config| PyDetectorConfig::new(config))
     }
 
     fn get_detector_info(&self) -> PyResult<PyDetectorInfo> {
@@ -139,157 +123,9 @@ impl PyServalClient {
     }
 }
 
-struct FrameChunkedIterator<'a, 'b, 'c, 'd> {
-    receiver: &'a mut ServalReceiver,
-    shm: &'b mut SharedSlabAllocator,
-    remainder: &'c mut Vec<FrameStackHandle<ASIMpxFrameMeta>>,
-    stats: &'d mut Stats,
-}
-
-impl<'a, 'b, 'c, 'd> FrameChunkedIterator<'a, 'b, 'c, 'd> {
-    /// Get the next frame stack. Mainly handles splitting logic for boundary
-    /// conditions and delegates communication with the background thread to `recv_next_stack_impl`
-    pub fn get_next_stack_impl(
-        &mut self,
-        py: Python,
-        max_size: usize,
-    ) -> PyResult<Option<PyFrameStackHandle>> {
-        let res = self.recv_next_stack_impl(py);
-        match res {
-            Ok(Some(frame_stack)) => {
-                if frame_stack.len() > max_size {
-                    // split `FrameStackHandle` into two:
-                    trace!(
-                        "FrameStackHandle::split_at({max_size}); len={}",
-                        frame_stack.len()
-                    );
-                    self.stats.count_split();
-                    let (left, right) = frame_stack.split_at(max_size, self.shm);
-                    self.remainder.push(right);
-                    assert!(left.len() <= max_size);
-                    return Ok(Some(left));
-                }
-                assert!(frame_stack.len() <= max_size);
-                Ok(Some(frame_stack))
-            }
-            Ok(None) => Ok(None),
-            e @ Err(_) => e,
-        }
-    }
-
-    /// Receive the next frame stack from the background thread and handle any
-    /// other control messages.
-    fn recv_next_stack_impl(&mut self, py: Python) -> PyResult<Option<PyFrameStackHandle>> {
-        // first, check if there is anything on the remainder list:
-        if let Some(frame_stack) = self.remainder.pop() {
-            return Ok(Some(frame_stack));
-        }
-
-        match self.receiver.status {
-            ReceiverStatus::Closed => {
-                return Err(exceptions::PyRuntimeError::new_err("receiver is closed"))
-            }
-            ReceiverStatus::Idle => return Ok(None),
-            ReceiverStatus::Running => {}
-        }
-
-        let recv = &mut self.receiver;
-
-        loop {
-            py.check_signals()?;
-
-            let recv_result = py.allow_threads(|| {
-                let next: Result<Option<ResultMsg>, Infallible> =
-                    Ok(recv.next_timeout(Duration::from_millis(100)));
-                next
-            })?;
-
-            match recv_result {
-                None => {
-                    continue;
-                }
-                Some(ResultMsg::ParseError { msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(msg))
-                }
-                Some(ResultMsg::AcquisitionStart {
-                    detector_config: _,
-                    first_frame_meta: _,
-                }) => {
-                    // FIXME: in case of "passive" mode, we should actually not hit this,
-                    // as the "outer" structure (`ServalConnection`) handles it?
-                    continue;
-                }
-                Some(ResultMsg::Error { msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(msg))
-                }
-                Some(ResultMsg::End { frame_stack }) => {
-                    self.stats.log_stats();
-                    self.stats.reset();
-                    return Ok(Some(frame_stack));
-                }
-                Some(ResultMsg::FrameStack { frame_stack }) => {
-                    return Ok(Some(frame_stack));
-                }
-            }
-        }
-    }
-
-    fn new(
-        receiver: &'a mut ServalReceiver,
-        shm: &'b mut SharedSlabAllocator,
-        remainder: &'c mut Vec<PyFrameStackHandle>,
-        stats: &'d mut Stats,
-    ) -> PyResult<Self> {
-        Ok(FrameChunkedIterator {
-            receiver,
-            shm,
-            remainder,
-            stats,
-        })
-    }
-}
-
 #[pyclass]
 struct ServalConnection {
-    receiver: ServalReceiver,
-    remainder: Vec<FrameStackHandle>,
-    local_shm: SharedSlabAllocator,
-    stats: Stats,
-}
-
-impl ServalConnection {
-    fn start_passive_impl(&mut self) -> PyResult<()> {
-        self.receiver
-            .start_passive()
-            .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
-    }
-
-    fn close_impl(&mut self) {
-        self.receiver.close();
-    }
-}
-
-#[pyclass]
-struct PendingAcquisition {
-    config: DetectorConfig,
-    first_frame_meta: ASIMpxFrameMeta,
-}
-
-#[pymethods]
-impl PendingAcquisition {
-    fn get_detector_config(&self) -> PyDetectorConfig {
-        PyDetectorConfig {
-            config: self.config.clone(),
-        }
-    }
-
-    fn get_frame_width(&self) -> u16 {
-        self.first_frame_meta.width
-    }
-
-    fn get_frame_height(&self) -> u16 {
-        self.first_frame_meta.height
-    }
+    conn: _PyASIMpxConnection,
 }
 
 #[pymethods]
@@ -307,118 +143,177 @@ impl ServalConnection {
         let num_slots = num_slots.map_or_else(|| 2000, |x| x);
         let bytes_per_frame = bytes_per_frame.map_or_else(|| 512 * 512 * 2, |x| x);
         let slot_size = frame_stack_size * bytes_per_frame;
-        let shm = match SharedSlabAllocator::new(
+
+        let config = ASIMpxDetectorConnConfig::new(
+            data_uri,
+            api_uri,
+            frame_stack_size,
+            bytes_per_frame,
             num_slots,
-            slot_size,
-            huge.map_or_else(|| false, |x| x),
-            &PathBuf::from(handle_path),
-        ) {
-            Ok(shm) => shm,
-            Err(e) => {
-                let total_size = num_slots * slot_size;
-                let msg = format!("could not create SHM area (num_slots={num_slots}, slot_size={slot_size} total_size={total_size} huge={huge:?}): {e:?}");
-                return Err(ConnectionError::new_err(msg));
-            }
-        };
+            huge.unwrap_or(false),
+            &handle_path,
+        );
+
+        let shm = GenericConnection::<ASIMpxBackgroundThread, PendingAcquisition>::shm_from_config(
+            &config,
+        )
+        .map_err(|e| PyConnectionError::new_err(format!("could not init shm: {e}")))?;
 
         let local_shm = shm.clone_and_connect().expect("clone SHM");
 
+        let bg_thread = ASIMpxBackgroundThread::spawn(&config, &shm)
+            .map_err(|e| ConnectionError::new_err(e.to_string()))?;
+
+        let generic_conn =
+            GenericConnection::<ASIMpxBackgroundThread, PendingAcquisition>::new(bg_thread, &shm)
+                .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
+
+        let conn = _PyASIMpxConnection::new(shm, generic_conn);
+
+        Ok(Self { conn })
+    }
+}
+
+impl_py_connection!(
+    _PyASIMpxConnection,
+    _PyASIMpxFrameStack,
+    ASIMpxFrameMeta,
+    ASIMpxBackgroundThread,
+    PendingAcquisition,
+    libertem_asi_mpx3
+);
+
+impl_py_cam_client!(
+    _PyASIMpxCamClient,
+    ASIMpxDecoder,
+    _PyASIMpxFrameStack,
+    ASIMpxFrameMeta,
+    libertem_asi_mpx3
+);
+
+#[pyclass(name = "FrameStackHandle")]
+pub struct PyFrameStackHandle {
+    inner: _PyASIMpxFrameStack,
+}
+
+#[pymethods]
+impl PyFrameStackHandle {
+    fn serialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner.serialize(py)
+    }
+
+    #[classmethod]
+    fn deserialize<'py>(
+        _cls: Bound<'py, PyType>,
+        serialized: Bound<'py, PyBytes>,
+    ) -> PyResult<Self> {
         Ok(Self {
-            receiver: ServalReceiver::new(data_uri, api_uri, frame_stack_size, shm),
-            remainder: Vec::new(),
-            local_shm,
-            stats: Stats::new(),
+            inner: _PyASIMpxFrameStack::deserialize_impl(serialized)?,
         })
     }
 
-    /// Wait until the detector is armed, or until the timeout expires (in seconds)
-    /// Returns `None` in case of timeout, the detector config otherwise.
-    /// This method drops the GIL to allow concurrent Python threads.
-    fn wait_for_arm(&mut self, timeout: f32, py: Python) -> PyResult<Option<PendingAcquisition>> {
-        let timeout = Duration::from_secs_f32(timeout);
-        let deadline = Instant::now() + timeout;
-        let step = Duration::from_millis(100);
-
-        loop {
-            py.check_signals()?;
-
-            let res = py.allow_threads(|| {
-                let timeout_rem = deadline - Instant::now();
-                let this_timeout = timeout_rem.min(step);
-                self.receiver.next_timeout(this_timeout)
-            });
-
-            match res {
-                Some(ResultMsg::AcquisitionStart {
-                    detector_config,
-                    first_frame_meta,
-                }) => {
-                    return Ok(Some(PendingAcquisition {
-                        config: detector_config,
-                        first_frame_meta,
-                    }))
-                }
-                msg @ Some(ResultMsg::End { .. }) | msg @ Some(ResultMsg::FrameStack { .. }) => {
-                    let err = format!("unexpected message: {:?}", msg);
-                    return Err(PyRuntimeError::new_err(err));
-                }
-                Some(ResultMsg::ParseError { msg }) => return Err(PyRuntimeError::new_err(msg)),
-                Some(ResultMsg::Error { msg }) => return Err(PyRuntimeError::new_err(msg)),
-                None => {
-                    // timeout
-                    if Instant::now() > deadline {
-                        return Ok(None);
-                    } else {
-                        continue;
-                    }
-                }
-            }
-        }
+    fn get_frame_id(&self) -> PyResult<u64> {
+        Ok(self.inner.try_get_inner()?.first_meta().sequence)
     }
 
-    fn get_socket_path(&self) -> PyResult<String> {
-        Ok(self.local_shm.get_handle().os_handle)
+    fn get_shape(&self) -> PyResult<(u64, u64)> {
+        Ok(self.inner.get_shape()?)
     }
 
-    fn is_running(slf: PyRef<Self>) -> bool {
-        slf.receiver.status == ReceiverStatus::Running
+    fn __len__(&self) -> PyResult<usize> {
+        self.inner.__len__()
+    }
+}
+
+impl PyFrameStackHandle {
+    fn get_inner(&self) -> &_PyASIMpxFrameStack {
+        &self.inner
     }
 
-    /// Start listening for global acquisition headers on the zeromq socket.
-    /// Call `wait_for_arm` to wait
-    fn start_passive(mut slf: PyRefMut<Self>) -> PyResult<()> {
-        slf.start_passive_impl()
+    fn get_inner_mut(&mut self) -> &mut _PyASIMpxFrameStack {
+        &mut self.inner
+    }
+}
+
+#[allow(non_upper_case_globals)]
+const PyBUF_READ: c_int = 0x100;
+
+#[pyclass]
+pub struct CamClient {
+    inner: _PyASIMpxCamClient,
+}
+
+impl CamClient {
+    fn get_memoryview(&self, py: Python, raw_data: &[u8]) -> PyObject {
+        let ptr = raw_data.as_ptr();
+        let length = raw_data.len();
+
+        let mv = unsafe {
+            PyMemoryView_FromMemory(ptr as *mut i8, length.try_into().unwrap(), PyBUF_READ)
+        };
+        let from_ptr: &PyAny = unsafe { FromPyPointer::from_owned_ptr(py, mv) };
+        from_ptr.into_py(py)
+    }
+}
+
+#[pymethods]
+impl CamClient {
+    #[new]
+    fn new(handle_path: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: _PyASIMpxCamClient::new(handle_path)?,
+        })
     }
 
-    fn close(mut slf: PyRefMut<Self>) {
-        slf.stats.log_stats();
-        slf.stats.reset();
-        slf.close_impl();
-    }
-
-    fn get_next_stack(
-        &mut self,
+    #[deprecated]
+    fn get_frames(
+        &self,
+        handle: &PyFrameStackHandle,
         py: Python,
-        max_size: usize,
-    ) -> PyResult<Option<FrameStackHandle>> {
-        let mut iter = FrameChunkedIterator::new(
-            &mut self.receiver,
-            &mut self.local_shm,
-            &mut self.remainder,
-            &mut self.stats,
-        )?;
-        iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
-            if let Some(frame_stack) = &maybe_stack {
-                self.stats.count_stats_item(frame_stack);
-            }
-            maybe_stack
-        })
+    ) -> PyResult<Vec<(PyObject, DType)>> {
+        let shm = unsafe { self.inner.get_shm()? };
+
+        // safety: Python code must not use memoryviews after calling `done`.
+        let slot = unsafe { shm.get(handle.get_inner().try_get_inner()?.get_slot().slot_idx) };
+
+        let meta = handle.get_inner().get_meta()?;
+        let inner = handle.get_inner().try_get_inner()?;
+
+        Ok(meta
+            .iter()
+            .zip(0..)
+            .map(|(meta, frame_idx)| {
+                let image_data = inner.get_slice_for_frame(frame_idx, &slot);
+                let memory_view = self.get_memoryview(py, image_data);
+
+                (memory_view, meta.dtype.clone())
+            })
+            .collect())
     }
 
-    fn log_shm_stats(&self) {
-        let free = self.local_shm.num_slots_free();
-        let total = self.local_shm.num_slots_total();
-        self.stats.log_stats();
-        info!("shm stats free/total: {}/{}", free, total);
+    fn decode_range_into_buffer<'py>(
+        &self,
+        input: &PyFrameStackHandle,
+        out: &Bound<'py, PyUntypedArray>,
+        start_idx: usize,
+        end_idx: usize,
+        py: Python<'py>,
+    ) -> PyResult<()> {
+        self.inner
+            .decode_range_into_buffer(input.get_inner(), out, start_idx, end_idx, py)
+    }
+
+    fn done(&mut self, handle: &mut PyFrameStackHandle) -> PyResult<()> {
+        self.inner.frame_stack_done(handle.get_inner_mut())
+    }
+
+    fn close(&mut self) -> PyResult<()> {
+        self.inner.close()
+    }
+}
+
+impl Drop for CamClient {
+    fn drop(&mut self) {
+        trace!("CamClient::drop");
     }
 }

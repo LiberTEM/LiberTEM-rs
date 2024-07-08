@@ -17,7 +17,7 @@ use ipc_test::SharedSlabAllocator;
 use log::{debug, error, info, trace, warn};
 use zmq::{Message, Socket};
 
-use crate::common::{
+use crate::base_types::{
     setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesAndType, DSeriesEnd, DectrisFrameMeta,
     DectrisPendingAcquisition, DetectorConfig,
 };
@@ -339,6 +339,9 @@ fn acquisition(
                 Err(FrameStackWriteError::Empty) => {
                     warn!("acquisition: unexpected empty frame stack")
                 }
+                Err(FrameStackWriteError::NonEmpty) => {
+                    warn!("acquisition: unexpected non-empty frame stack")
+                }
             }
         }
 
@@ -378,6 +381,9 @@ fn acquisition(
                 Ok(frame_stack) => from_thread_s.send(ReceiverMsg::Finished { frame_stack })?,
                 Err(FrameStackWriteError::Empty) => {
                     warn!("acquisition: unexpected empty frame stack")
+                }
+                Err(FrameStackWriteError::NonEmpty) => {
+                    warn!("acquisition: unexpected non-empty frame stack")
                 }
             }
 

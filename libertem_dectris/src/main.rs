@@ -1,14 +1,14 @@
+mod base_types;
 mod bin_fmt;
-mod common;
 mod exceptions;
 mod sim;
 mod sim_data_source;
 mod sim_gen;
 
+use crate::base_types::DHeader;
+use crate::base_types::DImage;
+use crate::base_types::DetectorConfig;
 use crate::bin_fmt::{write_raw_msg, write_raw_msg_fh, write_serializable};
-use crate::common::DHeader;
-use crate::common::DImage;
-use crate::common::DetectorConfig;
 use crate::sim::FrameSender;
 use crate::sim_data_source::DumpRecordFile;
 use crate::sim_gen::make_sim_data;

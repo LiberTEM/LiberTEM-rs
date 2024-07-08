@@ -8,7 +8,7 @@ use common::generic_connection::{ConnectionStatus, GenericConnection};
 
 use crate::{
     background_thread::{DectrisBackgroundThread, DectrisDetectorConnConfig, DectrisExtraControl},
-    common::{
+    base_types::{
         DConfig, DHeader, DImage, DImageD, DSeriesEnd, DectrisFrameMeta, DectrisPendingAcquisition,
         DetectorConfig, PixelType, TriggerMode,
     },
@@ -266,15 +266,7 @@ impl DectrisFrameStack {
             inner: _PyDectrisFrameStack::deserialize_impl(serialized)?,
         })
     }
-
-    // fn get_series_id
-    // fn get_frame_id
-    // fn get_hash
-    // anything else?
 }
-
-#[pyclass(name = "CamClient")]
-pub struct DectrisCamClient {}
 
 impl_py_cam_client!(
     _PyDectrisCamClient,
@@ -355,7 +347,7 @@ mod tests {
     use zerocopy::AsBytes;
 
     use crate::{
-        common::DectrisFrameMeta,
+        base_types::DectrisFrameMeta,
         dectris_py::{CamClient, DectrisFrameStack, _PyDectrisFrameStack},
     };
     use tempfile::TempDir;
@@ -373,19 +365,19 @@ mod tests {
         let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
         let mut fs = FrameStackForWriting::new(slot, 1, 512);
-        let dimage = crate::common::DImage {
+        let dimage = crate::base_types::DImage {
             htype: "dimage-1.0".to_string().try_into().unwrap(),
             series: 1,
             frame: 1,
             hash: "aaaabbbb".to_string().try_into().unwrap(),
         };
-        let dimaged = crate::common::DImageD {
+        let dimaged = crate::base_types::DImageD {
             htype: "d-image_d-1.0".to_string().try_into().unwrap(),
             shape: (16, 16),
-            type_: crate::common::PixelType::Uint16,
+            type_: crate::base_types::PixelType::Uint16,
             encoding: "bs16-lz4<".to_string().try_into().unwrap(),
         };
-        let dconfig = crate::common::DConfig {
+        let dconfig = crate::base_types::DConfig {
             htype: "dconfig-1.0".to_string().try_into().unwrap(),
             start_time: 0,
             stop_time: 0,
@@ -479,19 +471,19 @@ mod tests {
         let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
         let slot = shm.get_mut().expect("get a free shm slot");
         let mut fs = FrameStackForWriting::new(slot, 1, 512);
-        let dimage = crate::common::DImage {
+        let dimage = crate::base_types::DImage {
             htype: "dimage-1.0".to_string().try_into().unwrap(),
             series: 1,
             frame: 1,
             hash: "aaaabbbb".to_string().try_into().unwrap(),
         };
-        let dimaged = crate::common::DImageD {
+        let dimaged = crate::base_types::DImageD {
             htype: "dimage_d-1.0".to_string().try_into().unwrap(),
             shape: (16, 16),
-            type_: crate::common::PixelType::Uint16,
+            type_: crate::base_types::PixelType::Uint16,
             encoding: "lz4<".to_string().try_into().unwrap(),
         };
-        let dconfig = crate::common::DConfig {
+        let dconfig = crate::base_types::DConfig {
             htype: "dconfig-1.0".to_string().try_into().unwrap(),
             start_time: 0,
             stop_time: 0,

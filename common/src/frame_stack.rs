@@ -34,16 +34,21 @@ impl From<FrameStackError> for PyErr {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum FrameStackWriteError {
     #[error("will not construct empty FrameStackHandle")]
     Empty,
+
+    #[error("expected empty FrameStackForWriting")]
+    NonEmpty,
 }
 
 impl From<FrameStackWriteError> for PyErr {
     fn from(value: FrameStackWriteError) -> Self {
         match value {
-            FrameStackWriteError::Empty => PyValueError::new_err(value.to_string()),
+            FrameStackWriteError::Empty | FrameStackWriteError::NonEmpty => {
+                PyValueError::new_err(value.to_string())
+            }
         }
     }
 }
@@ -146,12 +151,26 @@ where
             self.bytes_per_frame,
         ))
     }
+
+    pub fn free_empty_frame_stack(
+        self,
+        shm: &mut SharedSlabAllocator,
+    ) -> Result<(), FrameStackWriteError> {
+        if self.is_empty() {
+            let slot_info = shm.writing_done(self.slot);
+            shm.free_idx(slot_info.slot_idx);
+            Ok(())
+        } else {
+            Err(FrameStackWriteError::NonEmpty)
+        }
+    }
 }
 
 // inner mod to enforce invariants via constructor
 mod inner {
     use ipc_test::{SharedSlabAllocator, Slot, SlotInfo};
     use serde::{Deserialize, Serialize};
+    use stats::GetStats;
 
     use super::{FrameMeta, FrameStackError};
 
@@ -201,6 +220,16 @@ mod inner {
         /// total number of bytes allocated for the slot
         pub fn slot_size(&self) -> usize {
             self.slot.size
+        }
+
+        /// Get the underlying shared memory slot information
+        ///
+        /// # Safety
+        /// You must not reference the memory of the slot after it has been
+        /// returned to the shm pool using `free_slot`! If possible, use
+        /// `with_slot` instead.
+        pub unsafe fn get_slot(&self) -> &SlotInfo {
+            &self.slot
         }
 
         pub fn get_meta(&self) -> &Vec<M> {
@@ -287,6 +316,34 @@ mod inner {
 
         pub fn free_slot(self, shm: &mut SharedSlabAllocator) {
             shm.free_idx(self.slot.slot_idx);
+        }
+    }
+
+    impl<M: FrameMeta> GetStats for FrameStackHandle<M> {
+        fn payload_size(&self) -> usize {
+            self.payload_size()
+        }
+
+        fn slot_size(&self) -> usize {
+            self.slot_size()
+        }
+
+        fn max_frame_size(&self, old_max: usize) -> usize {
+            self.get_meta()
+                .iter()
+                .max_by_key(|fm| fm.get_data_length_bytes())
+                .map_or(old_max, |fm| fm.get_data_length_bytes())
+        }
+
+        fn min_frame_size(&self, old_min: usize) -> usize {
+            self.get_meta()
+                .iter()
+                .min_by_key(|fm| fm.get_data_length_bytes())
+                .map_or(old_min, |fm| fm.get_data_length_bytes())
+        }
+
+        fn num_frames(&self) -> usize {
+            self.len()
         }
     }
 }

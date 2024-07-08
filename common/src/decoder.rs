@@ -1,6 +1,8 @@
+use std::{any::type_name, fmt::Debug};
+
 use ipc_test::SharedSlabAllocator;
 use ndarray::ArrayViewMut3;
-use num::NumCast;
+use num::{NumCast, ToPrimitive};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::frame_stack::{FrameMeta, FrameStackHandle};
@@ -38,4 +40,26 @@ pub trait Decoder: Default {
 pub enum DecoderError {
     #[error("decoding of frame failed: {msg}")]
     FrameDecodeFailed { msg: String },
+}
+
+pub fn try_cast_if_safe<I, O>(input: &[I], output: &mut [O]) -> Result<(), DecoderError>
+where
+    O: Copy + NumCast,
+    I: Copy + ToPrimitive + Debug,
+{
+    for (dest, src) in output.iter_mut().zip(input.iter()) {
+        let converted = NumCast::from(*src);
+        if let Some(value) = converted {
+            *dest = value;
+        } else {
+            return Err(DecoderError::FrameDecodeFailed {
+                msg: format!(
+                    "dtype conversion error: {src:?} does not fit {0}",
+                    type_name::<O>()
+                ),
+            });
+        }
+    }
+
+    Ok(())
 }
