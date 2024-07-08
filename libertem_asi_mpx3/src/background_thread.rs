@@ -3,7 +3,6 @@ use std::{
     io::{ErrorKind, Read},
     mem::replace,
     net::TcpStream,
-    str::FromStr,
     sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -12,6 +11,7 @@ use std::{
 use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
     frame_stack::{FrameStackForWriting, FrameStackWriteError},
+    utils::{num_from_byte_slice, NumParseError},
 };
 use ipc_test::SharedSlabAllocator;
 use log::{debug, error, info, trace, warn};
@@ -35,10 +35,10 @@ enum ParseError {
     #[error("expected whitespace at {pos}, got byte {got:x} instead")]
     WhiteSpaceExpected { pos: usize, got: u8 },
 
-    #[error("expected number, got: {got:X?} ({err})")]
-    ExpectedNumber {
-        got: Vec<u8>,
-        err: Box<dyn std::error::Error + 'static>,
+    #[error("failed to parse number: {err}")]
+    Num {
+        #[from]
+        err: NumParseError,
     },
 }
 
@@ -47,24 +47,6 @@ pub enum ReceiverStatus {
     Idle,
     Running,
     Closed,
-}
-
-fn num_from_byte_slice<T: FromStr>(bytes: &[u8]) -> Result<T, ParseError>
-where
-    <T as std::str::FromStr>::Err: Debug + std::error::Error + 'static,
-{
-    // This should not become a bottleneck, but in case it does,
-    // there is the `atoi` crate, which provides this functionality
-    // without going via UTF8 first.
-    let s = std::str::from_utf8(bytes).map_err(|e| ParseError::ExpectedNumber {
-        got: bytes.to_vec(),
-        err: Box::new(e),
-    })?;
-    let result = s.parse().map_err(|e| ParseError::ExpectedNumber {
-        got: bytes.to_vec(),
-        err: Box::new(e),
-    })?;
-    Ok(result)
 }
 
 /// Peek and parse the first frame header
@@ -325,7 +307,7 @@ fn check_for_control(control_channel: &Receiver<ASIMpxControlMsg>) -> Result<(),
         Ok(ControlMsg::SpecializedControlMsg { msg: _ }) => {
             panic!("unsupported SpecializedControlMsg")
         }
-        Err(TryRecvError::Disconnected) => Err(AcquisitionError::Cancelled),
+        Err(TryRecvError::Disconnected) => Err(AcquisitionError::Disconnected),
         Err(TryRecvError::Empty) => Ok(()),
     }
 }

@@ -2058,7 +2058,6 @@ name = "libertem-asi-mpx3"
 version = "0.2.11"
 dependencies = [
  "bincode",
- "clap 3.2.25",
  "common",
  "env_logger",
  "ipc-test",
@@ -2125,9 +2124,21 @@ dependencies = [
 
 [[package]]
 name = "libertem_qd_mpx"
-version = "0.1.0"
+version = "0.2.11"
 dependencies = [
+ "bincode",
+ "common",
+ "env_logger",
+ "ipc-test",
+ "log",
+ "num",
+ "numpy",
  "pyo3",
+ "serde",
+ "stats",
+ "tempfile",
+ "thiserror",
+ "zerocopy",
 ]
 
 [[package]]
