@@ -56,7 +56,7 @@ impl Decoder for ASIMpxDecoder {
 
     fn zero_copy_available(
         &self,
-        handle: &common::frame_stack::FrameStackHandle<Self::FrameMeta>,
+        _handle: &common::frame_stack::FrameStackHandle<Self::FrameMeta>,
     ) -> Result<bool, common::decoder::DecoderError> {
         // FIXME: impl zero copy!
         Ok(false)

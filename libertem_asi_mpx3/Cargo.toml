@@ -14,7 +14,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 bincode = "1.3.3"
-clap = { version = "3.2.16", features = ["derive"] }
 env_logger = "0.9.3"
 log = "0.4.17"
 pyo3 = { version = "0.21.0", features = ["abi3-py37"] }
