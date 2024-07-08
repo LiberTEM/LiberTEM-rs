@@ -36,7 +36,7 @@ stats = { path = "../stats" }
 common = { path = "../common" }
 nix = "0.26.1"
 lz4 = "1.24.0"
-zerocopy = "0.6.1"
+zerocopy = "0.7.35"
 md5 = "0.7.0"
 num = "0.4.3"
 

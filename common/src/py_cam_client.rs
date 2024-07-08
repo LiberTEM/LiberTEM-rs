@@ -34,11 +34,10 @@ macro_rules! impl_py_cam_client {
     ) => {
         mod impl_cam_client {
             use common::{
-                cam_client::GenericCamClient,
-                decoder::Decoder,
-                frame_stack::FrameStackHandle,
-                // py_cam_client::decode_for_dtype,
+                decoder::Decoder, frame_stack::FrameStackHandle,
+                generic_cam_client::GenericCamClient,
             };
+            use ipc_test::SharedSlabAllocator;
             use num::{
                 complex::{Complex32, Complex64},
                 NumCast,
@@ -78,6 +77,12 @@ macro_rules! impl_py_cam_client {
                         )
                         .map_err(|e| PyCamClientError::new_err(format!("decode failed: {e}")));
                 }
+
+                pub fn get_shm(&self) -> PyResult<&SharedSlabAllocator> {
+                    self.client_impl
+                        .get_shm()
+                        .map_err(|e| PyCamClientError::new_err(e.to_string()))
+                }
             }
 
             #[pymethods]
@@ -86,7 +91,7 @@ macro_rules! impl_py_cam_client {
                 pub fn new(handle_path: &str) -> PyResult<Self> {
                     Ok(Self {
                         client_impl: GenericCamClient::new(handle_path)
-                            .map_err({ |e| PyCamClientError::new_err(e.to_string()) })?,
+                            .map_err(|e| PyCamClientError::new_err(e.to_string()))?,
                     })
                 }
 

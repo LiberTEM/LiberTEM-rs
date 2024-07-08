@@ -16,7 +16,7 @@ tempfile = "3.10.1"
 thiserror = "1.0.59"
 log = "0.4.21"
 ndarray = { version = "0.15.6" }
-zerocopy = "0.6.1"
+zerocopy = "0.7.35"
 num = "0.4.3"
 
 [dev-dependencies]

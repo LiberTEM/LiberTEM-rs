@@ -4,7 +4,7 @@ use std::{
 };
 
 use common::{
-    decoder::{Decoder, DecoderError},
+    decoder::{try_cast_if_safe, Decoder, DecoderError},
     frame_stack::FrameStackHandle,
 };
 use ipc_test::SharedSlabAllocator;
@@ -14,29 +14,7 @@ use zerocopy::{AsBytes, FromBytes};
 
 use num::{NumCast, ToPrimitive};
 
-use crate::common::{DectrisFrameMeta, NonEmptyString, PixelType};
-
-fn cast_helper<I, O>(input: &[I], output: &mut [O]) -> Result<(), DecoderError>
-where
-    O: Copy + NumCast,
-    I: Copy + ToPrimitive + Debug,
-{
-    for (dest, src) in output.iter_mut().zip(input.iter()) {
-        let converted = NumCast::from(*src);
-        if let Some(value) = converted {
-            *dest = value;
-        } else {
-            return Err(DecoderError::FrameDecodeFailed {
-                msg: format!(
-                    "dtype conversion error: {src:?} does not fit {0}",
-                    type_name::<O>()
-                ),
-            });
-        }
-    }
-
-    Ok(())
-}
+use crate::base_types::{DectrisFrameMeta, NonEmptyString, PixelType};
 
 #[derive(Debug, Default)]
 pub struct DectrisDecoder {}
@@ -82,7 +60,7 @@ impl Decoder for DectrisDecoder {
         T: 'static + AsBytes + FromBytes + Copy + NumCast,
     {
         input.with_slot(shm, |slot| {
-            // out three cute special cases:
+            // our three cute special cases:
             let mut tmp_u8: Vec<u8> = Vec::new();
             let mut tmp_u16: Vec<u16> = Vec::new();
             let mut tmp_u32: Vec<u32> = Vec::new();
@@ -127,7 +105,7 @@ impl Decoder for DectrisDecoder {
                                 &mut tmp_u8,
                                 &frame_meta.dimaged.encoding,
                             )?;
-                            cast_helper(&tmp_u8, out_slice)?;
+                            try_cast_if_safe(&tmp_u8, out_slice)?;
                         }
                         PixelType::Uint16 => {
                             if tmp_u16.capacity() < dest_size {
@@ -138,7 +116,7 @@ impl Decoder for DectrisDecoder {
                                 &mut tmp_u16,
                                 &frame_meta.dimaged.encoding,
                             )?;
-                            cast_helper(&tmp_u16, out_slice)?;
+                            try_cast_if_safe(&tmp_u16, out_slice)?;
                         }
                         PixelType::Uint32 => {
                             if tmp_u32.capacity() < dest_size {
@@ -149,7 +127,7 @@ impl Decoder for DectrisDecoder {
                                 &mut tmp_u32,
                                 &frame_meta.dimaged.encoding,
                             )?;
-                            cast_helper(&tmp_u32, out_slice)?;
+                            try_cast_if_safe(&tmp_u32, out_slice)?;
                         }
                     }
                 }

@@ -4,61 +4,36 @@ use std::{
     mem::replace,
     net::TcpStream,
     str::FromStr,
+    sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
-use ipc_test::{SHMHandle, SharedSlabAllocator};
+use common::{
+    background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
+    frame_stack::{FrameStackForWriting, FrameStackWriteError},
+};
+use ipc_test::SharedSlabAllocator;
 use log::{debug, error, info, trace, warn};
 use serval_client::{DetectorConfig, ServalClient, ServalError};
 
-use crate::{
-    common::{ASIMpxFrameMeta, DType},
-    frame_stack_py::{FrameStackForWriting, FrameStackHandle},
-};
+use crate::base_types::{ASIMpxDetectorConnConfig, ASIMpxFrameMeta, DType, PendingAcquisition};
 
-#[derive(PartialEq, Debug)]
-pub enum ResultMsg {
-    Error {
-        msg: String,
-    }, // generic error response, might need to specialize later
+type ASIMpxControlMsg = ControlMsg<()>;
 
-    /// The frame header failed to parse
-    ParseError {
-        msg: String,
-    },
-
-    AcquisitionStart {
-        detector_config: DetectorConfig,
-        first_frame_meta: ASIMpxFrameMeta,
-    },
-
-    /// A stack of frames, part of an acquisition
-    FrameStack {
-        frame_stack: FrameStackHandle,
-    },
-
-    /// The last stack of frames of an acquisition
-    /// (can possibly be empty!)
-    End {
-        frame_stack: FrameStackHandle,
-    },
-}
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum ParseError {
+    #[error("wrong magic, should be 'P5', got: {got:X?}")]
     WrongMagic { got: [u8; 2] },
+
+    #[error("unexpected end of file")]
     Eof,
+
+    #[error("invalid max val, should be in 0..65536, is {got}")]
     InvalidMaxVal { got: u32 },
+
+    #[error("expected whitespace at {pos}, got byte {got:x} instead")]
     WhiteSpaceExpected { pos: usize, got: u8 },
-}
-
-pub enum ControlMsg {
-    StopThread,
-
-    /// Wait for any acquisition to start on a given host/port
-    StartAcquisitionPassive,
 }
 
 #[derive(PartialEq, Eq)]
@@ -198,9 +173,9 @@ fn three_way_shift<T>(left: &mut T, right: &mut T, new: T) -> T {
 fn recv_frame(
     sequence: u64,
     stream: &mut TcpStream,
-    control_channel: &Receiver<ControlMsg>,
-    frame_stack: &mut FrameStackForWriting,
-    extra_frame_stack: &mut FrameStackForWriting,
+    control_channel: &Receiver<ASIMpxControlMsg>,
+    frame_stack: &mut FrameStackForWriting<ASIMpxFrameMeta>,
+    extra_frame_stack: &mut FrameStackForWriting<ASIMpxFrameMeta>,
 ) -> Result<ASIMpxFrameMeta, AcquisitionError> {
     // TODO:
     // - timeout handling
@@ -274,47 +249,34 @@ fn recv_frame(
     Ok(meta)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 enum AcquisitionError {
+    #[error("other end has disconnected")]
     Disconnected,
-    Cancelled,
-    BufferFull,
-    StateError { msg: String },
-    ConfigurationError { msg: String },
-    ParseError { msg: String },
-    ConnectionError { msg: String },
-    APIError { msg: String },
-}
 
-impl Display for AcquisitionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AcquisitionError::Cancelled => {
-                write!(f, "acquisition cancelled")
-            }
-            AcquisitionError::Disconnected => {
-                write!(f, "other end has disconnected")
-            }
-            AcquisitionError::BufferFull => {
-                write!(f, "shm buffer is full")
-            }
-            AcquisitionError::StateError { msg } => {
-                write!(f, "state error: {msg}")
-            }
-            AcquisitionError::ConfigurationError { msg } => {
-                write!(f, "configuration error: {msg}")
-            }
-            AcquisitionError::ParseError { msg } => {
-                write!(f, "parse error: {msg}")
-            }
-            AcquisitionError::ConnectionError { msg } => {
-                write!(f, "connection error: {msg}")
-            }
-            AcquisitionError::APIError { msg } => {
-                write!(f, "serval HTTP API error: {msg}")
-            }
-        }
-    }
+    #[error("acquisition cancelled")]
+    Cancelled,
+
+    #[error("shm buffer is full")]
+    BufferFull,
+
+    #[error("state error: {msg}")]
+    StateError { msg: String },
+
+    #[error("configuration error: {msg}")]
+    ConfigurationError { msg: String },
+
+    #[error("parse error: {msg}")]
+    ParseError { msg: String },
+
+    #[error("connection error: {msg}")]
+    ConnectionError { msg: String },
+
+    #[error("serval HTTP API error: {msg}")]
+    APIError { msg: String },
+
+    #[error("error writing to shm: {0}")]
+    WriteError(#[from] FrameStackWriteError),
 }
 
 impl From<ParseError> for AcquisitionError {
@@ -341,13 +303,16 @@ impl From<ServalError> for AcquisitionError {
 
 /// With a running acquisition, check for control messages;
 /// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
-fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), AcquisitionError> {
+fn check_for_control(control_channel: &Receiver<ASIMpxControlMsg>) -> Result<(), AcquisitionError> {
     match control_channel.try_recv() {
         Ok(ControlMsg::StartAcquisitionPassive) => Err(AcquisitionError::StateError {
             msg: "received StartAcquisitionPassive while an acquisition was already running"
                 .to_string(),
         }),
         Ok(ControlMsg::StopThread) => Err(AcquisitionError::Cancelled),
+        Ok(ControlMsg::SpecializedControlMsg { msg: _ }) => {
+            panic!("unsupported SpecializedControlMsg")
+        }
         Err(TryRecvError::Disconnected) => Err(AcquisitionError::Cancelled),
         Err(TryRecvError::Empty) => Ok(()),
     }
@@ -356,8 +321,8 @@ fn check_for_control(control_channel: &Receiver<ControlMsg>) -> Result<(), Acqui
 /// Passively listen for the start of an acquisition
 /// and automatically latch on to it.
 fn passive_acquisition(
-    control_channel: &Receiver<ControlMsg>,
-    from_thread_s: &Sender<ResultMsg>,
+    control_channel: &Receiver<ASIMpxControlMsg>,
+    from_thread_s: &Sender<ReceiverMsg<ASIMpxFrameMeta, PendingAcquisition>>,
     frame_stack_size: usize,
     data_uri: &str,
     api_uri: &str,
@@ -419,8 +384,8 @@ fn passive_acquisition(
 }
 
 fn acquisition(
-    to_thread_r: &Receiver<ControlMsg>,
-    from_thread_s: &Sender<ResultMsg>,
+    to_thread_r: &Receiver<ASIMpxControlMsg>,
+    from_thread_s: &Sender<ReceiverMsg<ASIMpxFrameMeta, PendingAcquisition>>,
     detector_config: &DetectorConfig,
     first_frame_meta: &ASIMpxFrameMeta,
     stream: &mut TcpStream,
@@ -430,9 +395,8 @@ fn acquisition(
     let t0 = Instant::now();
     let mut last_control_check = Instant::now();
 
-    from_thread_s.send(ResultMsg::AcquisitionStart {
-        detector_config: detector_config.clone(),
-        first_frame_meta: first_frame_meta.clone(),
+    from_thread_s.send(ReceiverMsg::AcquisitionStart {
+        pending_acquisition: PendingAcquisition::new(detector_config, first_frame_meta),
     })?;
 
     debug!("acquisition starting");
@@ -496,10 +460,10 @@ fn acquisition(
 
                 let old_frame_stack =
                     three_way_shift(&mut frame_stack, &mut extra_frame_stack, new_frame_stack);
-                old_frame_stack.writing_done(shm)
+                old_frame_stack.writing_done(shm)?
             };
             // send to our queue:
-            from_thread_s.send(ResultMsg::FrameStack {
+            from_thread_s.send(ReceiverMsg::FrameStack {
                 frame_stack: to_send,
             })?;
         }
@@ -511,14 +475,14 @@ fn acquisition(
             let elapsed = t0.elapsed();
             info!("done in {elapsed:?}");
 
-            let handle = frame_stack.writing_done(shm);
-            from_thread_s.send(ResultMsg::End {
+            let handle = frame_stack.writing_done(shm)?;
+            from_thread_s.send(ReceiverMsg::Finished {
                 frame_stack: handle,
             })?;
 
             if !extra_frame_stack.is_empty() {
-                let handle = extra_frame_stack.writing_done(shm);
-                from_thread_s.send(ResultMsg::End {
+                let handle = extra_frame_stack.writing_done(shm)?;
+                from_thread_s.send(ReceiverMsg::Finished {
                     frame_stack: handle,
                 })?;
             } else {
@@ -527,8 +491,7 @@ fn acquisition(
                 // if `writing_done` was not called manually, which might happen
                 // in case of error handling.
                 // ah, but it can't, because it doesn't have a reference to `shm`! hmm
-                let handle = extra_frame_stack.writing_done(shm);
-                shm.free_idx(handle.slot.slot_idx);
+                extra_frame_stack.free_empty_frame_stack(shm)?;
             }
 
             return Ok(());
@@ -538,8 +501,8 @@ fn acquisition(
 
 /// convert `AcquisitionError`s to messages on `from_threads_s`
 fn background_thread_wrap(
-    to_thread_r: &Receiver<ControlMsg>,
-    from_thread_s: &Sender<ResultMsg>,
+    to_thread_r: &Receiver<ASIMpxControlMsg>,
+    from_thread_s: &Sender<ReceiverMsg<ASIMpxFrameMeta, PendingAcquisition>>,
     data_uri: &str,
     api_uri: &str,
     frame_stack_size: usize,
@@ -557,16 +520,16 @@ fn background_thread_wrap(
         // NOTE: `shm` is dropped in case of an error, so anyone who tries to connect afterwards
         // will get an error
         from_thread_s
-            .send(ResultMsg::Error {
-                msg: err.to_string(),
+            .send(ReceiverMsg::FatalError {
+                error: Box::new(err),
             })
             .unwrap();
     }
 }
 
 fn background_thread(
-    to_thread_r: &Receiver<ControlMsg>,
-    from_thread_s: &Sender<ResultMsg>,
+    to_thread_r: &Receiver<ASIMpxControlMsg>,
+    from_thread_s: &Sender<ReceiverMsg<ASIMpxFrameMeta, PendingAcquisition>>,
     data_uri: &str,
     api_uri: &str,
     frame_stack_size: usize,
@@ -591,9 +554,10 @@ fn background_thread(
                             return Ok(());
                         }
                         Err(e) => {
-                            let msg = format!("passive_acquisition error: {}", e);
-                            from_thread_s.send(ResultMsg::Error { msg }).unwrap();
                             error!("background_thread: error: {}; re-connecting", e);
+                            from_thread_s
+                                .send(ReceiverMsg::FatalError { error: Box::new(e) })
+                                .unwrap();
                             continue 'outer;
                         }
                     }
@@ -607,6 +571,9 @@ fn background_thread(
                     break 'outer;
                 }
                 Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do
+                Ok(ControlMsg::SpecializedControlMsg { msg: _ }) => {
+                    panic!("ControlMsg::SpecializesControlMsg is unused for ASI MPX3");
+                }
             }
         }
     }
@@ -625,117 +592,66 @@ impl Display for ReceiverError {
     }
 }
 
-/// Start a background thread that receives data from the socket and
-/// puts it into shared memory.
-pub struct ServalReceiver {
-    bg_thread: Option<JoinHandle<()>>,
-    to_thread: Sender<ControlMsg>,
-    from_thread: Receiver<ResultMsg>,
-    pub status: ReceiverStatus,
-    pub shm_handle: SHMHandle,
+pub struct ASIMpxBackgroundThread {
+    bg_thread: JoinHandle<()>,
+    to_thread: Sender<ControlMsg<()>>,
+    from_thread: Receiver<ReceiverMsg<ASIMpxFrameMeta, PendingAcquisition>>,
 }
 
-impl ServalReceiver {
-    pub fn new(
-        data_uri: &str,
-        api_uri: &str,
-        frame_stack_size: usize,
-        shm: SharedSlabAllocator,
-    ) -> Self {
-        let (to_thread_s, to_thread_r) = unbounded();
-        let (from_thread_s, from_thread_r) = unbounded();
+impl BackgroundThread for ASIMpxBackgroundThread {
+    type FrameMetaImpl = ASIMpxFrameMeta;
+    type AcquisitionConfigImpl = PendingAcquisition;
+    type ExtraControl = ();
+
+    fn channel_to_thread(&mut self) -> &mut Sender<ControlMsg<Self::ExtraControl>> {
+        &mut self.to_thread
+    }
+
+    fn channel_from_thread(
+        &mut self,
+    ) -> &mut std::sync::mpsc::Receiver<ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>>
+    {
+        &mut self.from_thread
+    }
+
+    fn join(self) {
+        if let Err(e) = self.bg_thread.join() {
+            // FIXME: should we have an error boundary here instead and stop the panic?
+            std::panic::resume_unwind(e)
+        }
+    }
+}
+
+impl ASIMpxBackgroundThread {
+    pub fn spawn(
+        config: &ASIMpxDetectorConnConfig,
+        shm: &SharedSlabAllocator,
+    ) -> Result<Self, BackgroundThreadSpawnError> {
+        let (to_thread_s, to_thread_r) = channel();
+        let (from_thread_s, from_thread_r) = channel();
 
         let builder = std::thread::Builder::new();
-        let data_uri = data_uri.to_string();
-        let api_uri = api_uri.to_string();
+        let data_uri = config.data_uri.to_owned();
+        let api_uri = config.api_uri.to_owned();
+        let shm = shm.clone_and_connect()?;
+        let frame_stack_size = config.frame_stack_size;
 
-        let shm_handle = shm.get_handle();
-
-        ServalReceiver {
-            bg_thread: Some(
-                builder
-                    .name("bg_thread".to_string())
-                    .spawn(move || {
-                        background_thread_wrap(
-                            &to_thread_r,
-                            &from_thread_s,
-                            &data_uri,
-                            &api_uri,
-                            frame_stack_size,
-                            shm,
-                        )
-                    })
-                    .expect("failed to start background thread"),
-            ),
+        Ok(Self {
+            bg_thread: builder
+                .name("bg_thread".to_string())
+                .spawn(move || {
+                    background_thread_wrap(
+                        &to_thread_r,
+                        &from_thread_s,
+                        &data_uri,
+                        &api_uri,
+                        frame_stack_size,
+                        shm,
+                    )
+                })
+                .map_err(BackgroundThreadSpawnError::SpawnFailed)?,
             from_thread: from_thread_r,
             to_thread: to_thread_s,
-            status: ReceiverStatus::Idle,
-            shm_handle,
-        }
-    }
-
-    fn adjust_status(&mut self, msg: &ResultMsg) {
-        match msg {
-            ResultMsg::AcquisitionStart { .. } => {
-                self.status = ReceiverStatus::Running;
-            }
-            ResultMsg::End { .. } => {
-                self.status = ReceiverStatus::Idle;
-            }
-            _ => {}
-        }
-    }
-
-    pub fn recv(&mut self) -> ResultMsg {
-        let result_msg = self
-            .from_thread
-            .recv()
-            .expect("background thread should be running");
-        self.adjust_status(&result_msg);
-        result_msg
-    }
-
-    pub fn next_timeout(&mut self, timeout: Duration) -> Option<ResultMsg> {
-        let result_msg = self.from_thread.recv_timeout(timeout);
-
-        match result_msg {
-            Ok(result) => {
-                self.adjust_status(&result);
-                Some(result)
-            }
-            Err(e) => match e {
-                RecvTimeoutError::Disconnected => {
-                    panic!("background thread should be running")
-                }
-                RecvTimeoutError::Timeout => None,
-            },
-        }
-    }
-
-    pub fn start_passive(&mut self) -> Result<(), ReceiverError> {
-        if self.status == ReceiverStatus::Closed {
-            return Err(ReceiverError {
-                msg: "receiver is closed".to_string(),
-            });
-        }
-        self.to_thread
-            .send(ControlMsg::StartAcquisitionPassive)
-            .expect("background thread should be running");
-        self.status = ReceiverStatus::Running;
-        Ok(())
-    }
-
-    pub fn close(&mut self) {
-        if self.to_thread.send(ControlMsg::StopThread).is_err() {
-            warn!("could not stop background thread, probably already dead");
-        }
-        if let Some(join_handle) = self.bg_thread.take() {
-            join_handle
-                .join()
-                .expect("could not join background thread!");
-        } else {
-            warn!("did not have a bg thread join handle, cannot join!");
-        }
-        self.status = ReceiverStatus::Closed;
+        })
     }
 }

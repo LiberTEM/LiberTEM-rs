@@ -9,7 +9,7 @@ use serde_json::json;
 use zmq::{Context, Socket, SocketType::PUSH};
 
 use crate::{
-    common::{setup_monitor, DHeader, DetectorConfig},
+    base_types::{setup_monitor, DHeader, DetectorConfig},
     exceptions::TimeoutError,
     sim_data_source::{DumpRecordFile, RecordCursor},
     sim_gen::make_sim_data,

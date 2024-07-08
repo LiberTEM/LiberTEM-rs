@@ -17,9 +17,9 @@ macro_rules! impl_py_connection {
             use bincode::serialize;
             use common::{
                 background_thread::BackgroundThread,
-                cam_client::GenericCamClient,
                 decoder::Decoder,
                 frame_stack::{FrameMeta, FrameStackHandle},
+                generic_cam_client::GenericCamClient,
                 generic_connection::{ConnectionStatus, GenericConnection},
             };
             use ipc_test::SharedSlabAllocator;
@@ -291,6 +291,12 @@ macro_rules! impl_py_connection {
                     serialized: Bound<'py, PyBytes>,
                 ) -> PyResult<Self> {
                     Self::deserialize_impl(serialized)
+                }
+            }
+
+            impl $name_frame_stack {
+                pub fn get_meta(&self) -> PyResult<&[super::$frame_meta_type]> {
+                    Ok(&self.try_get_inner()?.get_meta())
                 }
             }
         }

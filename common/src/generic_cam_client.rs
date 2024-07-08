@@ -1,6 +1,6 @@
 use ipc_test::{slab::SlabInitError, SharedSlabAllocator};
 use ndarray::ArrayViewMut3;
-use num::{cast::AsPrimitive, Num, NumCast};
+use num::NumCast;
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::{
@@ -54,7 +54,7 @@ where
         }
     }
 
-    fn get_shm(&self) -> Result<&SharedSlabAllocator, CamClientError> {
+    pub fn get_shm(&self) -> Result<&SharedSlabAllocator, CamClientError> {
         match &self.shm {
             Some(shm) => Ok(shm),
             None => Err(CamClientError::Closed),
@@ -123,7 +123,7 @@ where
     where
         T: 'static + AsBytes + FromBytes + Copy + NumCast,
     {
-        let shm = self.get_shm()?;
+        let shm = unsafe { self.get_shm()? };
         Ok(self.decoder.decode(shm, input, dest, start_idx, end_idx)?)
     }
 
