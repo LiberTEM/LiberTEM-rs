@@ -34,6 +34,12 @@ enum ParseError {
 
     #[error("expected whitespace at {pos}, got byte {got:x} instead")]
     WhiteSpaceExpected { pos: usize, got: u8 },
+
+    #[error("expected number, got: {got:X?} ({err})")]
+    ExpectedNumber {
+        got: Vec<u8>,
+        err: Box<dyn std::error::Error + 'static>,
+    },
 }
 
 #[derive(PartialEq, Eq)]
@@ -43,16 +49,22 @@ pub enum ReceiverStatus {
     Closed,
 }
 
-// FIXME: error return type
-fn num_from_byte_slice<T: FromStr>(bytes: &[u8]) -> T
+fn num_from_byte_slice<T: FromStr>(bytes: &[u8]) -> Result<T, ParseError>
 where
-    <T as std::str::FromStr>::Err: Debug,
+    <T as std::str::FromStr>::Err: Debug + std::error::Error + 'static,
 {
     // This should not become a bottleneck, but in case it does,
     // there is the `atoi` crate, which provides this functionality
     // without going via UTF8 first.
-    let s = std::str::from_utf8(bytes).unwrap();
-    s.parse().unwrap()
+    let s = std::str::from_utf8(bytes).map_err(|e| ParseError::ExpectedNumber {
+        got: bytes.to_vec(),
+        err: Box::new(e),
+    })?;
+    let result = s.parse().map_err(|e| ParseError::ExpectedNumber {
+        got: bytes.to_vec(),
+        err: Box::new(e),
+    })?;
+    Ok(result)
 }
 
 /// Peek and parse the first frame header
@@ -106,7 +118,7 @@ fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<ASIMpxFram
     while !buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
         pos += 1;
     }
-    let width: u16 = num_from_byte_slice(&buf[width_start..pos]);
+    let width: u16 = num_from_byte_slice(&buf[width_start..pos])?;
 
     // •      Whitespace.
     while buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
@@ -118,7 +130,7 @@ fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<ASIMpxFram
     while !buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
         pos += 1;
     }
-    let height: u16 = num_from_byte_slice(&buf[height_start..pos]);
+    let height: u16 = num_from_byte_slice(&buf[height_start..pos])?;
 
     // •      Whitespace.
     while buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
@@ -131,7 +143,7 @@ fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<ASIMpxFram
     while !buf[pos].is_ascii_whitespace() && pos < HEADER_BUF_SIZE {
         pos += 1;
     }
-    let maxval: u32 = num_from_byte_slice(&buf[maxval_start..pos]);
+    let maxval: u32 = num_from_byte_slice(&buf[maxval_start..pos])?;
 
     if !(0..65536).contains(&maxval) {
         return Err(ParseError::InvalidMaxVal { got: maxval });
@@ -550,7 +562,8 @@ fn background_thread(
                         &mut shm,
                     ) {
                         Ok(_) => {}
-                        Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
+                        e @ Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
+                            info!("background_thread: terminating: {e:?}");
                             return Ok(());
                         }
                         Err(e) => {
