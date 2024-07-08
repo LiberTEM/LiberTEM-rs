@@ -148,8 +148,7 @@ impl DectrisConnection {
     }
 
     fn close(&mut self) -> PyResult<()> {
-        self.conn.close()?;
-        Ok(())
+        self.conn.close()
     }
 
     fn log_shm_stats(&self) -> PyResult<()> {

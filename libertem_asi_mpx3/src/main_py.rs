@@ -26,7 +26,7 @@ use std::ffi::c_int;
 use pyo3::{ffi::PyMemoryView_FromMemory, FromPyPointer};
 
 #[pymodule]
-fn libertem_asi_mpx3(py: Python, m: &PyModule) -> PyResult<()> {
+fn libertem_asi_mpx3(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // FIXME: logging integration deadlocks on close(), when trying to acquire
     // the GIL
     // pyo3_log::init();
@@ -38,7 +38,7 @@ fn libertem_asi_mpx3(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyDetectorInfo>()?;
     m.add_class::<PyServalClient>()?;
     m.add_class::<CamClient>()?;
-    m.add("TimeoutError", py.get_type::<TimeoutError>())?;
+    m.add("TimeoutError", py.get_type_bound::<TimeoutError>())?;
 
     register_header_module(py, m)?;
 
@@ -52,9 +52,9 @@ fn libertem_asi_mpx3(py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
-fn register_header_module(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let headers_module = PyModule::new(py, "headers")?;
-    parent_module.add_submodule(headers_module)?;
+fn register_header_module(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let headers_module = PyModule::new_bound(py, "headers")?;
+    parent_module.add_submodule(&headers_module)?;
     Ok(())
 }
 
@@ -142,7 +142,6 @@ impl ServalConnection {
     ) -> PyResult<Self> {
         let num_slots = num_slots.map_or_else(|| 2000, |x| x);
         let bytes_per_frame = bytes_per_frame.map_or_else(|| 512 * 512 * 2, |x| x);
-        let slot_size = frame_stack_size * bytes_per_frame;
 
         let config = ASIMpxDetectorConnConfig::new(
             data_uri,
@@ -159,8 +158,6 @@ impl ServalConnection {
         )
         .map_err(|e| PyConnectionError::new_err(format!("could not init shm: {e}")))?;
 
-        let local_shm = shm.clone_and_connect().expect("clone SHM");
-
         let bg_thread = ASIMpxBackgroundThread::spawn(&config, &shm)
             .map_err(|e| ConnectionError::new_err(e.to_string()))?;
 
@@ -171,6 +168,35 @@ impl ServalConnection {
         let conn = _PyASIMpxConnection::new(shm, generic_conn);
 
         Ok(Self { conn })
+    }
+
+    fn wait_for_arm(&mut self, timeout: f32) -> PyResult<Option<PendingAcquisition>> {
+        self.conn.wait_for_arm(timeout)
+    }
+
+    fn get_socket_path(&self) -> PyResult<String> {
+        self.conn.get_socket_path()
+    }
+
+    fn is_running(&self) -> PyResult<bool> {
+        self.conn.is_running()
+    }
+
+    fn start_passive(&mut self) -> PyResult<()> {
+        self.conn.start_passive()
+    }
+
+    fn close(&mut self) -> PyResult<()> {
+        self.conn.close()
+    }
+
+    fn get_next_stack(
+        &mut self,
+        max_size: usize,
+        py: Python,
+    ) -> PyResult<Option<PyFrameStackHandle>> {
+        let stack_inner = self.conn.get_next_stack(max_size, py)?;
+        Ok(stack_inner.map(PyFrameStackHandle::new))
     }
 }
 
@@ -217,7 +243,7 @@ impl PyFrameStackHandle {
     }
 
     fn get_shape(&self) -> PyResult<(u64, u64)> {
-        Ok(self.inner.get_shape()?)
+        self.inner.get_shape()
     }
 
     fn __len__(&self) -> PyResult<usize> {
@@ -226,6 +252,10 @@ impl PyFrameStackHandle {
 }
 
 impl PyFrameStackHandle {
+    fn new(inner: _PyASIMpxFrameStack) -> Self {
+        Self { inner }
+    }
+
     fn get_inner(&self) -> &_PyASIMpxFrameStack {
         &self.inner
     }
@@ -265,13 +295,15 @@ impl CamClient {
         })
     }
 
+    // FIXME: add safe replacement for this function
+    // (probably needs Python 3.11+)
     #[deprecated]
     fn get_frames(
         &self,
         handle: &PyFrameStackHandle,
         py: Python,
     ) -> PyResult<Vec<(PyObject, DType)>> {
-        let shm = unsafe { self.inner.get_shm()? };
+        let shm = self.inner.get_shm()?;
 
         // safety: Python code must not use memoryviews after calling `done`.
         let slot = unsafe { shm.get(handle.get_inner().try_get_inner()?.get_slot().slot_idx) };
