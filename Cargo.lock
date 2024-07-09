@@ -2128,6 +2128,7 @@ version = "0.2.11"
 dependencies = [
  "bincode",
  "common",
+ "encoding_rs",
  "env_logger",
  "ipc-test",
  "log",

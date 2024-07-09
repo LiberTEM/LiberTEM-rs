@@ -1,21 +1,23 @@
 use std::{
     io::{self, ErrorKind, Read},
     net::TcpStream,
-    sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError},
+    sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
-    utils::{num_from_byte_slice, NumParseError},
+    frame_stack::{FrameMeta, FrameStackForWriting, FrameStackWriteError},
+    generic_connection::AcquisitionConfig,
+    utils::{num_from_byte_slice, three_way_shift, NumParseError},
 };
-use ipc_test::SharedSlabAllocator;
+use ipc_test::{slab::ShmError, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
 
 use crate::base_types::{
     AcqHeaderParseError, FrameMetaParseError, QdAcquisitionHeader, QdDetectorConnConfig,
-    QdFrameMeta,
+    QdFrameMeta, PREFIX_SIZE,
 };
 
 type QdControlMsg = ControlMsg<()>;
@@ -39,11 +41,23 @@ pub enum AcquisitionError {
     #[error("parse error: {msg}")]
     HeaderParseError { msg: String },
 
+    #[error("configuration error: {msg}")]
+    ConfigurationError { msg: String },
+
+    #[error("shm buffer full")]
+    NoSlotAvailable,
+
+    #[error("error writing to shm: {0}")]
+    WriteError(#[from] FrameStackWriteError),
+
     #[error("I/O error: {source}")]
     IOError {
         #[from]
         source: io::Error,
     },
+
+    #[error("peek error: could not peek {nbytes}")]
+    PeekError { nbytes: usize },
 }
 
 impl From<NumParseError> for AcquisitionError {
@@ -66,6 +80,20 @@ impl From<FrameMetaParseError> for AcquisitionError {
     fn from(value: FrameMetaParseError) -> Self {
         AcquisitionError::HeaderParseError {
             msg: value.to_string(),
+        }
+    }
+}
+
+impl<T> From<SendError<T>> for AcquisitionError {
+    fn from(_value: SendError<T>) -> Self {
+        AcquisitionError::Disconnected
+    }
+}
+
+impl From<ShmError> for AcquisitionError {
+    fn from(value: ShmError) -> Self {
+        match value {
+            ShmError::NoSlotAvailable => AcquisitionError::NoSlotAvailable,
         }
     }
 }
@@ -132,69 +160,147 @@ fn peek_exact_interruptible(
     to_thread_r: &Receiver<QdControlMsg>,
 ) -> Result<(), AcquisitionError> {
     loop {
+        trace!("peek_exact_interruptible: loop head");
         check_for_control(to_thread_r)?;
+        let mut retries = 0;
         match stream.peek(buf) {
             Ok(size) => {
                 if size == buf.len() {
                     // it's full! we are done...
                     return Ok(());
+                } else {
+                    trace!(
+                        "peek_exact_interruptible: not full; {size} != {}",
+                        buf.len()
+                    );
+                    retries += 1;
+                    if retries > 10 {
+                        return Err(AcquisitionError::PeekError { nbytes: buf.len() });
+                    }
+                    // we are only using this for peeking at the first frame, or its header,
+                    // so we can be a bit sleepy here:
+                    std::thread::sleep(Duration::from_millis(10));
                 }
             }
-            Err(e) => match e.kind() {
-                // in this case, we couldn't peek the full size, so we try again
-                ErrorKind::WouldBlock | ErrorKind::TimedOut => {
-                    check_for_control(to_thread_r)?;
-                    continue;
+            Err(e) => {
+                trace!("peek_exact_interruptible: err: {e}");
+                match e.kind() {
+                    // in this case, we couldn't peek the full size, so we try again
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut => {
+                        check_for_control(to_thread_r)?;
+                        continue;
+                    }
+                    _ => return Err(AcquisitionError::from(e)),
                 }
-                _ => return Err(AcquisitionError::from(e)),
-            },
+            }
         }
     }
+}
+
+fn parse_mpx_length(buf: &[u8]) -> Result<usize, AcquisitionError> {
+    let magic = &buf[0..4];
+    if magic != b"MPX," {
+        return Err(AcquisitionError::HeaderParseError {
+            msg: format!(
+                "expected 'MPX,', got: '{:X?}' ('{}') (maybe previous read was short?)",
+                magic,
+                String::from_utf8_lossy(magic)
+            ),
+        });
+    }
+    Ok(num_from_byte_slice(&buf[4..14])?)
 }
 
 /// Read MPX message from `stream`
 ///
 /// Message is in the form: "MPX,<length>,<MSGTYPE>,<MSGPAYLOAD>"
 ///
-/// Where <length> is the length of "<MSGTYPE>,<MSGPAYLOAD>" and is encoded
+/// Where <length> is the length of ",<MSGTYPE>,<MSGPAYLOAD>" and is encoded
 /// as a 10-character decimal number w/ leading zeros.
+///
+/// The message is read into a newly allocated `Vec`, so this is not the
+/// appropriate function to use for receiving payload data.
 fn read_mpx_message(
     stream: &mut impl Read,
     to_thread_r: &Receiver<QdControlMsg>,
-) -> Result<Vec<u8>, AcquisitionError> {
+) -> Result<MPXMessage, AcquisitionError> {
     // read and parse the 'MPX,<length>,' part:
-    let mut prefix = [0u8; 15];
+    let mut prefix = [0u8; PREFIX_SIZE];
     read_exact_interruptible(stream, &mut prefix, to_thread_r)?;
+    trace!(
+        "read_mpx_message: prefix={prefix:X?} ({})",
+        std::str::from_utf8(&prefix).unwrap()
+    );
+    let length = parse_mpx_length(&prefix)?;
+    let mut payload = vec![0u8; length - 1];
+    read_exact_interruptible(stream, &mut payload, to_thread_r)?;
+    Ok(MPXMessage { length, payload })
+}
 
-    let magic = &prefix[0..4];
-    if magic != b"MPX," {
+/// Read a frame header, based on the information in `first_frame_meta`,
+/// validating that the header+payload length is the same as the first frame.
+///
+/// This includes reading the MPX prefix.
+fn read_frame_header(
+    stream: &mut impl Read,
+    to_thread_r: &Receiver<QdControlMsg>,
+    first_frame_meta: &QdFrameMeta,
+    scratch_buf: &mut Vec<u8>,
+) -> Result<QdFrameMeta, AcquisitionError> {
+    // read the full header in one go:
+    scratch_buf.resize(first_frame_meta.get_total_size_header(), 0);
+    read_exact_interruptible(stream, scratch_buf, to_thread_r)?;
+
+    trace!(
+        "got raw frame header: '{}'",
+        String::from_utf8_lossy(scratch_buf)
+    );
+    // parse and validate "mpx length":
+    let length = parse_mpx_length(&scratch_buf[..PREFIX_SIZE])?;
+    if length != first_frame_meta.get_mpx_length() {
         return Err(AcquisitionError::HeaderParseError {
             msg: format!(
-                "expected 'MPX,', got: '{:X?}' (maybe previous read was short?)",
-                magic
+                "unexpected length difference: expected {} got {}",
+                first_frame_meta.get_mpx_length(),
+                length
             ),
         });
     }
-    let length = num_from_byte_slice(&prefix[4..14])?;
 
-    let mut payload = vec![0u8; length];
-    read_exact_interruptible(stream, &mut payload, to_thread_r)?;
+    Ok(QdFrameMeta::parse_bytes(
+        &scratch_buf[PREFIX_SIZE..],
+        length,
+    )?)
+}
 
-    Ok(payload)
+fn read_frame_payload_into(
+    stream: &mut impl Read,
+    to_thread_r: &Receiver<QdControlMsg>,
+    frame_meta: &QdFrameMeta,
+    out: &mut [u8],
+) -> Result<(), AcquisitionError> {
+    assert_eq!(frame_meta.get_data_length_bytes(), out.len());
+    read_exact_interruptible(stream, out, to_thread_r)
+}
+
+pub struct MPXMessage {
+    length: usize,
+    payload: Vec<u8>,
 }
 
 /// Peek MPX message from `stream`
 ///
 /// Message is in the form: "MPX,<length>,<MSGTYPE>,<MSGPAYLOAD>"
 ///
-/// Where <length> is the length of "<MSGTYPE>,<MSGPAYLOAD>" and is encoded
+/// Where <length> is the length of ",<MSGTYPE>,<MSGPAYLOAD>" and is encoded
 /// as a 10-character decimal number w/ leading zeros.
 fn peek_mpx_message(
     stream: &mut TcpStream,
     to_thread_r: &Receiver<QdControlMsg>,
-) -> Result<Vec<u8>, AcquisitionError> {
+    max_length: usize,
+) -> Result<MPXMessage, AcquisitionError> {
     // read and parse the 'MPX,<length>,' part:
-    let mut prefix = [0u8; 15];
+    let mut prefix = [0u8; PREFIX_SIZE];
     peek_exact_interruptible(stream, &mut prefix, to_thread_r)?;
 
     let magic = &prefix[0..4];
@@ -210,9 +316,12 @@ fn peek_mpx_message(
 
     // subtle difference w/ `read_mpx_message`: we need to have a larger buffer here,
     // because here we get the prefix again!
-    let mut prefix_and_payload = vec![0u8; length + 15];
+    let mut prefix_and_payload = vec![0u8; max_length.min(length + PREFIX_SIZE - 1)];
     peek_exact_interruptible(stream, &mut prefix_and_payload, to_thread_r)?;
-    Ok(prefix_and_payload[15..].to_vec())
+    Ok(MPXMessage {
+        payload: prefix_and_payload[PREFIX_SIZE..].to_vec(),
+        length,
+    })
 }
 
 fn read_acquisition_header(
@@ -220,15 +329,78 @@ fn read_acquisition_header(
     to_thread_r: &Receiver<QdControlMsg>,
 ) -> Result<QdAcquisitionHeader, AcquisitionError> {
     let acq_header_raw = read_mpx_message(stream, to_thread_r)?;
-    Ok(QdAcquisitionHeader::parse_bytes(&acq_header_raw)?)
+    Ok(QdAcquisitionHeader::parse_bytes(&acq_header_raw.payload)?)
 }
 
 fn peek_first_frame_header(
     stream: &mut TcpStream,
     to_thread_r: &Receiver<QdControlMsg>,
 ) -> Result<QdFrameMeta, AcquisitionError> {
-    let msg = peek_mpx_message(stream, to_thread_r)?;
-    Ok(QdFrameMeta::parse_bytes(&msg)?)
+    let msg = peek_mpx_message(stream, to_thread_r, 2048)?;
+    Ok(QdFrameMeta::parse_bytes(&msg.payload, msg.length)?)
+}
+
+/// Receive a frame directly into shared memory
+fn recv_frame(
+    stream: &mut impl Read,
+    to_thread_r: &Receiver<QdControlMsg>,
+    first_frame_meta: &QdFrameMeta,
+    frame_stack: &mut FrameStackForWriting<QdFrameMeta>,
+    extra_frame_stack: &mut FrameStackForWriting<QdFrameMeta>,
+) -> Result<QdFrameMeta, AcquisitionError> {
+    let mut scratch_buf: Vec<u8> = Vec::new();
+    let frame_meta = read_frame_header(stream, to_thread_r, first_frame_meta, &mut scratch_buf)?;
+    let payload_size = frame_meta.get_data_length_bytes();
+
+    let fs = if frame_stack.can_fit(payload_size) {
+        frame_stack
+    } else {
+        trace!(
+            "frame_stack can't fit this frame: {} {}",
+            frame_stack.bytes_free(),
+            payload_size,
+        );
+        if !extra_frame_stack.is_empty() {
+            return Err(AcquisitionError::StateError {
+                msg: "extra_frame_stack should be empty".to_owned(),
+            });
+        }
+        if !extra_frame_stack.can_fit(payload_size) {
+            return Err(AcquisitionError::ConfigurationError {
+                msg: format!(
+                    "extra_frame_stack can't fit frame; frame size {}, frame stack size {}",
+                    payload_size,
+                    extra_frame_stack.slot_size()
+                ),
+            });
+        }
+        extra_frame_stack
+    };
+
+    // FIXME: with a vectored read, we could read multiple frames into the frame stack,
+    // the idea being we we vector the header reads into a separate buffer from the payload,
+    // with the payload being in SHM.
+    // This is really only needed if the current approach turns out to be too
+    // slow for some reason.
+
+    fs.write_frame(&frame_meta, |dest_buf| {
+        read_frame_payload_into(stream, to_thread_r, &frame_meta, dest_buf)
+    })?;
+
+    Ok(frame_meta)
+}
+
+fn make_frame_stack(
+    shm: &mut SharedSlabAllocator,
+    config: &QdDetectorConnConfig,
+    meta: &QdFrameMeta,
+) -> Result<FrameStackForWriting<QdFrameMeta>, AcquisitionError> {
+    let slot = shm.try_get_mut()?;
+    Ok(FrameStackForWriting::new(
+        slot,
+        config.frame_stack_size,
+        meta.get_data_length_bytes(),
+    ))
 }
 
 fn acquisition(
@@ -240,7 +412,82 @@ fn acquisition(
     config: &QdDetectorConnConfig,
     shm: &mut SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
-    todo!();
+    let t0 = Instant::now();
+    let mut last_control_check = Instant::now();
+
+    from_thread_s.send(ReceiverMsg::AcquisitionStart {
+        pending_acquisition: acquisition_header.clone(),
+    })?;
+
+    let mut frame_stack = make_frame_stack(shm, config, first_frame_meta)?;
+    let mut extra_frame_stack = make_frame_stack(shm, config, first_frame_meta)?;
+
+    let mut sequence = 0;
+
+    loop {
+        if last_control_check.elapsed() > Duration::from_millis(300) {
+            last_control_check = Instant::now();
+            check_for_control(to_thread_r)?;
+            trace!("acquisition progress: sequence={sequence}");
+        }
+
+        let meta = recv_frame(
+            stream,
+            to_thread_r,
+            first_frame_meta,
+            &mut frame_stack,
+            &mut extra_frame_stack,
+        )?;
+
+        if !extra_frame_stack.is_empty() {
+            let to_send = {
+                let new_frame_stack = make_frame_stack(shm, config, first_frame_meta)?;
+                let old_frame_stack =
+                    three_way_shift(&mut frame_stack, &mut extra_frame_stack, new_frame_stack);
+                old_frame_stack.writing_done(shm)?
+            };
+            // send to our queue:
+            from_thread_s.send(ReceiverMsg::FrameStack {
+                frame_stack: to_send,
+            })?;
+        }
+
+        sequence += 1;
+
+        if sequence != meta.get_sequence() {
+            warn!("sequence number mismatch; did we lose a frame?");
+            // if this happens for some reason, we must adjust the sequence
+            // number to properly terminate the acquisition:
+            sequence = meta.get_sequence();
+        }
+
+        let done = sequence as usize == acquisition_header.num_frames();
+        if done {
+            let elapsed = t0.elapsed();
+            info!("done in {elapsed:?}");
+
+            let handle = frame_stack.writing_done(shm)?;
+            from_thread_s.send(ReceiverMsg::Finished {
+                frame_stack: handle,
+            })?;
+
+            if !extra_frame_stack.is_empty() {
+                let handle = extra_frame_stack.writing_done(shm)?;
+                from_thread_s.send(ReceiverMsg::Finished {
+                    frame_stack: handle,
+                })?;
+            } else {
+                // let's not leak the `extra_frame_stack`:
+                // FIXME: `FrameStackForWriting` should really free itself,
+                // if `writing_done` was not called manually, which might happen
+                // in case of error handling.
+                // ah, but it can't, because it doesn't have a reference to `shm`! hmm
+                extra_frame_stack.free_empty_frame_stack(shm)?;
+            }
+
+            return Ok(());
+        }
+    }
 }
 
 fn passive_acquisition(
@@ -254,10 +501,10 @@ fn passive_acquisition(
 
     loop {
         let data_uri = format!("{host}:{port}");
-        trace!("connecting to {data_uri}...");
+        trace!("connecting to {}...", &data_uri);
 
         check_for_control(to_thread_r)?;
-        let mut stream: TcpStream = match TcpStream::connect(data_uri) {
+        let mut stream: TcpStream = match TcpStream::connect(&data_uri) {
             Ok(s) => s,
             Err(e) => match e.kind() {
                 ErrorKind::ConnectionRefused
@@ -277,10 +524,15 @@ fn passive_acquisition(
 
         stream.set_read_timeout(Some(Duration::from_millis(100)))?;
 
+        trace!("connected to {}", &data_uri);
+        from_thread_s.send(ReceiverMsg::ReceiverArmed)?;
+
         // wait for the acquisition header, which is sent when the detector
         // is armed with STARTACQUISITION:
         let acquisition_header: QdAcquisitionHeader =
             read_acquisition_header(&mut stream, to_thread_r)?;
+
+        info!("acquisition header: {:?}", acquisition_header);
 
         // Wait for the first frame, which is sent when the acquisition actually starts
         // (for example, if it is triggered with SOFTTRIGGER or by the configured
@@ -294,7 +546,7 @@ fn passive_acquisition(
             &acquisition_header,
             &first_frame_meta,
             &mut stream,
-            &config,
+            config,
             shm,
         )?;
 
@@ -318,7 +570,7 @@ fn background_thread(
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
                 Ok(ControlMsg::StartAcquisitionPassive) => {
-                    match passive_acquisition(to_thread_r, from_thread_s, &config, &mut shm) {
+                    match passive_acquisition(to_thread_r, from_thread_s, config, &mut shm) {
                         Ok(_) => {}
                         e @ Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
                             info!("background_thread: terminating: {e:?}");
@@ -381,6 +633,8 @@ impl QdBackgroundThread {
         let builder = std::thread::Builder::new();
         let shm = shm.clone_and_connect()?;
         let config = config.clone();
+
+        debug!("connection config: {config:?}");
 
         Ok(Self {
             bg_thread: builder

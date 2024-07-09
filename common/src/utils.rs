@@ -1,4 +1,4 @@
-use std::{fmt::Debug, str::FromStr};
+use std::{fmt::Debug, mem::replace, str::FromStr};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NumParseError {
@@ -31,4 +31,10 @@ where
         err: Box::new(e),
     })?;
     Ok(result)
+}
+
+/// Puts `new` into `right`, `right` into `left` and returns the old `left`
+pub fn three_way_shift<T>(left: &mut T, right: &mut T, new: T) -> T {
+    let old_right = replace(right, new);
+    replace(left, old_right)
 }

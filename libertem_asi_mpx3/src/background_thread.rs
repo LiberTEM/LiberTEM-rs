@@ -11,7 +11,7 @@ use std::{
 use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
     frame_stack::{FrameStackForWriting, FrameStackWriteError},
-    utils::{num_from_byte_slice, NumParseError},
+    utils::{num_from_byte_slice, three_way_shift, NumParseError},
 };
 use ipc_test::SharedSlabAllocator;
 use log::{debug, error, info, trace, warn};
@@ -156,12 +156,6 @@ fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<ASIMpxFram
     trace!("frame header parsed: {meta:?}");
 
     Ok(meta)
-}
-
-/// Puts `new` into `right`, `right` into `left` and returns the old `left`
-fn three_way_shift<T>(left: &mut T, right: &mut T, new: T) -> T {
-    let old_right = replace(right, new);
-    replace(left, old_right)
 }
 
 fn recv_frame(
