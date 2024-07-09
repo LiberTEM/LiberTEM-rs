@@ -18,6 +18,13 @@ fn libertem_qd_mpx(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QdFrameStack>()?;
     m.add_class::<CamClient>()?;
 
+    let env = env_logger::Env::default()
+        .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")
+        .write_style_or("LIBERTEM_QD_LOG_STYLE", "always");
+    env_logger::Builder::from_env(env)
+        .format_timestamp_micros()
+        .init();
+
     Ok(())
 }
 
@@ -56,8 +63,8 @@ impl QdConnection {
             data_host,
             data_port,
             frame_stack_size,
-            num_slots,
             bytes_per_frame,
+            num_slots,
             huge.unwrap_or(false),
             shm_handle_path,
         );

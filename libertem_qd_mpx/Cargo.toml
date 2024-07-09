@@ -25,6 +25,7 @@ zerocopy = "0.7.35"
 numpy = "0.21.0"
 num = "0.4.3"
 thiserror = "1.0.61"
+encoding_rs = { version = "0.8.34", features = [] }
 
 [features]
 extension-module = ["pyo3/extension-module"]

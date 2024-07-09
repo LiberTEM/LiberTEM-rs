@@ -89,6 +89,7 @@ where
         }
     }
 
+    /// number of frames already written
     pub fn len(&self) -> usize {
         self.meta.len()
     }

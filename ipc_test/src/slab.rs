@@ -69,6 +69,12 @@ pub struct SHMHandle {
 
 impl SHMHandle {}
 
+#[derive(Debug, thiserror::Error)]
+pub enum ShmError {
+    #[error("no slot available")]
+    NoSlotAvailable,
+}
+
 /// Additional information needed to re-crate a `SharedSlabAllocator` in a
 /// different process
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -288,6 +294,10 @@ impl SharedSlabAllocator {
             slot_idx,
             size: self.slot_size,
         })
+    }
+
+    pub fn try_get_mut(&mut self) -> Result<SlotForWriting, ShmError> {
+        self.get_mut().ok_or(ShmError::NoSlotAvailable)
     }
 
     /// Exchange the `SlotForWriting` token into
