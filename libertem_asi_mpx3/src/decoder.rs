@@ -1,4 +1,4 @@
-use common::decoder::{try_cast_if_safe, Decoder, DecoderError};
+use common::decoder::{try_cast_if_safe, Decoder, DecoderError, DecoderTargetPixelType};
 use num::NumCast;
 use numpy::ndarray::{s, ArrayViewMut3};
 use zerocopy::{AsBytes, FromBytes};
@@ -20,7 +20,7 @@ impl Decoder for ASIMpxDecoder {
         end_idx: usize,
     ) -> Result<(), DecoderError>
     where
-        T: 'static + AsBytes + FromBytes + Copy + NumCast,
+        T: DecoderTargetPixelType,
     {
         input.with_slot(shm, |slot| {
             for ((frame_meta, out_idx), in_idx) in

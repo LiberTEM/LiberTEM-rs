@@ -20,7 +20,7 @@ if __name__ == "__main__":
             if stack is None:
                 print("done")
                 break
-            # cam_client.decode_range_into_buffer(stack, buf, 0, len(stack))
+            cam_client.decode_range_into_buffer(stack, buf, 0, len(stack))
             cam_client.done(stack)
     finally:
         conn.close()
