@@ -154,11 +154,11 @@ fn next_part_from_str_radix<T: Num>(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MQ1A {
-    timestamp_ext: String,
+    pub timestamp_ext: String,
 
-    acquisition_time_shutter_ns: u64,
+    pub acquisition_time_shutter_ns: u64,
 
-    counter_depth: u8,
+    pub counter_depth: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,9 +229,9 @@ pub struct QdFrameMeta {
 
     height_in_pixels: u32,
 
-    dtype: DType,
+    pub dtype: DType,
 
-    layout: Layout,
+    pub layout: Layout,
 
     chip_select: u8,
 
@@ -245,7 +245,7 @@ pub struct QdFrameMeta {
 
     gain_mode: Gain,
 
-    mq1a: Option<MQ1A>,
+    pub mq1a: Option<MQ1A>,
 }
 
 impl QdFrameMeta {
@@ -318,7 +318,7 @@ impl QdFrameMeta {
         self.mpx_length
     }
 
-    /// size of the header on the wire, including the MPX prefix:
+    /// size of the frame header on the wire, including the MPX prefix:
     pub fn get_total_size_header(&self) -> usize {
         self.data_offset as usize + PREFIX_SIZE
     }
@@ -332,7 +332,7 @@ impl QdFrameMeta {
 
 impl FrameMeta for QdFrameMeta {
     fn get_data_length_bytes(&self) -> usize {
-        // why `-1`? because mpx_length
+        // minus one here because... mpx_length includes the comma, data_offset doesn't?
         self.mpx_length - self.data_offset as usize - 1
     }
 
@@ -546,10 +546,10 @@ mod test {
     fn test_parse_frame_header_example_1_single() {
         let inp = "MQ1,000001,00384,01,0256,0256,U08,   1x1,01,2020-05-18 16:51:49.971626,0.000555,0,0,0,1.200000E+2,5.110000E+2,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,3RX,175,511,000,000,000,000,000,000,125,255,125,125,100,100,082,100,087,030,128,004,255,129,128,176,168,511,511,MQ1A,2020-05-18T14:51:49.971626178Z,555000ns,6,";
         let inp_bytes = inp.as_bytes();
-        let fm = QdFrameMeta::parse_bytes(inp_bytes, 384 + 256 * 256).unwrap();
+        let fm = QdFrameMeta::parse_bytes(inp_bytes, 384 + 256 * 256 + 1).unwrap();
 
         assert_eq!(fm.get_sequence(), 1);
-        assert_eq!(fm.get_mpx_length(), 384 + 256 * 256);
+        assert_eq!(fm.get_mpx_length(), 384 + 256 * 256 + 1);
         assert_eq!(fm.data_offset, 384);
         assert_eq!(fm.num_chips, 1);
         assert_eq!(fm.width_in_pixels, 256);
@@ -567,10 +567,10 @@ mod test {
     fn test_parse_frame_header_example_2_quad() {
         let inp = "MQ1,000001,00768,04,0514,0514,U16,  2x2G,0F,2024-06-14 11:31:30.060732,0.001000,0,0,0,3.500000E+1,5.110000E+2,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,3RX,052,511,000,000,000,000,000,000,100,255,100,125,100,100,081,100,074,030,128,004,255,136,128,188,176,000,000,3RX,055,511,000,000,000,000,000,000,100,255,100,125,100,100,079,100,077,030,128,004,255,138,128,191,188,000,000,3RX,052,511,000,000,000,000,000,000,100,255,100,125,100,100,077,100,075,030,128,004,255,140,128,197,177,000,000,3RX,049,511,000,000,000,000,000,000,100,255,100,125,100,100,070,100,073,030,128,004,255,140,128,183,179,000,000,MQ1A,2024-06-14T09:31:30.060732344Z,1000000ns,12,";
         let inp_bytes = inp.as_bytes();
-        let fm = QdFrameMeta::parse_bytes(inp_bytes, 768 + 512 * 512).unwrap();
+        let fm = QdFrameMeta::parse_bytes(inp_bytes, 768 + (2 * 514 * 514) + 1).unwrap();
 
         assert_eq!(fm.get_sequence(), 1);
-        assert_eq!(fm.get_mpx_length(), 768 + 512 * 512);
+        assert_eq!(fm.get_mpx_length(), 768 + (2 * 514 * 514) + 1);
         assert_eq!(fm.data_offset, 768);
         assert_eq!(fm.num_chips, 4);
         assert_eq!(fm.width_in_pixels, 514);
@@ -588,10 +588,10 @@ mod test {
     fn test_parse_frame_header_example_3_raw_6bit() {
         let inp = "MQ1,000001,00384,01,0256,0256,R64,   1x1,01,2020-05-25 17:48:56.475280,0.001000,0,0,0,,MQ1A,2020-05-25T15:48:56.475280991Z,1000000ns,6,";
         let inp_bytes = inp.as_bytes();
-        let fm = QdFrameMeta::parse_bytes(inp_bytes, 384 + 256 * 256).unwrap();
+        let fm = QdFrameMeta::parse_bytes(inp_bytes, 384 + 256 * 256 + 1).unwrap();
 
         assert_eq!(fm.get_sequence(), 1);
-        assert_eq!(fm.get_mpx_length(), 384 + 256 * 256);
+        assert_eq!(fm.get_mpx_length(), 384 + 256 * 256 + 1);
         assert_eq!(fm.data_offset, 384);
         assert_eq!(fm.num_chips, 1);
         assert_eq!(fm.width_in_pixels, 256);
@@ -606,6 +606,30 @@ mod test {
 
         assert_eq!(fm.get_data_length_bytes(), 256 * 256);
         assert_eq!(fm.get_shape(), (256, 256));
+    }
+
+    #[test]
+    fn test_parse_frame_header_example_4_u16_quad() {
+        let inp = "MQ1,000001,00768,04,0512,0512,U16,   2x2,0F,2022-03-28 15:06:08.361851,0.000832,0,0,0,1.000000E+1,5.000000E+2,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,3RX,033,511,000,000,000,000,000,000,100,255,100,125,100,100,065,100,069,030,128,004,255,145,128,199,191,511,511,3RX,030,511,000,000,000,000,000,000,100,255,100,125,100,100,066,100,064,030,128,004,255,143,128,201,193,511,511,3RX,032,511,000,000,000,000,000,000,100,255,100,125,100,100,066,100,071,030,128,004,255,147,128,191,184,511,511,3RX,030,511,000,000,000,000,000,000,100,255,100,125,100,100,066,100,074,030,128,004,255,147,128,191,184,511,511,MQ1A,2022-03-28T14:06:08.361851667Z,831990ns,12,";
+        let inp_bytes = inp.as_bytes();
+        let fm = QdFrameMeta::parse_bytes(inp_bytes, 768 + 512 * 512 * 2 + 1).unwrap();
+
+        assert_eq!(fm.get_sequence(), 1);
+        assert_eq!(fm.get_mpx_length(), 768 + 512 * 512 * 2 + 1);
+        assert_eq!(fm.data_offset, 768);
+        assert_eq!(fm.num_chips, 4);
+        assert_eq!(fm.width_in_pixels, 512);
+        assert_eq!(fm.height_in_pixels, 512);
+        assert_eq!(fm.dtype, DType::U16);
+        assert_eq!(fm.layout, Layout::L2x2);
+        assert_eq!(fm.get_total_size_header(), 768 + 15);
+
+        let mq1a = fm.mq1a.clone().unwrap();
+        assert_eq!(mq1a.acquisition_time_shutter_ns, 831_990);
+        assert_eq!(mq1a.counter_depth, 12);
+
+        assert_eq!(fm.get_data_length_bytes(), 2 * 512 * 512);
+        assert_eq!(fm.get_shape(), (512, 512));
     }
 
     #[test]
@@ -684,5 +708,44 @@ End
         assert_eq!(header.num_frames(), 580);
         assert_eq!(header.get_scan_x(), Some(28));
         assert_eq!(header.get_scan_y(), Some(20));
+    }
+
+    #[test]
+    fn test_parse_acquisition_header_example_3_quad_u16() {
+        let inp = r"HDR,	
+Time and Date Stamp (day, mnth, yr, hr, min, s):	28/03/2022 15:01:56
+Chip ID:	W530_J6,W530_L6,W530_K5,W530_B5
+Chip Type (Medipix 3.0, Medipix 3.1, Medipix 3RX):	Medipix 3RX
+Assembly Size (NX1, 2X2):	   2x2
+Chip Mode  (SPM, CSM, CM, CSCM):	SPM
+Counter Depth (number):	12
+Gain:	SLGM
+Active Counters:	Alternating
+Thresholds (keV):	1.000000E+1,5.000000E+2,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0
+DACs:	033,511,000,000,000,000,000,000,100,255,100,125,100,100,065,100,069,030,128,004,255,145,128,199,191,511,511; 030,511,000,000,000,000,000,000,100,255,100,125,100,100,066,100,064,030,128,004,255,143,128,201,193,511,511; 032,511,000,000,000,000,000,000,100,255,100,125,100,100,066,100,071,030,128,004,255,147,128,191,184,511,511; 030,511,000,000,000,000,000,000,100,255,100,125,100,100,066,100,074,030,128,004,255,147,128,191,184,511,511
+bpc File:	c:\MERLIN_Quad_Config\W530_J6\W530_J6_SPM.bpc,c:\MERLIN_Quad_Config\W530_L6\W530_L6_SPM.bpc,c:\MERLIN_Quad_Config\W530_K5\W530_K5_SPM.bpc,c:\MERLIN_Quad_Config\W530_B5\W530_B5_SPM.bpc
+DAC File:	c:\MERLIN_Quad_Config\W530_J6\W530_J6_SPM.dacs,c:\MERLIN_Quad_Config\W530_L6\W530_L6_SPM.dacs,c:\MERLIN_Quad_Config\W530_K5\W530_K5_SPM.dacs,c:\MERLIN_Quad_Config\W530_B5\W530_B5_SPM.dacs
+Gap Fill Mode:	None
+Flat Field File:	None
+Dead Time File:	Dummy (C:\<NUL>\)
+Acquisition Type (Normal, Th_scan, Config):	Normal
+Frames in Acquisition (Number):	65536
+Frames per Trigger (Number):	65536
+Trigger Start (Positive, Negative, Internal):	Rising Edge
+Trigger Stop (Positive, Negative, Internal):	Rising Edge
+Sensor Bias (V):	120 V
+Sensor Polarity (Positive, Negative):	Positive
+Temperature (C):	Board Temp 52.389328 Deg C
+Humidity (%):	Board Humidity 0.103516 
+Medipix Clock (MHz):	120MHz
+Readout System:	Merlin Quad
+Software Version:	0.77.0.16
+End	                                                                                                                                                                                                         
+";
+        let inp_bytes = inp.as_bytes();
+        let header = QdAcquisitionHeader::parse_bytes(inp_bytes).unwrap();
+        assert_eq!(header.num_frames(), 65536);
+        assert_eq!(header.get_scan_x(), None);
+        assert_eq!(header.get_scan_y(), None);
     }
 }

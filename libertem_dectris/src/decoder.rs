@@ -4,7 +4,7 @@ use std::{
 };
 
 use common::{
-    decoder::{try_cast_if_safe, Decoder, DecoderError},
+    decoder::{try_cast_if_safe, Decoder, DecoderError, DecoderTargetPixelType},
     frame_stack::FrameStackHandle,
 };
 use ipc_test::SharedSlabAllocator;
@@ -57,7 +57,7 @@ impl Decoder for DectrisDecoder {
         end_idx: usize,
     ) -> Result<(), DecoderError>
     where
-        T: 'static + AsBytes + FromBytes + Copy + NumCast,
+        T: DecoderTargetPixelType,
     {
         input.with_slot(shm, |slot| {
             // our three cute special cases:

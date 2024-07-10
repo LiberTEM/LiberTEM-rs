@@ -34,7 +34,8 @@ macro_rules! impl_py_cam_client {
     ) => {
         mod impl_cam_client {
             use common::{
-                decoder::Decoder, frame_stack::FrameStackHandle,
+                decoder::{Decoder, DecoderTargetPixelType},
+                frame_stack::FrameStackHandle,
                 generic_cam_client::GenericCamClient,
             };
             use ipc_test::SharedSlabAllocator;
@@ -57,7 +58,7 @@ macro_rules! impl_py_cam_client {
             }
 
             impl $name {
-                fn decode_impl<'py, T: Element + AsBytes + FromBytes + Copy + NumCast + 'static>(
+                fn decode_impl<'py, T: Element + DecoderTargetPixelType>(
                     &self,
                     input: &super::$py_frame_stack,
                     out: &Bound<'py, PyArray3<T>>,

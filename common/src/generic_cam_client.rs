@@ -1,10 +1,10 @@
+use std::fmt::Debug;
+
 use ipc_test::{slab::SlabInitError, SharedSlabAllocator};
 use ndarray::ArrayViewMut3;
-use num::NumCast;
-use zerocopy::{AsBytes, FromBytes};
 
 use crate::{
-    decoder::{Decoder, DecoderError},
+    decoder::{Decoder, DecoderError, DecoderTargetPixelType},
     frame_stack::{FrameMeta, FrameStackHandle},
 };
 
@@ -104,7 +104,7 @@ where
         dest: &mut ArrayViewMut3<'_, T>,
     ) -> Result<(), CamClientError>
     where
-        T: 'static + AsBytes + FromBytes + Copy + NumCast,
+        T: DecoderTargetPixelType,
     {
         self.decode_range_into_buffer(input, dest, 0, input.len())
     }
@@ -121,9 +121,9 @@ where
         end_idx: usize,
     ) -> Result<(), CamClientError>
     where
-        T: 'static + AsBytes + FromBytes + Copy + NumCast,
+        T: DecoderTargetPixelType,
     {
-        let shm = unsafe { self.get_shm()? };
+        let shm = self.get_shm()?;
         Ok(self.decoder.decode(shm, input, dest, start_idx, end_idx)?)
     }
 

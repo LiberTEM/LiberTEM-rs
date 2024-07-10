@@ -15,6 +15,7 @@ pub enum NumParseError {
     },
 }
 
+/// Parse a decimal number from an ASCII/UTF8 string
 pub fn num_from_byte_slice<T: FromStr>(bytes: &[u8]) -> Result<T, NumParseError>
 where
     <T as std::str::FromStr>::Err: Debug + std::error::Error + 'static,

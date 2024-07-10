@@ -352,6 +352,8 @@ fn recv_frame(
     let frame_meta = read_frame_header(stream, to_thread_r, first_frame_meta, &mut scratch_buf)?;
     let payload_size = frame_meta.get_data_length_bytes();
 
+    trace!("parsed frame header: {frame_meta:?}");
+
     let fs = if frame_stack.can_fit(payload_size) {
         frame_stack
     } else {
