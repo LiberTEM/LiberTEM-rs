@@ -121,8 +121,12 @@ impl DectrisConnection {
     /// Wait until the detector is armed, or until the timeout expires (in seconds)
     /// Returns `None` in case of timeout, the detector config otherwise.
     /// This method drops the GIL to allow concurrent Python threads.
-    fn wait_for_arm(&mut self, timeout: f32) -> PyResult<Option<(DetectorConfig, u64)>> {
-        let res = self.conn.wait_for_arm(timeout)?;
+    fn wait_for_arm(
+        &mut self,
+        timeout: f32,
+        py: Python<'_>,
+    ) -> PyResult<Option<(DetectorConfig, u64)>> {
+        let res = self.conn.wait_for_arm(timeout, py)?;
         Ok(res.map(|config| (config.get_detector_config(), config.get_series())))
     }
 
