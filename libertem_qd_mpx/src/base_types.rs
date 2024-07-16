@@ -1,19 +1,19 @@
 use std::{
+    any::type_name,
     collections::HashMap,
     fmt::Debug,
     str::{FromStr, Split, Utf8Error},
     string::FromUtf8Error,
+    time::Duration,
 };
 
 use common::{
-    decoder::{try_cast_primitive, DecoderError},
     frame_stack::FrameMeta,
     generic_connection::{AcquisitionConfig, DetectorConnectionConfig},
 };
-use itertools::Itertools;
-use log::warn;
-use num::{Num, NumCast, ToPrimitive};
-use pyo3::pyclass;
+use log::{trace, warn};
+use num::Num;
+use pyo3::{pyclass, pymethods};
 use serde::{Deserialize, Serialize};
 
 /// Size of the full prefix, in bytes, including the comma separator to the payload: 'MPX,<length>,'
@@ -123,10 +123,16 @@ impl From<NextPartError> for FrameMetaParseError {
     }
 }
 
-fn next_part_from_str<T: FromStr>(parts: &mut Split<char>) -> Result<T, NextPartError> {
+fn next_part_from_str<T: FromStr>(parts: &mut Split<char>) -> Result<T, NextPartError>
+where
+    <T as std::str::FromStr>::Err: std::fmt::Debug,
+{
     let part_str = parts.next().ok_or(NextPartError::Eof)?;
-    let value: T = part_str.parse().map_err(|_e| NextPartError::ValueError {
-        msg: format!("unexpected value: {part_str}"),
+    let value: T = part_str.parse().map_err(|e| NextPartError::ValueError {
+        msg: format!(
+            "unexpected value: '{part_str}', expected {} ({e:?})",
+            type_name::<T>()
+        ),
     })?;
     Ok(value)
 }
@@ -134,22 +140,31 @@ fn next_part_from_str<T: FromStr>(parts: &mut Split<char>) -> Result<T, NextPart
 fn next_part_from_str_with_map<T: FromStr>(
     parts: &mut Split<char>,
     f: impl Fn(&str) -> Result<&str, NextPartError>,
-) -> Result<T, NextPartError> {
+) -> Result<T, NextPartError>
+where
+    <T as std::str::FromStr>::Err: std::fmt::Debug,
+{
     let part_str = parts.next().ok_or(NextPartError::Eof)?;
     let part_str = f(part_str)?;
-    let value: T = part_str.parse().map_err(|_e| NextPartError::ValueError {
-        msg: format!("unexpected value: {part_str}"),
+    let value: T = part_str.parse().map_err(|e| NextPartError::ValueError {
+        msg: format!(
+            "unexpected value: '{part_str}', expected {} ({e:?})",
+            type_name::<T>()
+        ),
     })?;
     Ok(value)
 }
 
-fn next_part_from_str_radix<T: Num>(
-    parts: &mut Split<char>,
-    radix: u32,
-) -> Result<T, NextPartError> {
+fn next_part_from_str_radix<T: Num>(parts: &mut Split<char>, radix: u32) -> Result<T, NextPartError>
+where
+    <T as num::Num>::FromStrRadixErr: std::fmt::Debug,
+{
     let part_str = parts.next().ok_or(NextPartError::Eof)?;
-    let value = T::from_str_radix(part_str, radix).map_err(|_e| NextPartError::ValueError {
-        msg: format!("unexpected value: {part_str}"),
+    let value = T::from_str_radix(part_str, radix).map_err(|e| NextPartError::ValueError {
+        msg: format!(
+            "unexpected value: '{part_str}', expected {} ({e:?}); radix={radix}",
+            type_name::<T>()
+        ),
     })?;
     Ok(value)
 }
@@ -292,6 +307,23 @@ impl QdFrameMeta {
 
     /// Parse frame header, including the MQ1 prefix
     pub fn parse_bytes(input: &[u8], mpx_length: usize) -> Result<Self, FrameMetaParseError> {
+        if input.len() < 16 {
+            return Err(FrameMetaParseError::Eof);
+        }
+
+        // first, split off the header if there is more stuff after it:
+        let data_offset: u32 = std::str::from_utf8(&input[11..16])?.parse().map_err(|e| {
+            FrameMetaParseError::ValueError {
+                msg: format!("could not parse data offset! {e:?}"),
+            }
+        })?;
+
+        let input = if input.len() > data_offset as usize {
+            &input[..data_offset as usize]
+        } else {
+            input
+        };
+
         let input_string = std::str::from_utf8(input)?;
 
         let mut parts = input_string.split(',');
@@ -323,7 +355,7 @@ impl QdFrameMeta {
             let timestamp_ext = next_part_from_str(&mut parts)?;
             let acquisition_time_shutter_ns =
                 next_part_from_str_with_map(&mut parts, |s| Ok(&s[0..s.len() - 2]))?;
-            let counter_depth = next_part_from_str(&mut parts)?;
+            let counter_depth = next_part_from_str_with_map(&mut parts, |s| Ok(s.trim()))?;
 
             Some(MQ1A {
                 timestamp_ext,
@@ -425,6 +457,13 @@ impl AcquisitionConfig for QdAcquisitionHeader {
     }
 }
 
+#[pymethods]
+impl QdAcquisitionHeader {
+    fn frames_in_acquisition(&self) -> usize {
+        self.frames_in_acquisition
+    }
+}
+
 fn get_key_and_parse<T: FromStr>(
     raw_kv: &HashMap<String, String>,
     key: &str,
@@ -469,7 +508,10 @@ impl QdAcquisitionHeader {
     pub fn parse_bytes(input: &[u8]) -> Result<Self, AcqHeaderParseError> {
         // the acquisition header can actually be latin-1 (µA...) so let's try that:
         let input_string = encoding_rs::mem::decode_latin1(input);
-        // trace!("parsing acquisition header: {}", String::from_utf8_lossy(input));
+        trace!(
+            "parsing acquisition header: {}",
+            String::from_utf8_lossy(input)
+        );
         // trace!("parsing acquisition header: {}", String::from_utf8_lossy(&input[1003..]));
 
         // let input= input.strip_suffix(&[0]).unwrap_or(input);
@@ -530,12 +572,15 @@ pub struct QdDetectorConnConfig {
     /// with `frame_stack_size`
     pub bytes_per_frame: usize,
 
+    pub drain: Option<Duration>,
+
     num_slots: usize,
     enable_huge_pages: bool,
     shm_handle_path: String,
 }
 
 impl QdDetectorConnConfig {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         data_host: &str,
         data_port: usize,
@@ -544,6 +589,7 @@ impl QdDetectorConnConfig {
         num_slots: usize,
         enable_huge_pages: bool,
         shm_handle_path: &str,
+        drain: Option<Duration>,
     ) -> Self {
         Self {
             data_host: data_host.to_owned(),
@@ -553,6 +599,7 @@ impl QdDetectorConnConfig {
             num_slots,
             enable_huge_pages,
             shm_handle_path: shm_handle_path.to_owned(),
+            drain,
         }
     }
 }
@@ -647,6 +694,29 @@ mod test {
 
         assert_eq!(fm.get_data_length_bytes(), 256 * 256);
         assert_eq!(fm.get_shape(), (256, 256));
+    }
+
+    #[test]
+    fn test_parse_frame_header_from_mock() {
+        let inp = "MQ1,000001,00340,01,0016,0016,U08,   1x1,01,2020-05-18 16:51:49.971626,0.000555,0,0,0,1.200000E+2,5.110000E+2,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,3RX,175,511,000,000,000,000,000,000,125,255,125,125,100,100,082,100,087,030,128,004,255,129,128,176,168,511,511,MQ1A,2020-05-18T14:51:49.971626178Z,555000ns,6\n";
+        let inp_bytes = inp.as_bytes();
+        let fm = QdFrameMeta::parse_bytes(inp_bytes, 384 + 256 * 256 + 1).unwrap();
+
+        eprintln!("{fm:?}");
+    }
+
+    #[test]
+    fn test_parse_frame_header_from_mock_with_additional_stuff() {
+        let inp = "MQ1,000001,00340,01,0016,0016,U08,   1x1,01,2020-05-18 16:51:49.971626,0.000555,0,0,0,1.200000E+2,5.110000E+2,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,3RX,175,511,000,000,000,000,000,000,125,255,125,125,100,100,082,100,087,030,128,004,255,129,128,176,168,511,511,MQ1A,2020-05-18T14:51:49.971626178Z,555000ns,6\n";
+        let inp_bytes = inp.as_bytes();
+        let inp_plus_data: Vec<u8> = inp_bytes
+            .iter()
+            .chain(vec![0; 16 * 16].iter())
+            .copied()
+            .collect();
+        let fm = QdFrameMeta::parse_bytes(&inp_plus_data, 384 + 256 * 256 + 1).unwrap();
+
+        eprintln!("{fm:?}");
     }
 
     #[test]

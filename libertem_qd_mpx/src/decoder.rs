@@ -112,7 +112,9 @@ impl QdDecoder {
         O: DecoderTargetPixelType,
     {
         match &frame_meta.layout {
-            crate::base_types::Layout::L1x1 => self.decode_frame_single(frame_meta, input, output),
+            crate::base_types::Layout::L1x1 => {
+                self.decode_frame_single_chip(frame_meta, input, output)
+            }
             crate::base_types::Layout::L2x2 => self.decode_frame_quad(frame_meta, input, output),
             crate::base_types::Layout::L2x2G => self.decode_frame_quad(frame_meta, input, output),
             layout @ (crate::base_types::Layout::LNx1 | crate::base_types::Layout::LNx1G) => {
@@ -160,7 +162,7 @@ impl QdDecoder {
         }
     }
 
-    fn decode_frame_single<O>(
+    fn decode_frame_single_chip<O>(
         &self,
         frame_meta: &QdFrameMeta,
         input: &[u8],
