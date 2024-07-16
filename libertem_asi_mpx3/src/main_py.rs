@@ -170,8 +170,12 @@ impl ServalConnection {
         Ok(Self { conn })
     }
 
-    fn wait_for_arm(&mut self, timeout: f32) -> PyResult<Option<PendingAcquisition>> {
-        self.conn.wait_for_arm(timeout)
+    fn wait_for_arm(
+        &mut self,
+        timeout: f32,
+        py: Python<'_>,
+    ) -> PyResult<Option<PendingAcquisition>> {
+        self.conn.wait_for_arm(timeout, py)
     }
 
     fn get_socket_path(&self) -> PyResult<String> {
