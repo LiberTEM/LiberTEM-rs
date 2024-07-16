@@ -195,30 +195,32 @@ macro_rules! impl_py_connection {
                     Ok(conn_impl.is_running())
                 }
 
-                pub fn start_passive(&mut self) -> PyResult<()> {
-                    let conn_impl = self.get_conn_mut()?;
-                    conn_impl
-                        .start_passive(|| {
-                            Python::with_gil(|py| py.check_signals())?;
-                            Ok::<_, PyErr>(())
-                        })
-                        .map_err(|e| {
-                            PyConnectionError::new_err(format!("start_passive failed: {e}"))
-                        })?;
+                pub fn start_passive(&mut self, timeout: f32, py: Python<'_>) -> PyResult<()> {
+                    let timeout = Duration::from_secs_f32(timeout);
+                    py.allow_threads(|| {
+                        let conn_impl = self.get_conn_mut()?;
+                        conn_impl
+                            .start_passive(
+                                || {
+                                    Python::with_gil(|py| py.check_signals())?;
+                                    Ok::<_, PyErr>(())
+                                },
+                                &timeout,
+                            )
+                            .map_err(|e| {
+                                PyConnectionError::new_err(format!("start_passive failed: {e}"))
+                            })?;
 
-                    conn_impl
-                        .wait_for_status(
-                            ConnectionStatus::Armed,
-                            Duration::from_millis(100),
-                            || {
+                        conn_impl
+                            .wait_for_status(ConnectionStatus::Armed, timeout, || {
                                 // re-acquire GIL to check if we need to break
                                 Python::with_gil(|py| py.check_signals())?;
                                 Ok::<_, PyErr>(())
-                            },
-                        )
-                        .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
+                            })
+                            .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
 
-                    Ok(())
+                        Ok(())
+                    })
                 }
 
                 pub fn log_shm_stats(&self) -> PyResult<()> {

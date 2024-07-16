@@ -1,4 +1,4 @@
-use std::{any::type_name, fmt::Debug};
+use std::{any::type_name, fmt::Debug, mem::size_of};
 
 use ipc_test::SharedSlabAllocator;
 use ndarray::ArrayViewMut3;
@@ -90,37 +90,44 @@ where
     }
 }
 
-pub fn decode_ints_be<'a, O, FromT>(input: &'a [u8], output: &mut [O]) -> Result<(), DecoderError>
+pub fn decode_ints_be<'a, O, ItemType>(
+    input: &'a [u8],
+    output: &mut [O],
+) -> Result<(), DecoderError>
 where
     O: DecoderTargetPixelType,
-    FromT: ToPrimitive + Debug + Copy + num::traits::FromBytes,
-    &'a <FromT as num::traits::FromBytes>::Bytes: std::convert::TryFrom<&'a [u8]>,
-    <&'a <FromT as num::traits::FromBytes>::Bytes as std::convert::TryFrom<&'a [u8]>>::Error: Debug,
-    <FromT as num::traits::FromBytes>::Bytes: 'a,
+    ItemType: ToPrimitive + Debug + Copy + num::traits::FromBytes,
+    &'a <ItemType as num::traits::FromBytes>::Bytes: std::convert::TryFrom<&'a [u8]>,
+    <&'a <ItemType as num::traits::FromBytes>::Bytes as std::convert::TryFrom<&'a [u8]>>::Error:
+        Debug,
+    <ItemType as num::traits::FromBytes>::Bytes: 'a,
 {
-    if input.len() % std::mem::size_of::<FromT>() != 0 {
+    if input.len() % std::mem::size_of::<ItemType>() != 0 {
         return Err(DecoderError::FrameDecodeFailed {
             msg: format!(
-                "input length {} is not divisible by {}",
+                "input length {} is not divisible by item size {}",
                 input.len(),
-                std::mem::size_of::<FromT>(),
+                std::mem::size_of::<ItemType>(),
             ),
         });
     }
 
-    let chunks = input.chunks_exact(std::mem::size_of::<FromT>());
+    if input.len() / std::mem::size_of::<ItemType>() != output.len() {
+        return Err(DecoderError::FrameDecodeFailed {
+            msg: format!(
+                "input length {} does not match output size {} for type {} item size {}",
+                input.len(),
+                output.len(),
+                type_name::<ItemType>(),
+                size_of::<ItemType>(),
+            ),
+        });
+    }
+
+    let chunks = input.chunks_exact(std::mem::size_of::<ItemType>());
     for (in_chunk, out_dest) in chunks.zip(output.iter_mut()) {
-        let swapped = FromT::from_be_bytes(in_chunk.try_into().expect("chunked"));
-        *out_dest = if let Some(value) = NumCast::from(swapped) {
-            value
-        } else {
-            return Err(DecoderError::FrameDecodeFailed {
-                msg: format!(
-                    "dtype conversion error: {swapped:?} does not fit {0}",
-                    type_name::<O>()
-                ),
-            });
-        }
+        let swapped = ItemType::from_be_bytes(in_chunk.try_into().expect("chunked"));
+        *out_dest = try_cast_primitive(swapped)?;
     }
 
     Ok(())

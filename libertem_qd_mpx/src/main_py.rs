@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use common::{decoder::DecoderTargetPixelType, generic_connection::GenericConnection};
 use numpy::{Element, PyArray1, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::{
@@ -42,16 +44,19 @@ impl_py_connection!(
 #[pyclass]
 struct QdConnection {
     conn: _PyQdConnection,
+    config: QdDetectorConnConfig,
 }
 
 #[pymethods]
 impl QdConnection {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         data_host: &str,
         data_port: usize,
         frame_stack_size: usize,
         shm_handle_path: &str,
+        drain: Option<bool>,
         num_slots: Option<usize>,
         bytes_per_frame: Option<usize>,
         huge: Option<bool>,
@@ -61,6 +66,12 @@ impl QdConnection {
         let num_slots = num_slots.unwrap_or(2000);
         let bytes_per_frame = bytes_per_frame.unwrap_or(256 * 256 * 2);
 
+        let drain = if drain.unwrap_or(false) {
+            Some(Duration::from_millis(100))
+        } else {
+            None
+        };
+
         let config = QdDetectorConnConfig::new(
             data_host,
             data_port,
@@ -69,6 +80,7 @@ impl QdConnection {
             num_slots,
             huge.unwrap_or(false),
             shm_handle_path,
+            drain,
         );
 
         let shm =
@@ -83,7 +95,7 @@ impl QdConnection {
 
         let conn = _PyQdConnection::new(shm, generic_conn);
 
-        Ok(QdConnection { conn })
+        Ok(QdConnection { conn, config })
     }
 
     fn wait_for_arm(
@@ -102,8 +114,10 @@ impl QdConnection {
         self.conn.is_running()
     }
 
-    fn start_passive(&mut self) -> PyResult<()> {
-        self.conn.start_passive()
+    fn start_passive(&mut self, py: Python<'_>) -> PyResult<()> {
+        let timeout =
+            Duration::from_millis(100) + self.config.drain.unwrap_or(Duration::from_millis(1));
+        self.conn.start_passive(timeout.as_secs_f32(), py)
     }
 
     fn close(&mut self) -> PyResult<()> {

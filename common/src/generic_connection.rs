@@ -319,20 +319,23 @@ where
     pub fn start_passive<E>(
         &mut self,
         periodic_callback: impl Fn() -> Result<(), E>,
+        timeout: &Duration,
     ) -> Result<(), ConnectionError>
     where
         E: std::error::Error + 'static + Send + Sync,
     {
+        if self.status == ConnectionStatus::Armed {
+            // already armed, don't have to do anything
+            debug!("start_passive: already armed, nothing to do");
+            return Ok(());
+        }
+
         self.bg_thread
             .channel_to_thread()
             .send(ControlMsg::StartAcquisitionPassive)
             .map_err(|_e| ConnectionError::Disconnected)?;
 
-        self.wait_for_status(
-            ConnectionStatus::Armed,
-            Duration::from_millis(1000),
-            periodic_callback,
-        )
+        self.wait_for_status(ConnectionStatus::Armed, *timeout, periodic_callback)
     }
 
     /// Receive the next frame stack from the background thread and handle any

@@ -129,14 +129,17 @@ fn read_exact_interruptible(
     buf: &mut [u8],
     to_thread_r: &Receiver<QdControlMsg>,
 ) -> Result<(), AcquisitionError> {
+    let total_to_read = buf.len();
     let mut buf_sliced = buf;
+    let mut bytes_read: usize = 0;
     loop {
         check_for_control(to_thread_r)?;
         match stream.read(buf_sliced) {
             Ok(size) => {
+                bytes_read += size;
                 buf_sliced = &mut buf_sliced[size..];
                 // it's full! we are done...
-                if buf_sliced.is_empty() {
+                if bytes_read == total_to_read {
                     return Ok(());
                 }
             }
@@ -148,6 +151,42 @@ fn read_exact_interruptible(
                 _ => return Err(AcquisitionError::from(e)),
             },
         }
+    }
+}
+
+/// Read from `stream` until we hit the timeout. Original socket timeout is
+/// overwritten and should be restored by the caller.
+fn drain_until_timeout(
+    stream: &mut TcpStream,
+    to_thread_r: &Receiver<QdControlMsg>,
+    timeout: &Duration,
+) -> Result<usize, AcquisitionError> {
+    let mut tmp = vec![0; 1024 * 1024];
+    let mut total_drained: usize = 0;
+    stream.set_read_timeout(Some(*timeout))?;
+    loop {
+        check_for_control(to_thread_r)?;
+        total_drained += match stream.read(&mut tmp) {
+            Ok(size) => {
+                trace!("drain_until_timeout: drained {size}");
+                if size == 0 {
+                    // EOF: okay....
+                    warn!("drained until EOF!");
+                    return Ok(total_drained);
+                }
+                size
+            }
+            Err(e) => match e.kind() {
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => {
+                    trace!("drain_until_timeout: timeout: {e:?}");
+                    return Ok(total_drained);
+                }
+                kind => {
+                    trace!("drain_until_timeout: other error kind: {kind:?}");
+                    return Err(e.into());
+                }
+            },
+        };
     }
 }
 
@@ -303,6 +342,8 @@ fn peek_mpx_message(
     let mut prefix = [0u8; PREFIX_SIZE];
     peek_exact_interruptible(stream, &mut prefix, to_thread_r)?;
 
+    trace!("peek_mpx_message: {}", String::from_utf8_lossy(&prefix));
+
     let magic = &prefix[0..4];
     if magic != b"MPX," {
         return Err(AcquisitionError::HeaderParseError {
@@ -337,6 +378,10 @@ fn peek_first_frame_header(
     to_thread_r: &Receiver<QdControlMsg>,
 ) -> Result<QdFrameMeta, AcquisitionError> {
     let msg = peek_mpx_message(stream, to_thread_r, 2048)?;
+    trace!(
+        "parsing first frame header: '{}'",
+        String::from_utf8_lossy(&msg.payload)
+    );
     Ok(QdFrameMeta::parse_bytes(&msg.payload, msg.length)?)
 }
 
@@ -503,7 +548,7 @@ fn passive_acquisition(
 
     loop {
         let data_uri = format!("{host}:{port}");
-        trace!("connecting to {}...", &data_uri);
+        info!("connecting to {}...", &data_uri);
 
         check_for_control(to_thread_r)?;
         let mut stream: TcpStream = match TcpStream::connect(&data_uri) {
@@ -524,10 +569,19 @@ fn passive_acquisition(
             },
         };
 
-        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+        info!("connected to {}.", &data_uri);
 
-        trace!("connected to {}", &data_uri);
+        if let Some(timeout) = &config.drain {
+            info!("draining for {timeout:?}...");
+            let drained = drain_until_timeout(&mut stream, to_thread_r, timeout)?;
+            if drained > 0 {
+                info!("drained {drained} bytes of garbage");
+            }
+        }
+
         from_thread_s.send(ReceiverMsg::ReceiverArmed)?;
+
+        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
 
         // wait for the acquisition header, which is sent when the detector
         // is armed with STARTACQUISITION:
