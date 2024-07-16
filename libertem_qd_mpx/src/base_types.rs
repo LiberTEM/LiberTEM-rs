@@ -6,11 +6,13 @@ use std::{
 };
 
 use common::{
+    decoder::{try_cast_primitive, DecoderError},
     frame_stack::FrameMeta,
     generic_connection::{AcquisitionConfig, DetectorConnectionConfig},
 };
-use log::{trace, warn};
-use num::Num;
+use itertools::Itertools;
+use log::warn;
+use num::{Num, NumCast, ToPrimitive};
 use pyo3::pyclass;
 use serde::{Deserialize, Serialize};
 
@@ -249,6 +251,45 @@ pub struct QdFrameMeta {
 }
 
 impl QdFrameMeta {
+    // this is only used internally for testing... could also make everything
+    // pub or pub(crate) instead...
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        mpx_length: usize,
+        sequence: u32,
+        data_offset: u16,
+        num_chips: u8,
+        width_in_pixels: u32,
+        height_in_pixels: u32,
+        dtype: DType,
+        layout: Layout,
+        chip_select: u8,
+        timestamp: String,
+        acquisition_shutter_time: f64,
+        counter: u8,
+        colour_mode: ColourMode,
+        gain_mode: Gain,
+        mq1a: Option<MQ1A>,
+    ) -> Self {
+        Self {
+            mpx_length,
+            sequence,
+            data_offset,
+            num_chips,
+            width_in_pixels,
+            height_in_pixels,
+            dtype,
+            layout,
+            chip_select,
+            timestamp,
+            acquisition_shutter_time,
+            counter,
+            colour_mode,
+            gain_mode,
+            mq1a,
+        }
+    }
+
     /// Parse frame header, including the MQ1 prefix
     pub fn parse_bytes(input: &[u8], mpx_length: usize) -> Result<Self, FrameMetaParseError> {
         let input_string = std::str::from_utf8(input)?;

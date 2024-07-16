@@ -61,51 +61,56 @@ pub enum DecoderError {
 
 pub fn try_cast_if_safe<I, O>(input: &[I], output: &mut [O]) -> Result<(), DecoderError>
 where
-    O: Copy + NumCast,
+    O: Copy + NumCast + Debug,
     I: Copy + ToPrimitive + Debug,
 {
     for (dest, src) in output.iter_mut().zip(input.iter()) {
-        let converted = NumCast::from(*src);
-        if let Some(value) = converted {
-            *dest = value;
-        } else {
-            return Err(DecoderError::FrameDecodeFailed {
-                msg: format!(
-                    "dtype conversion error: {src:?} does not fit {0}",
-                    type_name::<O>()
-                ),
-            });
-        }
+        *dest = try_cast_primitive(*src)?;
     }
 
     Ok(())
 }
 
-pub fn decode_ints_be<O, FromT>(input: &[u8], output: &mut [O]) -> Result<(), DecoderError>
+/// Helper function to cast a primitive value or emit a `DecoderError` if it's
+/// not safely possible.
+pub fn try_cast_primitive<O, I>(input_value: I) -> Result<O, DecoderError>
+where
+    O: Copy + ToPrimitive + NumCast + Debug,
+    I: ToPrimitive + Debug + Copy,
+{
+    if let Some(value) = NumCast::from(input_value) {
+        Ok(value)
+    } else {
+        Err(DecoderError::FrameDecodeFailed {
+            msg: format!(
+                "dtype conversion error: {input_value:?} does not fit {0}",
+                type_name::<O>()
+            ),
+        })
+    }
+}
+
+pub fn decode_ints_be<'a, O, FromT>(input: &'a [u8], output: &mut [O]) -> Result<(), DecoderError>
 where
     O: DecoderTargetPixelType,
-    FromT: FromBytes + ToPrimitive + Debug + Copy,
+    FromT: ToPrimitive + Debug + Copy + num::traits::FromBytes,
+    &'a <FromT as num::traits::FromBytes>::Bytes: std::convert::TryFrom<&'a [u8]>,
+    <&'a <FromT as num::traits::FromBytes>::Bytes as std::convert::TryFrom<&'a [u8]>>::Error: Debug,
+    <FromT as num::traits::FromBytes>::Bytes: 'a,
 {
-    if input.len() % O::SIZE_OF != 0 {
+    if input.len() % std::mem::size_of::<FromT>() != 0 {
         return Err(DecoderError::FrameDecodeFailed {
             msg: format!(
                 "input length {} is not divisible by {}",
                 input.len(),
-                O::SIZE_OF,
+                std::mem::size_of::<FromT>(),
             ),
         });
     }
 
-    let chunks = input.chunks_exact(O::SIZE_OF);
+    let chunks = input.chunks_exact(std::mem::size_of::<FromT>());
     for (in_chunk, out_dest) in chunks.zip(output.iter_mut()) {
-        let swapped =
-            FromT::read_from_prefix(in_chunk).ok_or_else(|| DecoderError::FrameDecodeFailed {
-                msg: format!(
-                    "dtype conversion error: could not byteswap {0}",
-                    type_name::<FromT>()
-                ),
-            })?;
-
+        let swapped = FromT::from_be_bytes(in_chunk.try_into().expect("chunked"));
         *out_dest = if let Some(value) = NumCast::from(swapped) {
             value
         } else {
@@ -119,4 +124,87 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use std::io::Write;
+
+    use super::{decode_ints_be, try_cast_if_safe};
+
+    #[test]
+    fn test_decode_ints_be() {
+        let orig = (0..65535).collect::<Vec<u16>>();
+        let mut encoded = Vec::<u8>::new();
+
+        for i in orig.iter() {
+            encoded.write_all(&i.to_be_bytes()).unwrap();
+        }
+
+        // decode u16be from `orig` into different integer and float formats:
+        let mut result = vec![0u16; 65535];
+        decode_ints_be::<_, u16>(&encoded, &mut result).unwrap();
+        for (a, b) in orig.iter().zip(result.iter()) {
+            assert_eq!(a, b);
+        }
+
+        let mut result = vec![0u32; 65535];
+        decode_ints_be::<_, u16>(&encoded, &mut result).unwrap();
+        for (a, b) in orig.iter().zip(result.iter()) {
+            assert_eq!(*a as u32, *b);
+        }
+
+        let mut result = vec![0u64; 65535];
+        decode_ints_be::<_, u16>(&encoded, &mut result).unwrap();
+        for (a, b) in orig.iter().zip(result.iter()) {
+            assert_eq!(*a as u64, *b);
+        }
+
+        let mut result = vec![0.0f32; 65535];
+        decode_ints_be::<_, u16>(&encoded, &mut result).unwrap();
+        for (a, b) in orig.iter().zip(result.iter()) {
+            assert_eq!(*a as f32, *b);
+        }
+    }
+
+    #[test]
+    fn test_try_cast_u8() {
+        let orig = (0..255).collect::<Vec<u8>>();
+
+        let mut output = vec![0u8; 255];
+        try_cast_if_safe(&orig, &mut output).unwrap();
+        for (a, b) in orig.iter().zip(output.iter()) {
+            assert_eq!(*a, *b);
+        }
+
+        let mut output = vec![0u16; 255];
+        try_cast_if_safe(&orig, &mut output).unwrap();
+        for (a, b) in orig.iter().zip(output.iter()) {
+            assert_eq!(*a as u16, *b);
+        }
+
+        let mut output = vec![0u32; 255];
+        try_cast_if_safe(&orig, &mut output).unwrap();
+        for (a, b) in orig.iter().zip(output.iter()) {
+            assert_eq!(*a as u32, *b);
+        }
+
+        let mut output = vec![0u64; 255];
+        try_cast_if_safe(&orig, &mut output).unwrap();
+        for (a, b) in orig.iter().zip(output.iter()) {
+            assert_eq!(*a as u64, *b);
+        }
+
+        let mut output = vec![0f32; 255];
+        try_cast_if_safe(&orig, &mut output).unwrap();
+        for (a, b) in orig.iter().zip(output.iter()) {
+            assert_eq!(*a as f32, *b);
+        }
+
+        let mut output = vec![0f64; 255];
+        try_cast_if_safe(&orig, &mut output).unwrap();
+        for (a, b) in orig.iter().zip(output.iter()) {
+            assert_eq!(*a as f64, *b);
+        }
+    }
 }

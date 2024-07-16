@@ -1,13 +1,14 @@
-use std::{any::type_name, fmt::Debug};
+use std::fmt::Debug;
 
 use common::decoder::{
-    decode_ints_be, try_cast_if_safe, Decoder, DecoderError, DecoderTargetPixelType,
+    decode_ints_be, try_cast_if_safe, try_cast_primitive, Decoder, DecoderError,
+    DecoderTargetPixelType,
 };
+use itertools::Itertools;
 use num::{NumCast, ToPrimitive};
 use numpy::ndarray::s;
-use zerocopy::FromBytes;
 
-use crate::base_types::{DType, QdFrameMeta};
+use crate::base_types::{DType, Layout, QdFrameMeta};
 
 #[derive(Debug, Default)]
 pub struct QdDecoder {}
@@ -62,12 +63,13 @@ impl Decoder for QdDecoder {
         // | 3 | 4 |
         // ---------
         //
-        // It maps to the input data like this:
+        // Without taking encoding into account, it maps to the input data like this:
         //
         // [4 | 3 | 2 | 1]
         //
-        // (note that quadrants 3 and 4 are also flipped in x and y direction in the
-        // resulting array, compared to the original data)
+        // This is an array of shape (256, 1024), where the first row contains
+        // the first rows of all quadrants, but quadrants 3 and 4 are also
+        // flipped in x and y direction.
         //
 
         input.with_slot(shm, |slot| {
@@ -82,24 +84,7 @@ impl Decoder for QdDecoder {
                             msg: "out slice not C-order contiguous".to_owned(),
                         })?;
                 let raw_input_data = input.get_slice_for_frame(in_idx, slot);
-
-                match &frame_meta.layout {
-                    crate::base_types::Layout::L1x1 => {
-                        self.decode_frame_single(frame_meta, raw_input_data, out_slice)?
-                    }
-                    crate::base_types::Layout::L2x2 => {
-                        self.decode_frame_quad(frame_meta, raw_input_data, out_slice)?
-                    }
-                    crate::base_types::Layout::L2x2G => {
-                        self.decode_frame_quad(frame_meta, raw_input_data, out_slice)?
-                    }
-                    layout @ (crate::base_types::Layout::LNx1
-                    | crate::base_types::Layout::LNx1G) => {
-                        return Err(DecoderError::FrameDecodeFailed {
-                            msg: format!("unsupported layout: {layout:?}"),
-                        });
-                    }
-                }
+                self.decode_frame(frame_meta, raw_input_data, out_slice)?;
             }
             Ok(())
         })
@@ -117,6 +102,27 @@ impl Decoder for QdDecoder {
 }
 
 impl QdDecoder {
+    pub fn decode_frame<O>(
+        &self,
+        frame_meta: &QdFrameMeta,
+        input: &[u8],
+        output: &mut [O],
+    ) -> Result<(), DecoderError>
+    where
+        O: DecoderTargetPixelType,
+    {
+        match &frame_meta.layout {
+            crate::base_types::Layout::L1x1 => self.decode_frame_single(frame_meta, input, output),
+            crate::base_types::Layout::L2x2 => self.decode_frame_quad(frame_meta, input, output),
+            crate::base_types::Layout::L2x2G => self.decode_frame_quad(frame_meta, input, output),
+            layout @ (crate::base_types::Layout::LNx1 | crate::base_types::Layout::LNx1G) => {
+                Err(DecoderError::FrameDecodeFailed {
+                    msg: format!("unsupported layout: {layout:?}"),
+                })
+            }
+        }
+    }
+
     fn decode_frame_quad<O>(
         &self,
         frame_meta: &QdFrameMeta,
@@ -137,12 +143,11 @@ impl QdDecoder {
 
             // this is any of the raw formats; dispatch on the "original counter depth" value:
             DType::R64 => {
-                todo!();
                 if let Some(mq1a) = &frame_meta.mq1a {
                     match mq1a.counter_depth {
-                        1 => decode_r1(input, output),
-                        6 => decode_r6(input, output),
-                        12 => decode_r12(input, output),
+                        1 => R1::decode_2x2_raw(input, output, &frame_meta.layout),
+                        6 => R6::decode_2x2_raw(input, output, &frame_meta.layout),
+                        12 => R12::decode_2x2_raw(input, output, &frame_meta.layout),
                         // 24 => decode_r24(input, output),
                         _ => Err(DecoderError::FrameDecodeFailed {
                             msg: format!("unsupported counter depth: {}", mq1a.counter_depth),
@@ -177,9 +182,9 @@ impl QdDecoder {
             DType::R64 => {
                 if let Some(mq1a) = &frame_meta.mq1a {
                     match mq1a.counter_depth {
-                        1 => decode_r1(input, output),
-                        6 => decode_r6(input, output),
-                        12 => decode_r12(input, output),
+                        1 => R1::decode_all(input, &mut output.iter_mut()),
+                        6 => R6::decode_all(input, &mut output.iter_mut()),
+                        12 => R12::decode_all(input, &mut output.iter_mut()),
                         // 24 => decode_r24(input, output),
                         _ => Err(DecoderError::FrameDecodeFailed {
                             msg: format!("unsupported counter depth: {}", mq1a.counter_depth),
@@ -193,121 +198,196 @@ impl QdDecoder {
     }
 }
 
-/// Decode from raw 1bit format to O. input length must be divisible by 8 and
-/// output must be 8 times larger than input.
-fn decode_r1<O>(input: &[u8], output: &mut [O]) -> Result<(), DecoderError>
-where
-    O: Copy + ToPrimitive + NumCast,
-{
-    if input.len() % 8 != 0 {
-        return Err(DecoderError::FrameDecodeFailed {
-            msg: format!("input length {} is not divisible by 8", input.len()),
-        });
-    }
+pub trait RawType {
+    /// Bits per pixel excluding padding
+    const COUNTER_DEPTH: usize;
 
-    if output.len() * 8 < input.len() {
-        return Err(DecoderError::FrameDecodeFailed {
-            msg: format!(
-                "output length {} should be 8 times as large as input length {}",
-                output.len(),
-                input.len()
-            ),
-        });
-    }
+    /// how many output pixel values are contained in a single 8-byte chunk?
+    const PIXELS_PER_CHUNK: usize;
 
-    let chunks = input.chunks_exact(8);
-    for (in_chunk, out_chunk) in chunks.zip(output.chunks_exact_mut(64)) {
-        let value = u64::from_be_bytes(in_chunk.try_into().expect("chunked by 8 bytes"));
-        for (i, out_dest) in out_chunk.iter_mut().enumerate() {
-            let out_value = (value >> i) & 0x1;
-            *out_dest = if let Some(value) = NumCast::from(out_value) {
-                value
-            } else {
-                return Err(DecoderError::FrameDecodeFailed {
-                    msg: format!(
-                        "dtype conversion error: {out_value:?} does not fit {0}",
-                        type_name::<O>()
-                    ),
-                });
-            }
+    /// How many bytes per row on a single chip in raw encoding?
+    const BYTES_PER_CHIP_ROW: usize;
+
+    /// take a raw input chunk (8 bytes) and decode it into an output slice
+    fn decode_chunk<'a, O, OI>(input: &[u8; 8], output: &mut OI) -> Result<(), DecoderError>
+    where
+        O: Copy + ToPrimitive + NumCast + Debug + 'a,
+        OI: Iterator<Item = &'a mut O> + ExactSizeIterator;
+
+    /// Decode all values from `input` into `output`.
+    fn decode_all<'a, O, OI>(input: &[u8], output: &mut OI) -> Result<(), DecoderError>
+    where
+        O: Copy + ToPrimitive + NumCast + Debug + 'a,
+        OI: Iterator<Item = &'a mut O> + DoubleEndedIterator + ExactSizeIterator + Itertools,
+    {
+        if input.len() % 8 != 0 {
+            return Err(DecoderError::FrameDecodeFailed {
+                msg: format!("input length {} is not divisible by 8", input.len()),
+            });
         }
+
+        let output_pixels = output.len();
+        let input_pixels = (input.len() / 8) * Self::PIXELS_PER_CHUNK;
+
+        if output_pixels != input_pixels {
+            return Err(DecoderError::FrameDecodeFailed {
+                msg: format!(
+                    "output length {} should match input pixels ({}; length={})",
+                    output_pixels,
+                    input_pixels,
+                    input.len()
+                ),
+            });
+        }
+
+        let chunks = input.chunks_exact(8);
+        for in_chunk in chunks {
+            <Self as RawType>::decode_chunk(in_chunk.try_into().expect("chunked by 8"), output)?;
+        }
+
+        Ok(())
     }
 
-    Ok(())
+    fn decode_2x2_raw<O>(
+        input: &[u8],
+        output: &mut [O],
+        _layout: &Layout,
+    ) -> Result<(), DecoderError>
+    where
+        O: Copy + ToPrimitive + NumCast + Debug,
+    {
+        let rows_per_chip: usize = 256; // FIXME: `ROIROWS` support means this would be dynamic? how does that work with raw format?
+        let cols_per_chip: usize = 256;
+        let output_row_size: usize = 512; // FIXME: 2x2G -> 514
+
+        eprintln!(
+            "input.len()={}, output.len()={}",
+            input.len(),
+            &mut output.len(),
+        );
+
+        let (out_top, out_bottom) = output.split_at_mut(output_row_size * rows_per_chip);
+
+        let mut bottom_rows_rev = out_bottom.chunks_exact_mut(output_row_size).rev();
+        let mut top_rows = out_top.chunks_exact_mut(output_row_size);
+
+        // input rows come interleaved: Q4/Q3/Q2/Q1 -> we need to de-interleave here!
+        // iterate over input rows by four, while taking one row from top and one from bottom:
+        let in_by_four_rows = input.chunks_exact(4 * Self::BYTES_PER_CHIP_ROW);
+
+        eprintln!(
+            "top_len={} bottom_len={} in_by_four_len={}",
+            top_rows.len(),
+            bottom_rows_rev.len(),
+            in_by_four_rows.len()
+        );
+
+        for four_rows in in_by_four_rows {
+            let bottom_row =
+                bottom_rows_rev
+                    .next()
+                    .ok_or_else(|| DecoderError::FrameDecodeFailed {
+                        msg: "eof bottom".to_owned(),
+                    })?;
+            // Q4:
+            Self::decode_all(
+                &four_rows[0..Self::BYTES_PER_CHIP_ROW],
+                &mut bottom_row[cols_per_chip..].iter_mut().rev(),
+            )?;
+            // Q3:
+            Self::decode_all(
+                &four_rows[Self::BYTES_PER_CHIP_ROW..2 * Self::BYTES_PER_CHIP_ROW],
+                &mut bottom_row[0..cols_per_chip].iter_mut().rev(),
+            )?;
+
+            let top_row = top_rows
+                .next()
+                .ok_or_else(|| DecoderError::FrameDecodeFailed {
+                    msg: "eof top".to_owned(),
+                })?;
+
+            // Q2:
+            Self::decode_all(
+                &four_rows[2 * Self::BYTES_PER_CHIP_ROW..3 * Self::BYTES_PER_CHIP_ROW],
+                &mut top_row[cols_per_chip..].iter_mut(),
+            )?;
+            // Q1:
+            Self::decode_all(
+                &four_rows[3 * Self::BYTES_PER_CHIP_ROW..],
+                &mut top_row[0..cols_per_chip].iter_mut(),
+            )?;
+        }
+
+        Ok(())
+    }
 }
 
-/// Decode from raw 6bit format to O. input length must be divisible by 8
-fn decode_r6<O>(input: &[u8], output: &mut [O]) -> Result<(), DecoderError>
-where
-    O: Copy + ToPrimitive + NumCast,
-{
-    if input.len() % 8 != 0 {
-        return Err(DecoderError::FrameDecodeFailed {
-            msg: format!("input length {} is not divisible by 8", input.len()),
-        });
-    }
+#[derive(Debug)]
+pub struct R1 {}
 
-    if output.len() != input.len() {
-        return Err(DecoderError::FrameDecodeFailed {
-            msg: format!(
-                "output length {} should be the same as input length {}",
-                output.len(),
-                input.len()
-            ),
-        });
-    }
+impl RawType for R1 {
+    const COUNTER_DEPTH: usize = 1;
+    const PIXELS_PER_CHUNK: usize = 64;
+    const BYTES_PER_CHIP_ROW: usize = 32;
 
-    let chunks = input.chunks_exact(8);
-    for (in_chunk, out_chunk) in chunks.zip(output.chunks_exact_mut(8)) {
-        for (i, o) in in_chunk.iter().zip(out_chunk.iter_mut().rev()) {
-            *o = if let Some(value) = NumCast::from(*i) {
-                value
-            } else {
-                todo!();
-            }
+    fn decode_chunk<'a, O, OI>(input: &[u8; 8], output: &mut OI) -> Result<(), DecoderError>
+    where
+        O: Copy + ToPrimitive + NumCast + Debug + 'a,
+        OI: Iterator<Item = &'a mut O> + ExactSizeIterator,
+    {
+        let value = u64::from_be_bytes(*input);
+        let old_len = output.len();
+        assert!(output.len() >= 64);
+        for (out_dest, bin_digit) in output.take(64).zip(0..) {
+            let out_value = (value >> bin_digit) & 0x1;
+            *out_dest = try_cast_primitive(out_value)?;
         }
-    }
+        let diff = old_len - output.len();
 
-    Ok(())
+        assert_eq!(diff, 64);
+
+        Ok(())
+    }
 }
 
-/// Decode from raw 12bit format to O. input length must be divisible by 8
-fn decode_r12<O>(input: &[u8], output: &mut [O]) -> Result<(), DecoderError>
-where
-    O: Copy + ToPrimitive + NumCast + Debug,
-{
-    if input.len() % 8 != 0 {
-        return Err(DecoderError::FrameDecodeFailed {
-            msg: format!("input length {} is not divisible by 8", input.len()),
-        });
-    }
+#[derive(Debug)]
+pub struct R6 {}
 
-    if output.len() * 2 < input.len() {
-        return Err(DecoderError::FrameDecodeFailed {
-            msg: format!(
-                "output length {} needs to match input length {}",
-                output.len(),
-                input.len()
-            ),
-        });
-    }
+impl RawType for R6 {
+    const COUNTER_DEPTH: usize = 6;
+    const PIXELS_PER_CHUNK: usize = 8;
+    const BYTES_PER_CHIP_ROW: usize = 256;
 
-    let chunks = input.chunks_exact(8);
-    for (in_chunk, out_chunk) in chunks.zip(output.chunks_exact_mut(4)) {
-        for (value_chunk, out_value) in in_chunk.chunks_exact(2).zip(out_chunk.iter_mut().rev()) {
-            let value: u16 = FromBytes::read_from_prefix(value_chunk).expect("chunked by 2");
-            *out_value = if let Some(value) = NumCast::from(value) {
-                value
-            } else {
-                return Err(DecoderError::FrameDecodeFailed {
-                    msg: format!(
-                        "dtype conversion error: {out_value:?} does not fit {0}",
-                        type_name::<O>()
-                    ),
-                });
-            }
+    fn decode_chunk<'a, O, OI>(input: &[u8; 8], output: &mut OI) -> Result<(), DecoderError>
+    where
+        O: Copy + ToPrimitive + NumCast + Debug + 'a,
+        OI: Iterator<Item = &'a mut O>,
+    {
+        for (i, o) in input.iter().rev().zip(output) {
+            *o = try_cast_primitive(*i)?;
         }
+        Ok(())
     }
+}
 
-    Ok(())
+#[derive(Debug)]
+pub struct R12 {}
+
+impl RawType for R12 {
+    const COUNTER_DEPTH: usize = 12;
+    const PIXELS_PER_CHUNK: usize = 4;
+    const BYTES_PER_CHIP_ROW: usize = 512;
+
+    fn decode_chunk<'a, O, OI>(input: &[u8; 8], output: &mut OI) -> Result<(), DecoderError>
+    where
+        O: Copy + ToPrimitive + NumCast + Debug + 'a,
+        OI: Iterator<Item = &'a mut O>,
+    {
+        for (value_chunk, out_value) in input.chunks_exact(2).rev().zip(output) {
+            let value = u16::from_be_bytes(value_chunk.try_into().expect("chunked by 2 bytes"));
+            *out_value = try_cast_primitive(value)?;
+        }
+
+        Ok(())
+    }
 }
