@@ -1,7 +1,6 @@
 use std::{
-    fmt::{Debug, Display},
-    io::{ErrorKind, Read},
-    mem::replace,
+    fmt::Display,
+    io::ErrorKind,
     net::TcpStream,
     sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
     thread::JoinHandle,
@@ -11,6 +10,7 @@ use std::{
 use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
     frame_stack::{FrameStackForWriting, FrameStackWriteError},
+    tcp::{self, ReadExactError},
     utils::{num_from_byte_slice, three_way_shift, NumParseError},
 };
 use ipc_test::SharedSlabAllocator;
@@ -49,29 +49,38 @@ pub enum ReceiverStatus {
     Closed,
 }
 
-/// Peek and parse the first frame header
-fn peek_header(stream: &mut TcpStream) -> Result<ASIMpxFrameMeta, AcquisitionError> {
+/// Peek and parse the first frame header. Retries until either a header was
+/// received or a control message arrives in the control channel.
+fn peek_header(
+    stream: &mut TcpStream,
+    control_channel: &Receiver<ASIMpxControlMsg>,
+) -> Result<ASIMpxFrameMeta, AcquisitionError> {
     let mut buf: [u8; HEADER_BUF_SIZE] = [0; HEADER_BUF_SIZE];
-    // FIXME: error handling, timeout, ...
 
-    let mut nbytes = 0;
-
-    // Ugh.. wait until enough data is in the buffer
-    // possibly, the sender sends the header and payload separately,
+    // Wait until enough data is in the buffer.
+    // Possibly, the sender sends the header and payload separately,
     // in which case we get only a short header, and we need to retry.
     // All because we don't really know how large the header is supposed to be.
     // This is broken for very small frames (where header+data < 512),
     // so if an acquisition only contains <512 bytes in total, we will wait
     // here indefinitely.
-    while nbytes < HEADER_BUF_SIZE {
-        nbytes = match stream.peek(&mut buf) {
-            Ok(n) => n,
-            Err(e) => return Err(AcquisitionError::ConnectionError { msg: e.to_string() }),
-        }
-        // FIXME: timeout!!
-    }
 
-    Ok(parse_header(&buf, 0)?)
+    loop {
+        match tcp::peek_exact_interruptible(stream, &mut buf, Duration::from_millis(10), 10, || {
+            check_for_control(control_channel)
+        }) {
+            Ok(_) => {
+                return Ok(parse_header(&buf, 0)?);
+            }
+            Err(ReadExactError::PeekError { size }) => {
+                trace!("peek  of {size} bytes failed; retrying...");
+                continue;
+            }
+            Err(e) => {
+                return Err(AcquisitionError::from(e));
+            }
+        }
+    }
 }
 
 const HEADER_BUF_SIZE: usize = 512;
@@ -173,19 +182,7 @@ fn recv_frame(
 
     let mut buf: [u8; HEADER_BUF_SIZE] = [0; HEADER_BUF_SIZE];
 
-    // FIXME: need to have a timeout here!
-    // In the happy case, this succeeds, or we get a
-    // ConnectionReset/ConnectionAborted, but in case the network inbetween is
-    // going bad, we might block here indefinitely. But we must regularly check
-    // for control messages from the `control_channel`, which we can't do here
-    // like this.
-    match stream.read_exact(&mut buf) {
-        Ok(_) => {}
-        Err(e) => {
-            // any kind of connection error means something is gone bad
-            return Err(AcquisitionError::ConnectionError { msg: e.to_string() });
-        }
-    }
+    tcp::read_exact_interruptible(stream, &mut buf, || check_for_control(control_channel))?;
 
     // 2) Parse the header, importantly reading width, height, bytes-per-pixel (maxval)
 
@@ -227,11 +224,9 @@ fn recv_frame(
 
         let dest_rest = &mut dest_buf[head_src.len()..];
 
-        // FIXME: this blocks - we need to check for control messages every now and then
-        match stream.read_exact(dest_rest) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(AcquisitionError::ConnectionError { msg: e.to_string() }),
-        }
+        tcp::read_exact_interruptible(stream, dest_rest, || check_for_control(control_channel))?;
+
+        Ok::<_, AcquisitionError>(())
     })?;
 
     Ok(meta)
@@ -289,6 +284,29 @@ impl From<ServalError> for AcquisitionError {
     }
 }
 
+impl From<ReadExactError<AcquisitionError>> for AcquisitionError {
+    fn from(value: ReadExactError<AcquisitionError>) -> Self {
+        match value {
+            ReadExactError::Interrupted { size, err } => {
+                warn!("interrupted read after {size} bytes; discarding buffer");
+                err
+            }
+            ReadExactError::IOError { err } => Self::from(err),
+            ReadExactError::PeekError { size } => AcquisitionError::ConnectionError {
+                msg: format!("could not peek {size} bytes"),
+            },
+        }
+    }
+}
+
+impl From<std::io::Error> for AcquisitionError {
+    fn from(value: std::io::Error) -> Self {
+        Self::ConnectionError {
+            msg: format!("i/o error: {value}"),
+        }
+    }
+}
+
 /// With a running acquisition, check for control messages;
 /// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
 fn check_for_control(control_channel: &Receiver<ASIMpxControlMsg>) -> Result<(), AcquisitionError> {
@@ -339,8 +357,10 @@ fn passive_acquisition(
             },
         };
 
+        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+
         // block until we get the first frame:
-        let first_frame_meta = match peek_header(&mut stream) {
+        let first_frame_meta = match peek_header(&mut stream, control_channel) {
             Ok(m) => m,
             Err(AcquisitionError::ConnectionError { msg }) => {
                 warn!("connection error while peeking first frame: {msg}; reconnecting");
@@ -390,7 +410,7 @@ fn acquisition(
     debug!("acquisition starting");
 
     // approx uppper bound of image size in bytes
-    let peek_meta = peek_header(stream)?;
+    let peek_meta = peek_header(stream, to_thread_r)?;
     let approx_size_bytes = 2 * peek_meta.get_size();
 
     let slot = match shm.get_mut() {

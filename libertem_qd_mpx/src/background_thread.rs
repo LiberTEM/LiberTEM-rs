@@ -10,6 +10,7 @@ use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
     frame_stack::{FrameMeta, FrameStackForWriting, FrameStackWriteError},
     generic_connection::AcquisitionConfig,
+    tcp::{self, ReadExactError},
     utils::{num_from_byte_slice, three_way_shift, NumParseError},
 };
 use ipc_test::{slab::ShmError, SharedSlabAllocator};
@@ -98,6 +99,19 @@ impl From<ShmError> for AcquisitionError {
     }
 }
 
+impl From<ReadExactError<AcquisitionError>> for AcquisitionError {
+    fn from(value: ReadExactError<AcquisitionError>) -> Self {
+        match value {
+            ReadExactError::Interrupted { size, err } => {
+                warn!("interrupted read after {size} bytes; discarding buffer");
+                err
+            }
+            ReadExactError::IOError { err } => AcquisitionError::from(err),
+            ReadExactError::PeekError { size } => AcquisitionError::PeekError { nbytes: size },
+        }
+    }
+}
+
 pub struct QdBackgroundThread {
     bg_thread: JoinHandle<()>,
     to_thread: Sender<QdControlMsg>,
@@ -123,35 +137,16 @@ fn check_for_control(control_channel: &Receiver<QdControlMsg>) -> Result<(), Acq
 
 /// Fill `buf` from `stream` (like TcpStream::read_exact), but periodically check
 /// `to_thread_r` for control messages, which allows to interrupt the acquisition.
-/// Assumes a blocking socket with a timeout.
+/// Assumes a blocking socket with a timeout. In case of interruption, data will be discarded
+/// (it's still in `buf`, but we don't keep track how much we read...)
 fn read_exact_interruptible(
     stream: &mut impl Read,
     buf: &mut [u8],
     to_thread_r: &Receiver<QdControlMsg>,
 ) -> Result<(), AcquisitionError> {
-    let total_to_read = buf.len();
-    let mut buf_sliced = buf;
-    let mut bytes_read: usize = 0;
-    loop {
-        check_for_control(to_thread_r)?;
-        match stream.read(buf_sliced) {
-            Ok(size) => {
-                bytes_read += size;
-                buf_sliced = &mut buf_sliced[size..];
-                // it's full! we are done...
-                if bytes_read == total_to_read {
-                    return Ok(());
-                }
-            }
-            Err(e) => match e.kind() {
-                ErrorKind::WouldBlock | ErrorKind::TimedOut => {
-                    check_for_control(to_thread_r)?;
-                    continue;
-                }
-                _ => return Err(AcquisitionError::from(e)),
-            },
-        }
-    }
+    common::tcp::read_exact_interruptible(stream, buf, || check_for_control(to_thread_r))?;
+
+    Ok(())
 }
 
 /// Read from `stream` until we hit the timeout. Original socket timeout is
@@ -198,42 +193,11 @@ fn peek_exact_interruptible(
     buf: &mut [u8],
     to_thread_r: &Receiver<QdControlMsg>,
 ) -> Result<(), AcquisitionError> {
-    loop {
-        trace!("peek_exact_interruptible: loop head");
-        check_for_control(to_thread_r)?;
-        let mut retries = 0;
-        match stream.peek(buf) {
-            Ok(size) => {
-                if size == buf.len() {
-                    // it's full! we are done...
-                    return Ok(());
-                } else {
-                    trace!(
-                        "peek_exact_interruptible: not full; {size} != {}",
-                        buf.len()
-                    );
-                    retries += 1;
-                    if retries > 10 {
-                        return Err(AcquisitionError::PeekError { nbytes: buf.len() });
-                    }
-                    // we are only using this for peeking at the first frame, or its header,
-                    // so we can be a bit sleepy here:
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-            Err(e) => {
-                trace!("peek_exact_interruptible: err: {e}");
-                match e.kind() {
-                    // in this case, we couldn't peek the full size, so we try again
-                    ErrorKind::WouldBlock | ErrorKind::TimedOut => {
-                        check_for_control(to_thread_r)?;
-                        continue;
-                    }
-                    _ => return Err(AcquisitionError::from(e)),
-                }
-            }
-        }
-    }
+    tcp::peek_exact_interruptible(stream, buf, Duration::from_millis(10), 10, || {
+        check_for_control(to_thread_r)
+    })?;
+
+    Ok(())
 }
 
 fn parse_mpx_length(buf: &[u8]) -> Result<usize, AcquisitionError> {
