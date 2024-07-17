@@ -6,4 +6,5 @@ pub mod generic_connection;
 pub mod generic_receiver;
 pub mod py_cam_client;
 pub mod py_connection;
+pub mod tcp;
 pub mod utils;
