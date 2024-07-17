@@ -2137,6 +2137,7 @@ version = "0.2.11"
 dependencies = [
  "bincode",
  "common",
+ "criterion",
  "encoding_rs",
  "env_logger",
  "ipc-test",
@@ -2145,6 +2146,7 @@ dependencies = [
  "num",
  "numpy",
  "pyo3",
+ "rand",
  "serde",
  "stats",
  "tempfile",

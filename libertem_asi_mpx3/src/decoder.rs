@@ -1,7 +1,6 @@
 use common::decoder::{try_cast_if_safe, Decoder, DecoderError, DecoderTargetPixelType};
-use num::NumCast;
 use numpy::ndarray::{s, ArrayViewMut3};
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::FromBytes;
 
 use crate::base_types::{ASIMpxFrameMeta, DType};
 
