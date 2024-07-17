@@ -5,7 +5,7 @@ use common::decoder::{
     DecoderTargetPixelType,
 };
 use itertools::Itertools;
-use num::{NumCast, ToPrimitive};
+use num::{NumCast, PrimInt, ToPrimitive};
 use numpy::ndarray::s;
 
 use crate::base_types::{DType, Layout, QdFrameMeta};
@@ -322,6 +322,46 @@ pub trait RawType {
 
         Ok(())
     }
+
+    fn encode_chunk<'a, I, II>(input: &mut II, output: &mut [u8; 8]) -> Result<(), DecoderError>
+    where
+        I: Copy + ToPrimitive + PrimInt + NumCast + Debug + 'a,
+        II: Iterator<Item = &'a I> + ExactSizeIterator;
+
+    fn encode_all<'a, I, II>(input: &mut II, output: &mut [u8]) -> Result<(), DecoderError>
+    where
+        I: Copy + ToPrimitive + PrimInt + NumCast + Debug + 'a,
+        II: Iterator<Item = &'a I> + ExactSizeIterator,
+    {
+        if output.len() % 8 != 0 {
+            return Err(DecoderError::FrameDecodeFailed {
+                msg: format!("output length {} is not divisible by 8", output.len()),
+            });
+        }
+
+        let output_pixels = (output.len() / 8) * Self::PIXELS_PER_CHUNK;
+        let input_pixels = input.len();
+
+        if output_pixels != input_pixels {
+            return Err(DecoderError::FrameDecodeFailed {
+                msg: format!(
+                    "output length {} should match input pixels ({}; length={})",
+                    output_pixels,
+                    input_pixels,
+                    input.len()
+                ),
+            });
+        }
+
+        let chunks = output.chunks_exact_mut(8);
+        for out_chunk in chunks {
+            let mut tmp_chunk = [0u8; 8];
+            <Self as RawType>::encode_chunk(input, &mut tmp_chunk)?;
+            out_chunk.copy_from_slice(&tmp_chunk);
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -350,6 +390,23 @@ impl RawType for R1 {
 
         Ok(())
     }
+
+    fn encode_chunk<'a, I, II>(input: &mut II, output: &mut [u8; 8]) -> Result<(), DecoderError>
+    where
+        I: Copy + ToPrimitive + PrimInt + NumCast + Debug + 'a,
+        II: Iterator<Item = &'a I> + ExactSizeIterator,
+    {
+        let mut dest: u64 = 0;
+        for (value, idx) in input.take(64).zip(0..64) {
+            // clamp to 1bit value and shift into place:
+            let tmp = *value & I::from(0x1).unwrap();
+            let tmp: u64 = try_cast_primitive(tmp)?;
+            dest |= tmp << idx;
+        }
+        output.copy_from_slice(&dest.to_be_bytes());
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -370,6 +427,20 @@ impl RawType for R6 {
         }
         Ok(())
     }
+
+    fn encode_chunk<'a, I, II>(input: &mut II, output: &mut [u8; 8]) -> Result<(), DecoderError>
+    where
+        I: Copy + ToPrimitive + NumCast + Debug + 'a,
+        II: Iterator<Item = &'a I> + ExactSizeIterator,
+    {
+        assert!(input.len() >= 8, "input.len() = {}", input.len());
+
+        for (i, o) in input.take(8).zip(output.iter_mut().rev()) {
+            *o = try_cast_primitive(*i)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -385,11 +456,219 @@ impl RawType for R12 {
         O: Copy + ToPrimitive + NumCast + Debug + 'a,
         OI: Iterator<Item = &'a mut O>,
     {
+        // FIXME: in the future, replace with `input.array_chunks` to skip the `try_into` conversion
         for (value_chunk, out_value) in input.chunks_exact(2).rev().zip(output) {
             let value = u16::from_be_bytes(value_chunk.try_into().expect("chunked by 2 bytes"));
             *out_value = try_cast_primitive(value)?;
         }
 
         Ok(())
+    }
+
+    fn encode_chunk<'a, I, II>(input: &mut II, output: &mut [u8; 8]) -> Result<(), DecoderError>
+    where
+        I: Copy + ToPrimitive + NumCast + Debug + 'a,
+        II: Iterator<Item = &'a I> + ExactSizeIterator,
+    {
+        assert!(input.len() >= 4, "input.len() = {}", input.len());
+
+        for (i, o) in input.take(4).zip(output.chunks_exact_mut(2).rev()) {
+            o.copy_from_slice(&u16::to_be_bytes(try_cast_primitive(*i)?))
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::path::PathBuf;
+
+    use common::{decoder::Decoder, frame_stack::FrameStackForWriting};
+    use ipc_test::SharedSlabAllocator;
+    use numpy::ndarray::Array3;
+    use rand::Rng;
+    use tempfile::{tempdir, TempDir};
+
+    use crate::{
+        base_types::{DType, Layout, QdFrameMeta},
+        decoder::R6,
+    };
+
+    use super::{QdDecoder, RawType, R1, R12};
+
+    fn generic_encode_decode<R: RawType, const ENCODED_SIZE: usize, const SIZE_PX: usize>() {
+        let mut rng = rand::thread_rng();
+        let mut input_data = vec![0; SIZE_PX];
+        input_data.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
+
+        let input_data = input_data;
+
+        let mut encoded = vec![0u8; ENCODED_SIZE];
+        R::encode_all(&mut input_data.iter(), &mut encoded).unwrap();
+
+        eprintln!("input_data: {:X?}", &input_data[..]);
+        eprintln!("encoded: {:X?}", &encoded[..]);
+
+        let mut output_data = vec![0; SIZE_PX];
+        R::decode_all(&encoded, &mut output_data.iter_mut()).unwrap();
+
+        assert_eq!(output_data, input_data);
+    }
+
+    fn generic_encode_decode_chunk<R: RawType, const SIZE_PX: usize>() {
+        const ENCODED_SIZE: usize = 16;
+
+        let mut rng = rand::thread_rng();
+        let mut input_data = vec![0; SIZE_PX];
+        input_data.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
+
+        let input_data = input_data;
+
+        let mut encoded = [0u8; ENCODED_SIZE];
+        let mut input_iter = input_data.iter();
+
+        let mut chunk = [0u8; 8];
+        R::encode_chunk(&mut input_iter, &mut chunk).unwrap();
+        encoded[0..8].copy_from_slice(&chunk);
+        eprintln!("encoded c1: {:x?}", &encoded[0..8]);
+
+        R::encode_chunk(&mut input_iter, &mut chunk).unwrap();
+        encoded[8..].copy_from_slice(&chunk);
+        eprintln!("encoded c2: {:x?}", &encoded[8..]);
+
+        eprintln!("input_data: {:X?}", &input_data[..]);
+        eprintln!("encoded: {:X?}", &encoded[..]);
+
+        let mut output_data = vec![0; SIZE_PX];
+        R::decode_all(&encoded, &mut output_data.iter_mut()).unwrap();
+
+        assert_eq!(output_data, input_data);
+    }
+
+    fn generic_quad_encode_decode<R: RawType>() {
+        todo!();
+    }
+
+    #[test]
+    fn test_r1_encode_decode() {
+        generic_encode_decode::<R1, 8192, 65536>();
+    }
+
+    #[test]
+    fn test_r1_encode_decode_small() {
+        generic_encode_decode::<R1, 16, 128>();
+    }
+
+    #[test]
+    fn test_r1_encode_decode_small_chunk() {
+        generic_encode_decode_chunk::<R1, 128>();
+    }
+
+    #[test]
+    fn test_r6_encode_decode() {
+        generic_encode_decode::<R6, 65536, 65536>();
+    }
+
+    #[test]
+    fn test_r6_encode_decode_small() {
+        generic_encode_decode::<R6, 16, 16>();
+    }
+
+    #[test]
+    fn test_r6_encode_decode_small_chunk() {
+        generic_encode_decode_chunk::<R6, 16>();
+    }
+
+    #[test]
+    fn test_r12_encode_decode() {
+        generic_encode_decode::<R12, 131072, 65536>();
+    }
+
+    #[test]
+    fn test_r12_encode_decode_small() {
+        generic_encode_decode::<R12, 32, 16>();
+    }
+
+    #[test]
+    fn test_r12_encode_decode_small_chunk() {
+        generic_encode_decode_chunk::<R12, 8>();
+    }
+
+    fn get_socket_path() -> (TempDir, PathBuf) {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.path().join("stuff.socket");
+
+        (socket_dir, socket_as_path)
+    }
+
+    fn make_test_frame_meta(
+        dtype: &DType,
+        layout: &Layout,
+        counter_depth: u8,
+        frame_size_bytes: usize,
+    ) -> QdFrameMeta {
+        let (width, height, num_chips) = match layout {
+            Layout::L1x1 => (256, 256, 1),
+            Layout::L2x2 => (512, 512, 4),
+            Layout::LNx1 => todo!(),
+            Layout::L2x2G => (514, 514, 4),
+            Layout::LNx1G => todo!(),
+        };
+
+        QdFrameMeta::new(
+            768 + 1 + frame_size_bytes,
+            1,
+            768,
+            num_chips,
+            width,
+            height,
+            dtype.clone(),
+            layout.clone(),
+            // FIXME: this is a lie, but the value is not used yet in decoding, so we get away with it..
+            0xFF,
+            "".to_owned(),
+            0.0,
+            0,
+            crate::base_types::ColourMode::Single,
+            crate::base_types::Gain::HGM,
+            Some(crate::base_types::MQ1A {
+                timestamp_ext: "".to_owned(),
+                acquisition_time_shutter_ns: 0,
+                counter_depth,
+            }),
+        )
+    }
+
+    #[test]
+    fn test_decoder_single_chip() {
+        let bytes_per_frame = 256 * 256 * 2;
+        let decoder = QdDecoder::default();
+        let frame_meta = make_test_frame_meta(&DType::R64, &Layout::L1x1, 12, bytes_per_frame);
+
+        let (_socket_dir, socket_as_path) = get_socket_path();
+
+        let slot_size = bytes_per_frame;
+        let mut shm = SharedSlabAllocator::new(1, slot_size, false, &socket_as_path).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 1, bytes_per_frame);
+
+        let input_data: Vec<u16> = (0..256 * 256).map(|i| (i % 0xFFFF) as u16).collect();
+
+        fs.write_frame(&frame_meta, |buf| {
+            assert_eq!(buf.len(), bytes_per_frame);
+            R12::encode_all(&mut input_data.iter(), buf).unwrap();
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        let fsh = fs.writing_done(&mut shm).unwrap();
+
+        let mut decoded = Array3::from_shape_simple_fn([1, 256, 256], || 0u16);
+
+        decoder
+            .decode(&shm, &fsh, &mut decoded.view_mut(), 0, 1)
+            .unwrap();
+
+        assert_eq!(input_data, decoded.as_slice().unwrap());
     }
 }
