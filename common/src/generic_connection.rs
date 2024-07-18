@@ -172,9 +172,12 @@ where
             ReceiverMsg::FrameStack { .. } => {
                 trace!("adjust_status: FrameStack {{ .. }}");
             }
-            other => {
-                trace!("adjust_status: other message: {other:?}");
-            }
+            ReceiverMsg::FatalError { error } => {
+                log::warn!("adjust_status: fatal error: {error:?}; going back to idle state");
+                self.status = ConnectionStatus::Idle;
+            } // other => {
+              //     trace!("adjust_status: other message: {other:?}");
+              // }
         }
     }
 
