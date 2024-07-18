@@ -16,10 +16,12 @@ code in submodules. After cloning, remember to enable pre-commit hooks using
 
 - `bs-sys`: rust bindings to `bitshuffle`.
 - `ipc_test`: internal crate for efficient shared memory communication using a shared slab data structure.
+- `common`: generic traits, types and macros for supporting detectors
 - `libertem_asi_tpx3`: A Rust+Python library for receiving sparse array streams from Amsterdam Scientific Instruments CheeTah TPX3 detectors.
 - `libertem_asi_mpx3`: A Rust+Python library for receiving data from Amsterdam Scientific Instruments frame-based detectors (experimental).
 - `serval-client`: A rust crate for speaking to the ASI Serval API
 - `libertem_dectris`: This is a Python package for efficiently receiving data from DECTRIS detectors with the zeromq interface.
+- `libertem_qd_mpx`: A Rust+Python library for receiving data from Quantum Detectors MerlinEM detectors.
 - `playegui`: `egui`-based prototype for efficient on-line visualization of 4D STEM reconstructions
 
 
