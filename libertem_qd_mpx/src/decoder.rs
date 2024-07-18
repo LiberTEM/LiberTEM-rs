@@ -63,7 +63,7 @@ impl Decoder for QdDecoder {
         // | 3 | 4 |
         // ---------
         //
-        // Without taking encoding into account, it maps to the input data like this:
+        // Without taking chunk encoding into account, it maps to the input data like this:
         //
         // [4 | 3 | 2 | 1]
         //
@@ -323,6 +323,53 @@ pub trait RawType {
         Ok(())
     }
 
+    fn encode_2x2_raw<'a, I>(input: &[I], output: &mut [u8]) -> Result<(), DecoderError>
+    where
+        I: Copy + ToPrimitive + PrimInt + NumCast + Debug + 'a,
+    {
+        let cols_per_chip: usize = 256;
+        let rows_per_chip: usize = 256;
+
+        let input_chunks = input.chunks_exact(2 * cols_per_chip);
+
+        // encode q1 and q2 into the right part of the [4 | 3 | 2 | 1] array of shape (256, 1024):
+        for (row_out, row_in) in output
+            .chunks_exact_mut(Self::BYTES_PER_CHIP_ROW * 4)
+            .zip(input_chunks)
+        {
+            let (_row_out_q4q3, row_out_q2q1) =
+                &mut row_out.split_at_mut(2 * Self::BYTES_PER_CHIP_ROW);
+            let (row_out_q2, row_out_q1) = row_out_q2q1.split_at_mut(Self::BYTES_PER_CHIP_ROW);
+
+            // in the input, q1 comes first:
+            let (in_q1, in_q2) = row_in.split_at(cols_per_chip);
+
+            Self::encode_all(&mut in_q1.iter(), row_out_q1)?;
+            Self::encode_all(&mut in_q2.iter(), row_out_q2)?;
+        }
+
+        let input_chunks = input.chunks_exact(2 * cols_per_chip).skip(rows_per_chip);
+
+        // q3 and q4:
+        // encode q1 and q2 into the right part of the [4 | 3 | 2 | 1] array of shape (256, 1024):
+        // reverse the rows to flip in y direction:
+        for (row_out, row_in) in output
+            .chunks_exact_mut(Self::BYTES_PER_CHIP_ROW * 4)
+            .rev()
+            .zip(input_chunks)
+        {
+            let (row_out_q4q3, _row_out_q2q1) =
+                &mut row_out.split_at_mut(2 * Self::BYTES_PER_CHIP_ROW);
+            let (row_out_q4, row_out_q3) = row_out_q4q3.split_at_mut(Self::BYTES_PER_CHIP_ROW);
+
+            // in the input, q3 comes first:
+            Self::encode_all(&mut row_in[..cols_per_chip].iter().rev(), row_out_q3)?;
+            Self::encode_all(&mut row_in[cols_per_chip..].iter().rev(), row_out_q4)?;
+        }
+
+        Ok(())
+    }
+
     fn encode_chunk<'a, I, II>(input: &mut II, output: &mut [u8; 8]) -> Result<(), DecoderError>
     where
         I: Copy + ToPrimitive + PrimInt + NumCast + Debug + 'a,
@@ -484,7 +531,10 @@ impl RawType for R12 {
 mod test {
     use std::path::PathBuf;
 
-    use common::{decoder::Decoder, frame_stack::FrameStackForWriting};
+    use common::{
+        decoder::{Decoder, DecoderError},
+        frame_stack::FrameStackForWriting,
+    };
     use ipc_test::SharedSlabAllocator;
     use numpy::ndarray::Array3;
     use rand::Rng;
@@ -546,8 +596,25 @@ mod test {
         assert_eq!(output_data, input_data);
     }
 
-    fn generic_quad_encode_decode<R: RawType>() {
-        todo!();
+    fn generic_quad_encode_decode<R: RawType, const ENCODED_SIZE: usize, const SIZE_PX: usize>(
+        layout: &Layout,
+    ) {
+        let mut rng = rand::thread_rng();
+        let mut input_data = vec![0; SIZE_PX];
+        input_data.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
+
+        let input_data = input_data;
+
+        let mut encoded = vec![0u8; ENCODED_SIZE];
+        R::encode_2x2_raw(&input_data, &mut encoded).unwrap();
+
+        eprintln!("input_data: {:X?}", &input_data[..]);
+        eprintln!("encoded: {:X?}", &encoded[..]);
+
+        let mut output_data = vec![0; SIZE_PX];
+        R::decode_2x2_raw(&encoded, &mut output_data, layout).unwrap();
+
+        assert_eq!(output_data, input_data);
     }
 
     #[test]
@@ -595,6 +662,51 @@ mod test {
         generic_encode_decode_chunk::<R12, 8>();
     }
 
+    #[test]
+    fn test_r1_encode_decode_quad_raw() {
+        const ENCODED_SIZE: usize = 512 * 512 / 8;
+        const SIZE_PX: usize = 512 * 512;
+        generic_quad_encode_decode::<R1, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2);
+    }
+
+    #[test]
+    fn test_r6_encode_decode_quad_raw() {
+        const ENCODED_SIZE: usize = 512 * 512;
+        const SIZE_PX: usize = 512 * 512;
+        generic_quad_encode_decode::<R6, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2);
+    }
+
+    #[test]
+    fn test_r12_encode_decode_quad_raw() {
+        const ENCODED_SIZE: usize = 512 * 512 * 2;
+        const SIZE_PX: usize = 512 * 512;
+        generic_quad_encode_decode::<R12, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2);
+    }
+
+    #[test]
+    #[ignore = "TODO"]
+    fn test_r1_encode_decode_quad_raw_layout_g() {
+        const ENCODED_SIZE: usize = 512 * 512 / 8;
+        const SIZE_PX: usize = 514 * 514;
+        generic_quad_encode_decode::<R1, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2G);
+    }
+
+    #[test]
+    #[ignore = "TODO"]
+    fn test_r6_encode_decode_quad_raw_layout_g() {
+        const ENCODED_SIZE: usize = 512 * 512;
+        const SIZE_PX: usize = 514 * 514;
+        generic_quad_encode_decode::<R6, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2G);
+    }
+
+    #[test]
+    #[ignore = "TODO"]
+    fn test_r12_encode_decode_quad_raw_layout_g() {
+        const ENCODED_SIZE: usize = 512 * 512 * 2;
+        const SIZE_PX: usize = 514 * 514;
+        generic_quad_encode_decode::<R12, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2G);
+    }
+
     fn get_socket_path() -> (TempDir, PathBuf) {
         let socket_dir = tempdir().unwrap();
         let socket_as_path = socket_dir.path().join("stuff.socket");
@@ -611,9 +723,9 @@ mod test {
         let (width, height, num_chips) = match layout {
             Layout::L1x1 => (256, 256, 1),
             Layout::L2x2 => (512, 512, 4),
-            Layout::LNx1 => todo!(),
+            Layout::LNx1 => (512, 256, 2), // TODO: assumes two chips in "tall" layout
             Layout::L2x2G => (514, 514, 4),
-            Layout::LNx1G => todo!(),
+            Layout::LNx1G => (512, 256, 2), // TODO: assumes two chips in "tall" layout
         };
 
         QdFrameMeta::new(
@@ -670,5 +782,72 @@ mod test {
             .unwrap();
 
         assert_eq!(input_data, decoded.as_slice().unwrap());
+    }
+
+    #[test]
+    fn test_decoder_quad_l2x2() {
+        let bytes_per_frame = 512 * 512 * 2;
+        let decoder = QdDecoder::default();
+        let frame_meta = make_test_frame_meta(&DType::R64, &Layout::L2x2, 12, bytes_per_frame);
+
+        let (_socket_dir, socket_as_path) = get_socket_path();
+
+        let slot_size = bytes_per_frame;
+        let mut shm = SharedSlabAllocator::new(1, slot_size, false, &socket_as_path).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 1, bytes_per_frame);
+
+        let input_data: Vec<u16> = (0..512 * 512).map(|i| (i % 0xFFFF) as u16).collect();
+
+        fs.write_frame(&frame_meta, |buf| {
+            assert_eq!(buf.len(), bytes_per_frame);
+            R12::encode_2x2_raw(&input_data, buf).unwrap();
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        let fsh = fs.writing_done(&mut shm).unwrap();
+
+        let mut decoded = Array3::from_shape_simple_fn([1, 512, 512], || 0u16);
+
+        decoder
+            .decode(&shm, &fsh, &mut decoded.view_mut(), 0, 1)
+            .unwrap();
+
+        assert_eq!(input_data, decoded.as_slice().unwrap());
+    }
+
+    #[test]
+    fn test_decoder_quad_unsupported_variants() {
+        fn _inner(layout: &Layout) {
+            let bytes_per_frame = 512 * 512 * 2;
+            let decoder = QdDecoder::default();
+            let frame_meta = make_test_frame_meta(&DType::R64, layout, 12, bytes_per_frame);
+
+            let (_socket_dir, socket_as_path) = get_socket_path();
+
+            let slot_size = bytes_per_frame;
+            let mut shm = SharedSlabAllocator::new(1, slot_size, false, &socket_as_path).unwrap();
+            let slot = shm.get_mut().expect("get a free shm slot");
+            let mut fs = FrameStackForWriting::new(slot, 1, bytes_per_frame);
+
+            let input_data: Vec<u16> = (0..512 * 512).map(|i| (i % 0xFFFF) as u16).collect();
+
+            fs.write_frame(&frame_meta, |buf| {
+                assert_eq!(buf.len(), bytes_per_frame);
+                R12::encode_2x2_raw(&input_data, buf).unwrap();
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+            let fsh = fs.writing_done(&mut shm).unwrap();
+
+            let mut decoded = Array3::from_shape_simple_fn([1, 512, 512], || 0u16);
+
+            assert!(matches!(
+                decoder.decode(&shm, &fsh, &mut decoded.view_mut(), 0, 1),
+                Err(DecoderError::FrameDecodeFailed { msg: _ })
+            ))
+        }
+        _inner(&Layout::LNx1);
+        _inner(&Layout::LNx1G);
     }
 }

@@ -299,12 +299,4 @@ impl ServalClient {
 #[cfg(test)]
 mod test {
     use crate::ServalClient;
-
-    #[test]
-    fn test_stuff() {
-        let client = ServalClient::new("http://localhost:8080");
-
-        println!("{:?}", client.get_detector_config().unwrap());
-        panic!("at the disco?");
-    }
 }
