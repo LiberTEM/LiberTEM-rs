@@ -103,7 +103,9 @@ impl From<ReadExactError<AcquisitionError>> for AcquisitionError {
     fn from(value: ReadExactError<AcquisitionError>) -> Self {
         match value {
             ReadExactError::Interrupted { size, err } => {
-                warn!("interrupted read after {size} bytes; discarding buffer");
+                if size > 0 {
+                    warn!("interrupted read after {size} bytes; discarding buffer");
+                }
                 err
             }
             ReadExactError::IOError { err } => AcquisitionError::from(err),
@@ -200,6 +202,8 @@ fn peek_exact_interruptible(
     Ok(())
 }
 
+/// Parse the length from a string in the form of 'MPX,<length>', where
+/// `<length>` is a 10 digit number (possibly with leading zeros).
 fn parse_mpx_length(buf: &[u8]) -> Result<usize, AcquisitionError> {
     let magic = &buf[0..4];
     if magic != b"MPX," {
@@ -312,8 +316,9 @@ fn peek_mpx_message(
     if magic != b"MPX," {
         return Err(AcquisitionError::HeaderParseError {
             msg: format!(
-                "expected 'MPX,', got: '{:X?}' (maybe previous read was short?)",
-                magic
+                "expected 'MPX,', got: '{:X?}' ('{}'; maybe previous read was short?)",
+                magic,
+                String::from_utf8_lossy(magic),
             ),
         });
     }
@@ -405,13 +410,25 @@ fn make_frame_stack(
     shm: &mut SharedSlabAllocator,
     config: &QdDetectorConnConfig,
     meta: &QdFrameMeta,
+    to_thread_r: &Receiver<QdControlMsg>,
 ) -> Result<FrameStackForWriting<QdFrameMeta>, AcquisitionError> {
-    let slot = shm.try_get_mut()?;
-    Ok(FrameStackForWriting::new(
-        slot,
-        config.frame_stack_size,
-        meta.get_data_length_bytes(),
-    ))
+    loop {
+        match shm.try_get_mut() {
+            Ok(slot) => {
+                return Ok(FrameStackForWriting::new(
+                    slot,
+                    config.frame_stack_size,
+                    meta.get_data_length_bytes(),
+                ))
+            }
+            Err(ShmError::NoSlotAvailable) => {
+                trace!("shm is full; waiting and creating backpressure...");
+                check_for_control(to_thread_r)?;
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+        }
+    }
 }
 
 fn acquisition(
@@ -430,8 +447,8 @@ fn acquisition(
         pending_acquisition: acquisition_header.clone(),
     })?;
 
-    let mut frame_stack = make_frame_stack(shm, config, first_frame_meta)?;
-    let mut extra_frame_stack = make_frame_stack(shm, config, first_frame_meta)?;
+    let mut frame_stack = make_frame_stack(shm, config, first_frame_meta, to_thread_r)?;
+    let mut extra_frame_stack = make_frame_stack(shm, config, first_frame_meta, to_thread_r)?;
 
     let mut sequence = 0;
 
@@ -452,7 +469,7 @@ fn acquisition(
 
         if !extra_frame_stack.is_empty() {
             let to_send = {
-                let new_frame_stack = make_frame_stack(shm, config, first_frame_meta)?;
+                let new_frame_stack = make_frame_stack(shm, config, first_frame_meta, to_thread_r)?;
                 let old_frame_stack =
                     three_way_shift(&mut frame_stack, &mut extra_frame_stack, new_frame_stack);
                 old_frame_stack.writing_done(shm)?
@@ -510,12 +527,12 @@ fn passive_acquisition(
     let host = &config.data_host;
     let port = config.data_port;
 
-    loop {
-        let data_uri = format!("{host}:{port}");
-        info!("connecting to {}...", &data_uri);
+    let data_uri = format!("{host}:{port}");
+    info!("connecting to {}...", &data_uri);
 
-        check_for_control(to_thread_r)?;
-        let mut stream: TcpStream = match TcpStream::connect(&data_uri) {
+    check_for_control(to_thread_r)?;
+    let mut stream: TcpStream = loop {
+        break match TcpStream::connect(&data_uri) {
             Ok(s) => s,
             Err(e) => match e.kind() {
                 ErrorKind::ConnectionRefused
@@ -532,21 +549,23 @@ fn passive_acquisition(
                 _ => return Err(AcquisitionError::ConnectionError { msg: e.to_string() }),
             },
         };
+    };
 
-        info!("connected to {}.", &data_uri);
+    info!("connected to {}.", &data_uri);
 
-        if let Some(timeout) = &config.drain {
-            info!("draining for {timeout:?}...");
-            let drained = drain_until_timeout(&mut stream, to_thread_r, timeout)?;
-            if drained > 0 {
-                info!("drained {drained} bytes of garbage");
-            }
+    if let Some(timeout) = &config.drain {
+        info!("draining for {timeout:?}...");
+        let drained = drain_until_timeout(&mut stream, to_thread_r, timeout)?;
+        if drained > 0 {
+            info!("drained {drained} bytes of garbage");
         }
+    }
 
-        from_thread_s.send(ReceiverMsg::ReceiverArmed)?;
+    from_thread_s.send(ReceiverMsg::ReceiverArmed)?;
 
-        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
 
+    loop {
         // wait for the acquisition header, which is sent when the detector
         // is armed with STARTACQUISITION:
         let acquisition_header: QdAcquisitionHeader =
@@ -692,5 +711,641 @@ impl BackgroundThread for QdBackgroundThread {
             // FIXME: should we have an error boundary here instead and stop the panic?
             std::panic::resume_unwind(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{
+        io::Write,
+        net::{SocketAddr, TcpListener, TcpStream},
+        path::PathBuf,
+        sync::mpsc::channel,
+        time::Duration,
+    };
+
+    use common::generic_connection::{ConnectionError, GenericConnection};
+    use ipc_test::SharedSlabAllocator;
+    use tempfile::{tempdir, TempDir};
+
+    use crate::base_types::{QdAcquisitionHeader, QdDetectorConnConfig};
+
+    use super::QdBackgroundThread;
+
+    fn make_test_server() -> (TcpListener, SocketAddr) {
+        let fake_server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let local_addr = fake_server.local_addr().unwrap();
+
+        (fake_server, local_addr)
+    }
+
+    fn get_socket_path() -> (TempDir, PathBuf) {
+        let socket_dir = tempdir().unwrap();
+        let socket_as_path = socket_dir.path().join("stuff.socket");
+
+        (socket_dir, socket_as_path)
+    }
+
+    fn wrap_into_mpx(full_msg: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+
+        let mpx = format!("MPX,{:010},", full_msg.len() + 1);
+        out.write_all(mpx.as_bytes()).unwrap();
+        out.write_all(full_msg).unwrap();
+
+        out
+    }
+
+    fn send_frames(stream: &mut TcpStream, number_of_frames: usize) {
+        for idx in 0..number_of_frames {
+            // copies all over.. but that's ok, it's only test code!
+            let data_offset = 384;
+            let header = format!(
+                "MQ1,{:06},{data_offset:05},01,0256,0256,U08,   1x1,01,2020-05-18 16:51:49.971626,0.000555,0,0,0,1.200000E+2,5.110000E+2,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,3RX,175,511,000,000,000,000,000,000,125,255,125,125,100,100,082,100,087,030,128,004,255,129,128,176,168,511,511,MQ1A,2020-05-18T14:51:49.971626178Z,555000ns,6,",
+                idx + 1,
+            );
+            let header_bytes = header.as_bytes();
+            let padding = vec![0x0u8; data_offset - header_bytes.len()];
+
+            let mut frame_msg = Vec::new();
+            frame_msg.write_all(header_bytes).unwrap();
+            frame_msg.write_all(&padding).unwrap();
+            assert_eq!(frame_msg.len(), data_offset); // data_offset is the "full header length"
+
+            let data = vec![idx as u8; 256 * 256];
+            frame_msg.write_all(&data).unwrap();
+
+            let full_frame_msg = wrap_into_mpx(&frame_msg);
+            // eprintln!("full_frame_msg: {}", String::from_utf8_lossy(&full_frame_msg));
+
+            stream.write_all(&full_frame_msg).unwrap();
+        }
+    }
+
+    fn send_acq_header(stream: &mut TcpStream, number_of_frames: usize) {
+        let hdr = format!(
+            r"HDR,	
+Time and Date Stamp (day, mnth, yr, hr, min, s):	18/05/2020 16:51:48
+Chip ID:	W529_F5,-,-,-
+Chip Type (Medipix 3.0, Medipix 3.1, Medipix 3RX):	Medipix 3RX
+Assembly Size (NX1, 2X2):	   1x1
+Chip Mode  (SPM, CSM, CM, CSCM):	SPM
+Counter Depth (number):	6
+Gain:	SLGM
+Active Counters:	Alternating
+Thresholds (keV):	1.200000E+2,5.110000E+2,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0
+DACs:	175,511,000,000,000,000,000,000,125,255,125,125,100,100,082,100,087,030,128,004,255,129,128,176,168,511,511
+bpc File:	c:\MERLIN_Quad_Config\W529_F5\W529_F5_SPM.bpc,,,
+DAC File:	c:\MERLIN_Quad_Config\W529_F5\W529_F5_SPM.dacs,,,
+Gap Fill Mode:	Distribute
+Flat Field File:	None
+Dead Time File:	Dummy (C:\<NUL>\)
+Acquisition Type (Normal, Th_scan, Config):	Normal
+Frames in Acquisition (Number):	{number_of_frames}
+Frames per Trigger (Number):	1
+Trigger Start (Positive, Negative, Internal):	Rising Edge LVDS
+Trigger Stop (Positive, Negative, Internal):	Internal
+Sensor Bias (V):	120 V
+Sensor Polarity (Positive, Negative):	Positive
+Temperature (C):	Board Temp 37.384918 Deg C
+Humidity (%):	Board Humidity 1.331848 
+Medipix Clock (MHz):	120MHz
+Readout System:	Merlin Quad
+Software Version:	0.67.0.9
+End	                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+"
+        );
+        let hdr = wrap_into_mpx(hdr.as_bytes());
+        stream.write_all(&hdr).unwrap();
+    }
+
+    #[test]
+    fn test_connect() {
+        let env = env_logger::Env::default()
+            .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")
+            .write_style_or("LIBERTEM_QD_LOG_STYLE", "always");
+        let _ = env_logger::Builder::from_env(env)
+            .format_timestamp_micros()
+            .try_init();
+
+        let (fake_server, local_addr) = make_test_server();
+
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let bytes_per_frame = 2 * 256 * 256;
+        let slot_size = bytes_per_frame;
+        let shm = SharedSlabAllocator::new(1, slot_size, false, &socket_as_path).unwrap();
+
+        let config = &QdDetectorConnConfig::new(
+            "127.0.0.1",
+            local_addr.port() as usize,
+            1,
+            bytes_per_frame,
+            1,
+            false,
+            socket_as_path.to_str().unwrap(),
+            None,
+        );
+
+        std::thread::scope(move |s| {
+            let (shutdown_s, shutdown_r) = channel();
+
+            let server_thread = s.spawn(move || {
+                // the server accepts our connection, and...
+                let (_stream, _addr) = fake_server.accept().unwrap();
+                shutdown_r.recv_timeout(Duration::from_millis(100)).unwrap();
+            });
+
+            // we let the `GenericConnection` drive the background thread:
+            let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+                GenericConnection::new(bg, &shm).unwrap();
+            conn.start_passive(
+                || Ok::<(), ConnectionError>(()),
+                &Some(Duration::from_millis(100)),
+            )
+            .unwrap();
+
+            // allow the server thread to end:
+            shutdown_s.send(()).unwrap();
+
+            // tear down the connection and join the server thread:
+            conn.close();
+            server_thread.join().unwrap();
+
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+        });
+    }
+
+    #[test]
+    fn test_wait_for_arm() {
+        let env = env_logger::Env::default()
+            .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")
+            .write_style_or("LIBERTEM_QD_LOG_STYLE", "always");
+        let _ = env_logger::Builder::from_env(env)
+            .format_timestamp_micros()
+            .try_init();
+
+        let (fake_server, local_addr) = make_test_server();
+
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let bytes_per_frame = 2 * 256 * 256;
+        let slot_size = bytes_per_frame;
+        let shm = SharedSlabAllocator::new(1, slot_size, false, &socket_as_path).unwrap();
+
+        let config = &QdDetectorConnConfig::new(
+            "127.0.0.1",
+            local_addr.port() as usize,
+            1,
+            bytes_per_frame,
+            1,
+            false,
+            socket_as_path.to_str().unwrap(),
+            None,
+        );
+
+        std::thread::scope(move |s| {
+            let (shutdown_s, shutdown_r) = channel();
+
+            let server_thread = s.spawn(move || {
+                // the server accepts our connection, and...
+                let (mut stream, _addr) = fake_server.accept().unwrap();
+
+                // simlate: someone armed the detector ("STARTACQUISITION"), meaning
+                // the acquisition header is sent out and a real detector would now wait
+                // for either a SOFTTRIGGER or a hardware triggering signal:
+                send_acq_header(&mut stream, 16384);
+
+                shutdown_r.recv_timeout(Duration::from_millis(500)).unwrap();
+            });
+
+            // we let the `GenericConnection` drive the background thread:
+            let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+                GenericConnection::new(bg, &shm).unwrap();
+            conn.start_passive(
+                || Ok::<(), ConnectionError>(()),
+                &Some(Duration::from_millis(100)),
+            )
+            .unwrap();
+
+            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+                Ok::<(), ConnectionError>(())
+            })
+            .unwrap();
+
+            // allow the server thread to end:
+            shutdown_s.send(()).unwrap();
+
+            // tear down the connection/bg thread and join the server thread:
+            conn.close();
+            server_thread.join().unwrap();
+
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+        });
+    }
+
+    #[test]
+    fn test_bg_thread_crash() {
+        let env = env_logger::Env::default()
+            .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")
+            .write_style_or("LIBERTEM_QD_LOG_STYLE", "always");
+        let _ = env_logger::Builder::from_env(env)
+            .format_timestamp_micros()
+            .try_init();
+
+        let (fake_server, local_addr) = make_test_server();
+
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let bytes_per_frame = 256 * 256;
+        let slot_size = bytes_per_frame;
+        let mut shm = SharedSlabAllocator::new(100, slot_size, false, &socket_as_path).unwrap();
+
+        let config = &QdDetectorConnConfig::new(
+            "127.0.0.1",
+            local_addr.port() as usize,
+            1,
+            bytes_per_frame,
+            1,
+            false,
+            socket_as_path.to_str().unwrap(),
+            None,
+        );
+
+        std::thread::scope(move |s| {
+            let (shutdown_s, shutdown_r) = channel();
+
+            let server_thread = s.spawn(move || {
+                // the server accepts our connection, and...
+                let (mut stream, _addr): (std::net::TcpStream, SocketAddr) =
+                    fake_server.accept().unwrap();
+
+                // simulate: we send some garbage, the background thread should
+                // handle that and reconnect:
+                let hdr = r"PROTOCOL_VIOLATION";
+                stream.write_all(hdr.as_bytes()).unwrap();
+
+                // now, let's accept again and process the next connection cleanly:
+                let (mut stream, _addr): (std::net::TcpStream, SocketAddr) =
+                    fake_server.accept().unwrap();
+
+                send_acq_header(&mut stream, 16);
+                send_frames(&mut stream, 16);
+
+                shutdown_r.recv_timeout(Duration::from_millis(100)).unwrap();
+            });
+
+            // we let the `GenericConnection` drive the background thread:
+            let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+                GenericConnection::new(bg, &shm).unwrap();
+            conn.start_passive(
+                || Ok::<(), ConnectionError>(()),
+                &Some(Duration::from_millis(100)),
+            )
+            .unwrap();
+
+            let res = conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+                Ok::<(), ConnectionError>(())
+            });
+            assert!(res.is_err());
+
+            assert!(matches!(res, Err(ConnectionError::FatalError(_))));
+
+            // ok, we should be able to reconnect:
+            conn.start_passive(
+                || Ok::<(), ConnectionError>(()),
+                &Some(Duration::from_millis(100)),
+            )
+            .unwrap();
+
+            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+                Ok::<(), ConnectionError>(())
+            })
+            .unwrap();
+
+            let mut idx = 0;
+            loop {
+                let stack = conn
+                    .get_next_stack(1, || Ok::<_, std::io::Error>(()))
+                    .unwrap();
+
+                if let Some(stack) = stack {
+                    eprintln!("got a stack with {} frames", stack.len());
+                    stack.with_slot(&shm, |s| {
+                        assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
+                    });
+                    stack.free_slot(&mut shm);
+                    idx += 1;
+                } else {
+                    eprintln!("done!");
+                    break;
+                }
+            }
+
+            assert_eq!(idx, 16);
+
+            // allow the server thread to end:
+            shutdown_s.send(()).unwrap();
+
+            // tear down the connection/bg thread and join the server thread:
+            conn.close();
+            server_thread.join().unwrap();
+
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+        });
+    }
+
+    #[test]
+    fn test_full_acquisition() {
+        let env = env_logger::Env::default()
+            .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")
+            .write_style_or("LIBERTEM_QD_LOG_STYLE", "always");
+        let _ = env_logger::Builder::from_env(env)
+            .format_timestamp_micros()
+            .try_init();
+
+        let (fake_server, local_addr) = make_test_server();
+
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let bytes_per_frame = 256 * 256;
+        let slot_size = bytes_per_frame;
+        let mut shm = SharedSlabAllocator::new(100, slot_size, false, &socket_as_path).unwrap();
+
+        let config = &QdDetectorConnConfig::new(
+            "127.0.0.1",
+            local_addr.port() as usize,
+            1,
+            bytes_per_frame,
+            1,
+            false,
+            socket_as_path.to_str().unwrap(),
+            None,
+        );
+
+        std::thread::scope(move |s| {
+            let (shutdown_s, shutdown_r) = channel();
+
+            let server_thread = s.spawn(move || {
+                // the server accepts our connection, and...
+                let (mut stream, _addr) = fake_server.accept().unwrap();
+
+                // simlate: someone armed the detector ("STARTACQUISITION"), meaning
+                // the acquisition header is sent out and a real detector would now wait
+                // for either a SOFTTRIGGER or a hardware triggering signal:
+                send_acq_header(&mut stream, 16);
+
+                // someone sent a trigger signal to the detector trigger input, so let's start to "record some data":
+                send_frames(&mut stream, 16);
+
+                shutdown_r.recv_timeout(Duration::from_millis(500)).unwrap();
+            });
+
+            // we let the `GenericConnection` drive the background thread:
+            let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+                GenericConnection::new(bg, &shm).unwrap();
+            conn.start_passive(
+                || Ok::<(), ConnectionError>(()),
+                &Some(Duration::from_millis(100)),
+            )
+            .unwrap();
+
+            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+                Ok::<(), ConnectionError>(())
+            })
+            .unwrap();
+
+            let mut idx = 0;
+            loop {
+                let stack = conn
+                    .get_next_stack(1, || Ok::<_, std::io::Error>(()))
+                    .unwrap();
+
+                if let Some(stack) = stack {
+                    eprintln!("got a stack with {} frames", stack.len());
+                    stack.with_slot(&shm, |s| {
+                        assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
+                    });
+                    stack.free_slot(&mut shm);
+                } else {
+                    eprintln!("done!");
+                    break;
+                }
+                idx += 1;
+            }
+
+            // allow the server thread to end:
+            shutdown_s.send(()).unwrap();
+
+            // tear down the connection/bg thread and join the server thread:
+            conn.close();
+            server_thread.join().unwrap();
+
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+        });
+    }
+
+    #[test]
+    fn test_shared_memory_backpressure() {
+        // This test deliberately creates a shared memory area that is too
+        // small, and makes sure the code behaves well in this situation,
+        // meaning it generates backpressure on the tcp socket.
+
+        let env = env_logger::Env::default()
+            .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")
+            .write_style_or("LIBERTEM_QD_LOG_STYLE", "always");
+        let _ = env_logger::Builder::from_env(env)
+            .format_timestamp_micros()
+            .try_init();
+
+        let (fake_server, local_addr) = make_test_server();
+
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let bytes_per_frame = 256 * 256;
+        let slot_size = bytes_per_frame;
+
+        // NOTE: only four slots, meaning we can have three slots for splitting
+        // plus one slot that is currently being read by client code.
+        let mut shm = SharedSlabAllocator::new(4, slot_size, false, &socket_as_path).unwrap();
+
+        let config = &QdDetectorConnConfig::new(
+            "127.0.0.1",
+            local_addr.port() as usize,
+            1,
+            bytes_per_frame,
+            1,
+            false,
+            socket_as_path.to_str().unwrap(),
+            None,
+        );
+
+        std::thread::scope(move |s| {
+            let (shutdown_s, shutdown_r) = channel();
+
+            let server_thread = s.spawn(move || {
+                // the server accepts our connection, and...
+                let (mut stream, _addr) = fake_server.accept().unwrap();
+
+                // simlate: someone armed the detector ("STARTACQUISITION"), meaning
+                // the acquisition header is sent out and a real detector would now wait
+                // for either a SOFTTRIGGER or a hardware triggering signal:
+                send_acq_header(&mut stream, 256);
+
+                // someone sent a trigger signal to the detector trigger input, so let's start to "record some data":
+                send_frames(&mut stream, 256);
+
+                shutdown_r.recv_timeout(Duration::from_millis(500)).unwrap();
+            });
+
+            // we let the `GenericConnection` drive the background thread:
+            let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+                GenericConnection::new(bg, &shm).unwrap();
+            conn.start_passive(
+                || Ok::<(), ConnectionError>(()),
+                &Some(Duration::from_millis(100)),
+            )
+            .unwrap();
+
+            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+                Ok::<(), ConnectionError>(())
+            })
+            .unwrap();
+
+            let mut idx = 0;
+            loop {
+                let stack = conn
+                    .get_next_stack(1, || Ok::<_, std::io::Error>(()))
+                    .unwrap();
+
+                // let's be a bit slow in consuming the data:
+                std::thread::sleep(Duration::from_millis(1));
+
+                if let Some(stack) = stack {
+                    eprintln!("got a stack with {} frames", stack.len());
+                    stack.with_slot(&shm, |s| {
+                        assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
+                    });
+                    stack.free_slot(&mut shm);
+                } else {
+                    eprintln!("done!");
+                    break;
+                }
+                idx += 1;
+            }
+
+            // allow the server thread to end:
+            shutdown_s.send(()).unwrap();
+
+            // tear down the connection/bg thread and join the server thread:
+            conn.close();
+            server_thread.join().unwrap();
+
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+        });
+    }
+
+    #[test]
+    fn test_drain() {
+        let env = env_logger::Env::default()
+            .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")
+            .write_style_or("LIBERTEM_QD_LOG_STYLE", "always");
+        let _ = env_logger::Builder::from_env(env)
+            .format_timestamp_micros()
+            .try_init();
+
+        let (fake_server, local_addr) = make_test_server();
+
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let bytes_per_frame = 256 * 256;
+        let slot_size = bytes_per_frame;
+
+        let mut shm = SharedSlabAllocator::new(100, slot_size, false, &socket_as_path).unwrap();
+
+        let config = &QdDetectorConnConfig::new(
+            "127.0.0.1",
+            local_addr.port() as usize,
+            1,
+            bytes_per_frame,
+            1,
+            false,
+            socket_as_path.to_str().unwrap(),
+            Some(Duration::from_millis(100)),
+        );
+
+        std::thread::scope(move |s| {
+            let (shutdown_s, shutdown_r) = channel();
+            let (arm_s, arm_r) = channel();
+
+            let server_thread = s.spawn(move || {
+                // the server accepts our connection, and...
+                let (mut stream, _addr) = fake_server.accept().unwrap();
+
+                // just write some straight garbage:
+                stream.write_all(&vec![0xFFu8; 10024 * 1024]).unwrap();
+
+                // wait for the arm signal (timeout so we don't wait forever here):
+                arm_r.recv_timeout(Duration::from_secs(10)).unwrap();
+
+                // simlate: someone armed the detector ("STARTACQUISITION"), meaning
+                // the acquisition header is sent out and a real detector would now wait
+                // for either a SOFTTRIGGER or a hardware triggering signal:
+                send_acq_header(&mut stream, 256);
+
+                // someone sent a trigger signal to the detector trigger input, so let's start to "record some data":
+                send_frames(&mut stream, 256);
+
+                shutdown_r.recv_timeout(Duration::from_millis(500)).unwrap();
+            });
+
+            // we let the `GenericConnection` drive the background thread:
+            let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+                GenericConnection::new(bg, &shm).unwrap();
+            conn.start_passive(
+                || Ok::<(), ConnectionError>(()),
+                &Some(Duration::from_millis(200)),
+            )
+            .unwrap();
+
+            // arm the fake detector and send the acquisition header:
+            arm_s.send(()).unwrap();
+
+            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+                Ok::<(), ConnectionError>(())
+            })
+            .unwrap();
+
+            let mut idx = 0;
+            loop {
+                let stack = conn
+                    .get_next_stack(1, || Ok::<_, std::io::Error>(()))
+                    .unwrap();
+
+                // let's be a bit slow in consuming the data:
+                std::thread::sleep(Duration::from_millis(1));
+
+                if let Some(stack) = stack {
+                    eprintln!("got a stack with {} frames", stack.len());
+                    stack.with_slot(&shm, |s| {
+                        assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
+                    });
+                    stack.free_slot(&mut shm);
+                } else {
+                    eprintln!("done!");
+                    break;
+                }
+                idx += 1;
+            }
+
+            // allow the server thread to end:
+            shutdown_s.send(()).unwrap();
+
+            // tear down the connection/bg thread and join the server thread:
+            conn.close();
+            server_thread.join().unwrap();
+
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+        });
     }
 }
