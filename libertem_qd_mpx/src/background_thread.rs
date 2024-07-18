@@ -413,6 +413,14 @@ fn make_frame_stack(
     to_thread_r: &Receiver<QdControlMsg>,
 ) -> Result<FrameStackForWriting<QdFrameMeta>, AcquisitionError> {
     loop {
+        // keep some slots free for splitting frame stacks
+        if shm.num_slots_free() < 3 && shm.num_slots_total() >= 3 {
+            trace!("shm is almost full; waiting and creating backpressure...");
+            check_for_control(to_thread_r)?;
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+
         match shm.try_get_mut() {
             Ok(slot) => {
                 return Ok(FrameStackForWriting::new(
