@@ -172,7 +172,7 @@ impl ServalConnection {
 
     fn wait_for_arm(
         &mut self,
-        timeout: f32,
+        timeout: Option<f32>,
         py: Python<'_>,
     ) -> PyResult<Option<PendingAcquisition>> {
         self.conn.wait_for_arm(timeout, py)
@@ -186,8 +186,8 @@ impl ServalConnection {
         self.conn.is_running()
     }
 
-    fn start_passive(&mut self, py: Python<'_>) -> PyResult<()> {
-        self.conn.start_passive(0.1, py)
+    fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
+        self.conn.start_passive(timeout, py)
     }
 
     fn close(&mut self) -> PyResult<()> {

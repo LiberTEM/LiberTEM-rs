@@ -124,7 +124,7 @@ macro_rules! impl_py_connection {
                 pub fn wait_for_status(
                     &mut self,
                     desired_status: ConnectionStatus,
-                    timeout: Duration,
+                    timeout: Option<Duration>,
                 ) -> PyResult<()> {
                     let mut conn = self.get_conn_mut()?;
                     conn.wait_for_status(desired_status, timeout, || {
@@ -159,13 +159,14 @@ macro_rules! impl_py_connection {
 
                 pub fn wait_for_arm(
                     &mut self,
-                    timeout: f32,
+                    timeout: Option<f32>,
                     py: Python<'_>,
                 ) -> PyResult<Option<super::$pending_acquisition_type>> {
+                    let timeout = timeout.map(Duration::from_secs_f32);
                     py.allow_threads(|| {
                         let conn_impl = self.get_conn_mut()?;
                         conn_impl
-                            .wait_for_arm(Duration::from_secs_f32(timeout), || {
+                            .wait_for_arm(timeout, || {
                                 // re-acquire GIL to check if we need to break
                                 Python::with_gil(|py| py.check_signals())?;
                                 Ok::<_, PyErr>(())
@@ -195,8 +196,13 @@ macro_rules! impl_py_connection {
                     Ok(conn_impl.is_running())
                 }
 
-                pub fn start_passive(&mut self, timeout: f32, py: Python<'_>) -> PyResult<()> {
-                    let timeout = Duration::from_secs_f32(timeout);
+                pub fn start_passive(
+                    &mut self,
+                    timeout: Option<f32>,
+                    py: Python<'_>,
+                ) -> PyResult<()> {
+                    let timeout = timeout.map(Duration::from_secs_f32);
+
                     py.allow_threads(|| {
                         let conn_impl = self.get_conn_mut()?;
                         conn_impl

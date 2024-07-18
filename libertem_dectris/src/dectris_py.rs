@@ -123,7 +123,7 @@ impl DectrisConnection {
     /// This method drops the GIL to allow concurrent Python threads.
     fn wait_for_arm(
         &mut self,
-        timeout: f32,
+        timeout: Option<f32>,
         py: Python<'_>,
     ) -> PyResult<Option<(DetectorConfig, u64)>> {
         let res = self.conn.wait_for_arm(timeout, py)?;
@@ -138,17 +138,19 @@ impl DectrisConnection {
         self.conn.is_running()
     }
 
-    fn start(&mut self, series: u64) -> PyResult<()> {
+    fn start(&mut self, series: u64, timeout: Option<f32>) -> PyResult<()> {
+        let timeout = timeout.map_or(Duration::from_millis(100), Duration::from_secs_f32);
+
         self.conn
             .send_specialized(DectrisExtraControl::StartAcquisitionWithSeries { series })?;
         self.conn
-            .wait_for_status(ConnectionStatus::Armed, Duration::from_millis(100))?;
+            .wait_for_status(ConnectionStatus::Armed, Some(timeout))?;
         Ok(())
     }
 
     /// Start listening for global acquisition headers on the zeromq socket.
-    fn start_passive(&mut self, py: Python<'_>) -> PyResult<()> {
-        self.conn.start_passive(0.1, py)
+    fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
+        self.conn.start_passive(timeout, py)
     }
 
     fn close(&mut self) -> PyResult<()> {
