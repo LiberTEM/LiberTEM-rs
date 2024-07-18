@@ -13,7 +13,7 @@ use common::{
     frame_stack::{FrameStackForWriting, FrameStackWriteError},
     generic_connection::DetectorConnectionConfig,
 };
-use ipc_test::SharedSlabAllocator;
+use ipc_test::{slab::ShmError, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
 use zmq::{Message, Socket};
 
@@ -189,6 +189,33 @@ fn serialization_error(
         .unwrap();
 }
 
+fn make_frame_stack(
+    shm: &mut SharedSlabAllocator,
+    capacity: usize,
+    bytes_per_frame: usize,
+    to_thread_r: &Receiver<DectrisControlMsg>,
+) -> Result<FrameStackForWriting<DectrisFrameMeta>, AcquisitionError> {
+    loop {
+        // keep some slots free for splitting frame stacks
+        if shm.num_slots_free() < 3 && shm.num_slots_total() >= 3 {
+            trace!("shm is almost full; waiting and creating backpressure...");
+            check_for_control(to_thread_r)?;
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+
+        match shm.try_get_mut() {
+            Ok(slot) => return Ok(FrameStackForWriting::new(slot, capacity, bytes_per_frame)),
+            Err(ShmError::NoSlotAvailable) => {
+                trace!("shm is full; waiting and creating backpressure...");
+                check_for_control(to_thread_r)?;
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+        }
+    }
+}
+
 /// Passively listen for global acquisition headers
 /// and automatically latch on to them.
 fn passive_acquisition(
@@ -284,15 +311,10 @@ fn acquisition(
     debug!("acquisition starting");
 
     // approx uppper bound of image size in bytes
-    let approx_size_bytes = detector_config.get_num_pixels()
-        * (detector_config.bit_depth_image as f32 / 8.0f32).ceil() as u64;
+    let approx_size_bytes = detector_config.get_num_pixels() as usize
+        * (detector_config.bit_depth_image as f32 / 8.0f32).ceil() as usize;
 
-    let slot = match shm.get_mut() {
-        None => return Err(AcquisitionError::BufferFull),
-        Some(x) => x,
-    };
-    let mut frame_stack =
-        FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
+    let mut frame_stack = make_frame_stack(shm, frame_stack_size, approx_size_bytes, to_thread_r)?;
 
     let mut msg = Message::new();
     let mut msg_image = Message::new();
@@ -323,12 +345,8 @@ fn acquisition(
         if !frame_stack.can_fit(msg_image.len()) {
             // send to our queue:
             let handle = {
-                let slot = match shm.get_mut() {
-                    None => return Err(AcquisitionError::BufferFull),
-                    Some(x) => x,
-                };
                 let new_frame_stack =
-                    FrameStackForWriting::new(slot, frame_stack_size, approx_size_bytes as usize);
+                    make_frame_stack(shm, frame_stack_size, approx_size_bytes, to_thread_r)?;
                 let old_frame_stack = replace(&mut frame_stack, new_frame_stack);
                 old_frame_stack.writing_done(shm)
             };

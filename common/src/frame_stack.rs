@@ -53,6 +53,12 @@ impl From<FrameStackWriteError> for PyErr {
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum SplitError<M: FrameMeta> {
+    #[error("shm full")]
+    ShmFull(FrameStackHandle<M>),
+}
+
 pub struct FrameStackForWriting<M>
 where
     M: FrameMeta,
@@ -169,11 +175,11 @@ where
 
 // inner mod to enforce invariants via constructor
 mod inner {
-    use ipc_test::{SharedSlabAllocator, Slot, SlotInfo};
+    use ipc_test::{slab::ShmError, SharedSlabAllocator, Slot, SlotInfo};
     use serde::{Deserialize, Serialize};
     use stats::GetStats;
 
-    use super::{FrameMeta, FrameStackError};
+    use super::{FrameMeta, FrameStackError, SplitError};
 
     /// serializable handle for a stack of frames that live in shm
     #[derive(PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -261,17 +267,32 @@ mod inner {
 
         /// Split self at `mid` and create two new `FrameStackHandle`s.
         /// The first will contain frames with indices [0..mid), the second [mid..len)`
-        pub fn split_at(self, mid: usize, shm: &mut SharedSlabAllocator) -> (Self, Self) {
-            // FIXME: this whole thing is falliable, so modify return type to Result<> (or PyResult<>?)
+        pub fn split_at(
+            self,
+            mid: usize,
+            shm: &mut SharedSlabAllocator,
+        ) -> Result<(Self, Self), SplitError<M>> {
+            // FIXME: write this in a safer way
             let bytes_mid = self.offsets[mid];
             let (left, right) = {
                 let slot: ipc_test::Slot = shm.get(self.slot.slot_idx);
                 let slice = slot.as_slice();
 
-                let mut slot_left = shm.get_mut().expect("shm slot for writing");
-                let slice_left = slot_left.as_slice_mut();
+                let mut slot_left = match shm.try_get_mut() {
+                    Ok(s) => s,
+                    Err(ShmError::NoSlotAvailable) => return Err(SplitError::ShmFull(self)),
+                };
+                let mut slot_right = match shm.try_get_mut() {
+                    Ok(s) => s,
+                    Err(ShmError::NoSlotAvailable) => {
+                        // don't leak the left slot!
+                        let l = shm.writing_done(slot_left);
+                        shm.free_idx(l.slot_idx);
+                        return Err(SplitError::ShmFull(self));
+                    }
+                };
 
-                let mut slot_right = shm.get_mut().expect("shm slot for writing");
+                let slice_left = slot_left.as_slice_mut();
                 let slice_right = slot_right.as_slice_mut();
 
                 slice_left[..bytes_mid].copy_from_slice(&slice[..bytes_mid]);
@@ -288,7 +309,7 @@ mod inner {
             let (left_meta, right_meta) = self.meta.split_at(mid);
             let (left_offsets, right_offsets) = self.offsets.split_at(mid);
 
-            (
+            Ok((
                 FrameStackHandle::new(
                     left,
                     left_meta.to_vec(),
@@ -301,7 +322,7 @@ mod inner {
                     right_offsets.iter().map(|o| o - bytes_mid).collect(),
                     self.bytes_per_frame,
                 ),
-            )
+            ))
         }
 
         pub fn first_meta(&self) -> &M {
@@ -444,7 +465,7 @@ mod tests {
 
         let old_meta_len = fs_handle.get_meta().len();
 
-        let (a, b) = fs_handle.split_at(1, &mut shm);
+        let (a, b) = fs_handle.split_at(1, &mut shm).unwrap();
 
         let slot_a: Slot = shm.get(a.slot.slot_idx);
         let slot_b: Slot = shm.get(b.slot.slot_idx);

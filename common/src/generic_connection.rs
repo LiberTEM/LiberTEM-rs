@@ -12,7 +12,7 @@ use stats::Stats;
 
 use crate::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
-    frame_stack::FrameStackHandle,
+    frame_stack::{FrameMeta, FrameStackHandle, SplitError},
 };
 
 pub trait DetectorConnectionConfig: Clone {
@@ -88,6 +88,33 @@ impl From<RecvTimeoutError> for NextTimeoutError {
 impl From<NextTimeoutError> for ConnectionError {
     fn from(value: NextTimeoutError) -> Self {
         Self::FatalError(Box::new(value))
+    }
+}
+
+fn split_with_wait<M: FrameMeta, E>(
+    shm: &mut SharedSlabAllocator,
+    frame_stack: FrameStackHandle<M>,
+    max_size: usize,
+    periodic_callback: impl Fn() -> Result<(), E>,
+) -> Result<(FrameStackHandle<M>, FrameStackHandle<M>), ConnectionError>
+where
+    E: std::error::Error + 'static + Send + Sync,
+{
+    let mut frame_stack = frame_stack;
+    loop {
+        if let Err(e) = periodic_callback() {
+            return Err(ConnectionError::PeriodicCallbackError(Box::new(e)));
+        }
+
+        match frame_stack.split_at(max_size, shm) {
+            Ok((a, b)) => return Ok((a, b)),
+            Err(SplitError::ShmFull(old_frame_stack)) => {
+                trace!("shm is full; waiting...");
+                std::thread::sleep(Duration::from_millis(1));
+                frame_stack = old_frame_stack;
+                continue;
+            }
+        };
     }
 }
 
@@ -456,7 +483,7 @@ where
         max_size: usize,
         periodic_callback: impl Fn() -> Result<(), E>,
     ) -> Result<Option<FrameStackHandle<B::FrameMetaImpl>>, ConnectionError> {
-        let res = self.recv_next_stack(periodic_callback);
+        let res = self.recv_next_stack(&periodic_callback);
         match res {
             Ok(Some(frame_stack)) => {
                 if frame_stack.len() > max_size {
@@ -466,7 +493,8 @@ where
                         frame_stack.len()
                     );
                     self.stats.count_split();
-                    let (left, right) = frame_stack.split_at(max_size, &mut self.shm);
+                    let (left, right) =
+                        split_with_wait(&mut self.shm, frame_stack, max_size, &periodic_callback)?;
                     self.remainder.push(right);
                     assert!(left.len() <= max_size);
                     return Ok(Some(left));
