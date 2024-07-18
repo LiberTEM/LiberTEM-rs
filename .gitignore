@@ -77,3 +77,4 @@ perf.data.old
 flamegraph.svg
 
 *.perf
+tarpaulin-report.html
