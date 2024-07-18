@@ -1170,18 +1170,17 @@ End
 
         let (_socket_dir, socket_as_path) = get_socket_path();
         let bytes_per_frame = 256 * 256;
-        let slot_size = bytes_per_frame;
 
-        // NOTE: only four slots, meaning we can have three slots for splitting
-        // plus one slot that is currently being read by client code.
-        let mut shm = SharedSlabAllocator::new(4, slot_size, false, &socket_as_path).unwrap();
+        // NOTE: only 5 slots, meaning we can have three slots for splitting
+        // plus some for users
+        let mut shm = SharedSlabAllocator::new(5, bytes_per_frame, false, &socket_as_path).unwrap();
 
         let config = &QdDetectorConnConfig::new(
             "127.0.0.1",
             local_addr.port() as usize,
             1,
             bytes_per_frame,
-            1,
+            5,
             false,
             socket_as_path.to_str().unwrap(),
             None,
