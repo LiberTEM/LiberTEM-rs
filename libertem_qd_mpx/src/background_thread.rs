@@ -1201,7 +1201,7 @@ End
                 // someone sent a trigger signal to the detector trigger input, so let's start to "record some data":
                 send_frames(&mut stream, 256);
 
-                shutdown_r.recv_timeout(Duration::from_millis(500)).unwrap();
+                shutdown_r.recv_timeout(Duration::from_secs(10)).unwrap();
             });
 
             // we let the `GenericConnection` drive the background thread:
@@ -1302,7 +1302,7 @@ End
                 // someone sent a trigger signal to the detector trigger input, so let's start to "record some data":
                 send_frames(&mut stream, 256);
 
-                shutdown_r.recv_timeout(Duration::from_millis(500)).unwrap();
+                shutdown_r.recv_timeout(Duration::from_secs(10)).unwrap();
             });
 
             // we let the `GenericConnection` drive the background thread:
