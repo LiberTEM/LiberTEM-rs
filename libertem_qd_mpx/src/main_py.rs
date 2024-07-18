@@ -21,6 +21,7 @@ fn libertem_qd_mpx(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QdFrameStack>()?;
     m.add_class::<CamClient>()?;
     m.add_class::<PyQdDecoder>()?;
+    m.add_class::<QdAcquisitionHeader>()?;
 
     let env = env_logger::Env::default()
         .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")

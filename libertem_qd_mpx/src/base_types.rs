@@ -13,7 +13,12 @@ use common::{
 };
 use log::{trace, warn};
 use num::Num;
-use pyo3::{pyclass, pymethods};
+use pyo3::{
+    exceptions::PyValueError,
+    pyclass, pymethods,
+    types::{PyBytes, PyBytesMethods, PyType},
+    Bound, PyResult,
+};
 use serde::{Deserialize, Serialize};
 
 /// Size of the full prefix, in bytes, including the comma separator to the payload: 'MPX,<length>,'
@@ -446,6 +451,7 @@ pub enum AcqHeaderParseError {
 #[pyclass]
 pub struct QdAcquisitionHeader {
     frames_in_acquisition: usize,
+    frames_per_trigger: usize,
     scan_x: Option<usize>,
     scan_y: Option<usize>,
     raw_kv: HashMap<String, String>,
@@ -459,8 +465,18 @@ impl AcquisitionConfig for QdAcquisitionHeader {
 
 #[pymethods]
 impl QdAcquisitionHeader {
+    #[classmethod]
+    fn new_from_bytes(_cls: &Bound<'_, PyType>, input: Bound<'_, PyBytes>) -> PyResult<Self> {
+        Self::parse_bytes(input.as_bytes())
+            .map_err(|e| PyValueError::new_err(format!("invalid acquisition header: {e}")))
+    }
+
     fn frames_in_acquisition(&self) -> usize {
         self.frames_in_acquisition
+    }
+
+    fn frames_per_trigger(&self) -> usize {
+        self.frames_per_trigger
     }
 }
 
@@ -536,11 +552,14 @@ impl QdAcquisitionHeader {
         let frames_in_acquisition: u32 =
             get_key_and_parse(&raw_kv, "Frames in Acquisition (Number)")?;
 
+        let frames_per_trigger: u32 = get_key_and_parse(&raw_kv, "Frames per Trigger (Number)")?;
+
         let scan_x = get_key_and_parse_optional(&raw_kv, "ScanX")?;
         let scan_y = get_key_and_parse_optional(&raw_kv, "ScanY")?;
 
         Ok(Self {
             frames_in_acquisition: frames_in_acquisition as usize,
+            frames_per_trigger: frames_per_trigger as usize,
             scan_x,
             scan_y,
             raw_kv,
