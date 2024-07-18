@@ -201,6 +201,29 @@ where
     /// a `PendingAcquisition`, or `None` in case of timeout.
     pub fn wait_for_arm<E>(
         &mut self,
+        timeout: Option<Duration>,
+        periodic_callback: impl Fn() -> Result<(), E>,
+    ) -> Result<Option<B::AcquisitionConfigImpl>, ConnectionError>
+    where
+        E: std::error::Error + 'static + Send + Sync,
+    {
+        if let Some(timeout) = timeout {
+            self.wait_for_arm_inner(timeout, periodic_callback)
+        } else {
+            // wait indefinitely:
+            loop {
+                let res = self.wait_for_arm_inner(Duration::from_millis(100), &periodic_callback);
+                if let Err(ConnectionError::Timeout) = &res {
+                    continue;
+                } else {
+                    break res;
+                }
+            }
+        }
+    }
+
+    fn wait_for_arm_inner<E>(
+        &mut self,
         timeout: Duration,
         periodic_callback: impl Fn() -> Result<(), E>,
     ) -> Result<Option<B::AcquisitionConfigImpl>, ConnectionError>
@@ -255,6 +278,34 @@ where
     }
 
     pub fn wait_for_status<E>(
+        &mut self,
+        desired_status: ConnectionStatus,
+        timeout: Option<Duration>,
+        periodic_callback: impl Fn() -> Result<(), E>,
+    ) -> Result<(), ConnectionError>
+    where
+        E: std::error::Error + 'static + Send + Sync,
+    {
+        if let Some(timeout) = timeout {
+            self.wait_for_status_inner(desired_status, timeout, periodic_callback)
+        } else {
+            // wait indefinitely:
+            loop {
+                let res = self.wait_for_status_inner(
+                    desired_status,
+                    Duration::from_millis(100),
+                    &periodic_callback,
+                );
+                if let Err(ConnectionError::Timeout) = &res {
+                    continue;
+                } else {
+                    break res;
+                }
+            }
+        }
+    }
+
+    fn wait_for_status_inner<E>(
         &mut self,
         desired_status: ConnectionStatus,
         timeout: Duration,
@@ -319,7 +370,7 @@ where
     pub fn start_passive<E>(
         &mut self,
         periodic_callback: impl Fn() -> Result<(), E>,
-        timeout: &Duration,
+        timeout: &Option<Duration>,
     ) -> Result<(), ConnectionError>
     where
         E: std::error::Error + 'static + Send + Sync,

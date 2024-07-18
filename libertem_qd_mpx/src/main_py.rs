@@ -100,7 +100,7 @@ impl QdConnection {
 
     fn wait_for_arm(
         &mut self,
-        timeout: f32,
+        timeout: Option<f32>,
         py: Python<'_>,
     ) -> PyResult<Option<QdAcquisitionHeader>> {
         self.conn.wait_for_arm(timeout, py)
@@ -114,10 +114,8 @@ impl QdConnection {
         self.conn.is_running()
     }
 
-    fn start_passive(&mut self, py: Python<'_>) -> PyResult<()> {
-        let timeout =
-            Duration::from_millis(100) + self.config.drain.unwrap_or(Duration::from_millis(1));
-        self.conn.start_passive(timeout.as_secs_f32(), py)
+    fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
+        self.conn.start_passive(timeout, py)
     }
 
     fn close(&mut self) -> PyResult<()> {
