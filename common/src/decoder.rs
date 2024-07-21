@@ -73,6 +73,7 @@ where
 
 /// Helper function to cast a primitive value or emit a `DecoderError` if it's
 /// not safely possible.
+#[inline]
 pub fn try_cast_primitive<O, I>(input_value: I) -> Result<O, DecoderError>
 where
     O: Copy + ToPrimitive + NumCast + Debug,

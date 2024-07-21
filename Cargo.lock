@@ -2087,6 +2087,7 @@ name = "libertem-asi-tpx3"
 version = "0.2.11"
 dependencies = [
  "bincode",
+ "common",
  "crossbeam",
  "crossbeam-channel",
  "env_logger",

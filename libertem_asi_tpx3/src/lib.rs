@@ -1,3 +1,4 @@
+pub mod background_thread;
 pub mod cam_client;
 pub mod chunk_stack;
 pub mod common;
@@ -8,7 +9,6 @@ pub mod exceptions;
 pub mod headers;
 pub mod headers_py;
 pub mod main_py;
-pub mod receiver;
 pub mod serialize;
 pub mod sparse_csr;
 pub mod stats;

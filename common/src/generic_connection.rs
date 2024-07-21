@@ -145,6 +145,7 @@ where
     B: BackgroundThread,
     AC: AcquisitionConfig,
 {
+    /// Create a new `GenericConnection`, taking ownership of the `bg_thread` passed in.
     pub fn new(bg_thread: B, shm: &SharedSlabAllocator) -> Result<Self, ConnectionError> {
         let shm = shm.clone_and_connect()?;
         Ok(Self {
@@ -157,6 +158,7 @@ where
         })
     }
 
+    /// Instantiate a `SharedSlabAllocator` from the configuration in `config`.
     pub fn shm_from_config<D>(config: &D) -> Result<SharedSlabAllocator, ConnectionError>
     where
         D: DetectorConnectionConfig,
@@ -227,8 +229,16 @@ where
         Ok(msg)
     }
 
-    /// Wait until the detector is armed, or until `timeout` expires. Returns
-    /// a `PendingAcquisition`, or `None` in case of timeout.
+    /// Wait until the detector is armed, or until `timeout` expires. Returns an
+    /// `AcquisitionConfig` matching the `BackgroundThread` impl, or `None` in
+    /// case of timeout.
+    ///
+    /// `periodic_callback` will be called about every 100ms - if that
+    /// returns an `Err`, a `ConnectionError::PeriodicCallbackError`
+    /// will be returned.
+    ///
+    /// If `timeout` is none, wait indefinitely, or until the
+    /// `periodic_callback` returns an error.
     pub fn wait_for_arm<E>(
         &mut self,
         timeout: Option<Duration>,
@@ -307,6 +317,13 @@ where
         }
     }
 
+    /// Wait for a status change, or until `timeout` expires. If `timeout` is
+    /// `None`, wait indefinitely. If the status is already equal to
+    /// `desired_status`, return immediately.
+    ///
+    /// `periodic_callback` will be called about every 100ms - if that
+    /// returns an `Err`, a `ConnectionError::PeriodicCallbackError`
+    /// will be returned.
     pub fn wait_for_status<E>(
         &mut self,
         desired_status: ConnectionStatus,
@@ -397,6 +414,7 @@ where
         }
     }
 
+    /// Start a new passive acquisition.
     pub fn start_passive<E>(
         &mut self,
         periodic_callback: impl Fn() -> Result<(), E>,

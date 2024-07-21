@@ -1,10 +1,10 @@
-use std::{io::Read, net::TcpStream};
+use std::net::TcpStream;
 
-use log::warn;
+use common::tcp::{read_exact_interruptible, ReadExactError};
 
 use crate::{
+    background_thread::ControlError,
     headers::{HeaderTypes, WireFormatError},
-    receiver::ControlError,
 };
 
 #[derive(Debug)]
@@ -36,34 +36,31 @@ impl From<ControlError> for StreamError {
     }
 }
 
-type RecvCallback<'a> = Box<dyn Fn(&std::io::ErrorKind) -> Result<(), StreamError> + 'a>;
+impl From<ReadExactError<ControlError>> for StreamError {
+    fn from(value: ReadExactError<ControlError>) -> Self {
+        match value {
+            ReadExactError::Interrupted { size: _, err } => Self::ControlError(err),
+            ReadExactError::IOError { err } => Self::IoError(err),
+            ReadExactError::PeekError { size: _ } => Self::Timeout,
+        }
+    }
+}
 
 pub fn stream_recv_header(
     stream: &mut TcpStream,
     header_bytes: &mut [u8; 32],
-    timeout_cb: RecvCallback,
+    timeout_cb: impl Fn() -> Result<(), ControlError>,
 ) -> Result<HeaderTypes, StreamError> {
-    // TODO: timeout? can't block indefinitely - can we make this atomic?
-
-    loop {
-        match stream.read_exact(header_bytes) {
-            Ok(_) => break,
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-                    warn!("stream error: {e}");
-                    timeout_cb(&e.kind())?;
-                    continue;
-                }
-                _ => return Err(e.into()),
-            },
-        }
-    }
-
+    read_exact_interruptible(stream, header_bytes, timeout_cb)?;
     Ok(HeaderTypes::from_bytes(header_bytes)?)
 }
 
 /// Fill `buf` with data
-pub fn stream_recv_chunk(stream: &mut TcpStream, buf: &mut [u8]) -> Result<(), StreamError> {
+pub fn stream_recv_chunk(
+    stream: &mut TcpStream,
+    buf: &mut [u8],
+    timeout_cb: impl Fn() -> Result<(), ControlError>,
+) -> Result<(), StreamError> {
     //
     // Possible situations to handle:
     //
@@ -78,11 +75,6 @@ pub fn stream_recv_chunk(stream: &mut TcpStream, buf: &mut [u8]) -> Result<(), S
     //
     // - A control message arrived from the main thread, which we need to handle.
     //
-
-    // Cases:
-    // - all goes well, `buf` is filled with data from the stream
-    //    - this includes if it was interrupted in the meantime
-    // - in case of read timeout, the error is passed down
-    stream.read_exact(buf)?;
+    read_exact_interruptible(stream, buf, timeout_cb)?;
     Ok(())
 }

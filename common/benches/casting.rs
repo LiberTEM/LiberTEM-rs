@@ -1,3 +1,6 @@
+//! Explorative benchmark to check the overhead of different casting methods
+//! and different dtype combinations
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use num::{cast::AsPrimitive, NumCast, ToPrimitive};
 

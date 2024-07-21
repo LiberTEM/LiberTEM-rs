@@ -426,7 +426,7 @@ impl ChunkStackHandle {
     pub fn serialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let bytes: Bound<'py, PyBytes> =
             PyBytes::new_bound(py, serialize(self).unwrap().as_slice());
-        Ok(bytes.into())
+        Ok(bytes)
     }
 
     #[classmethod]
