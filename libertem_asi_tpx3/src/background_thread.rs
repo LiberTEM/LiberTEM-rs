@@ -169,11 +169,9 @@ fn wait_for_acquisition(
     let mut header_bytes: [u8; 32] = [0; 32];
     loop {
         info!("waiting for acquisition header...");
-        let header = stream_recv_header(
-            stream,
-            &mut header_bytes,
-            Box::new(|_kind| Ok(check_for_control(control_channel)?)),
-        )?;
+        let header = stream_recv_header(stream, &mut header_bytes, || {
+            check_for_control(control_channel)
+        })?;
 
         trace!("got a header: {header:?}");
 
@@ -230,11 +228,9 @@ fn wait_for_scan(
     let mut header_bytes: [u8; 32] = [0; 32];
     info!("waiting for scan header...");
     loop {
-        let header = stream_recv_header(
-            stream,
-            &mut header_bytes,
-            Box::new(|_kind| Ok(check_for_control(control_channel)?)),
-        )?;
+        let header = stream_recv_header(stream, &mut header_bytes, || {
+            check_for_control(control_channel)
+        })?;
         trace!("got a header: {header:?}");
 
         match header {
@@ -330,11 +326,8 @@ fn handle_scan(
         }
 
         let mut header_bytes: [u8; 32] = [0; 32];
-        let header = stream_recv_header(
-            stream,
-            &mut header_bytes,
-            Box::new(|_kind| Ok(check_for_control(to_thread_r)?)),
-        )?;
+        let header =
+            stream_recv_header(stream, &mut header_bytes, || check_for_control(to_thread_r))?;
 
         match header {
             HeaderTypes::ArrayChunk { header } => {
@@ -394,7 +387,7 @@ fn handle_scan(
                     data_length_bytes: nbytes,
                 };
                 let buf = chunk_stack.slice_for_writing(nbytes, layout.clone());
-                stream_recv_chunk(stream, buf)?;
+                stream_recv_chunk(stream, buf, || check_for_control(to_thread_r))?;
                 CSRViewRaw::from_bytes_with_layout(buf, &layout);
             }
             HeaderTypes::ScanEnd { header } => {

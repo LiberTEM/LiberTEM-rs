@@ -7,12 +7,12 @@ use std::{
 };
 
 use crate::{
+    background_thread::{ReceiverStatus, ResultMsg, TPXReceiver},
     cam_client::CamClient,
     chunk_stack::ChunkStackHandle,
     exceptions::{ConnectionError, TimeoutError},
     headers::{AcquisitionEnd, AcquisitionStart, DType, FormatType, ScanEnd, ScanStart},
     headers_py::make_sim_data,
-    receiver::{ReceiverStatus, ResultMsg, TPXReceiver},
 };
 
 use ipc_test::SharedSlabAllocator;
@@ -24,7 +24,7 @@ use pyo3::{
 use stats::Stats;
 
 #[pymodule]
-fn libertem_asi_tpx3<'py>(py: Python, m: Bound<'py, PyModule>) -> PyResult<()> {
+fn libertem_asi_tpx3(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     // FIXME: logging integration deadlocks on close(), when trying to acquire
     // the GIL
     // pyo3_log::init();
