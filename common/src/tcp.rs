@@ -17,6 +17,9 @@ pub enum ReadExactError<E> {
         err: std::io::Error,
     },
 
+    #[error("eof")]
+    Eof,
+
     #[error("could not peek {size} bytes")]
     PeekError { size: usize },
 }
@@ -52,6 +55,10 @@ where
                 // it's full! we are done...
                 if bytes_read == total_to_read {
                     return Ok(());
+                }
+                if size == 0 {
+                    // we aren't done, but got an EOF... propagate that as an error
+                    return Err(ReadExactError::Eof);
                 }
             }
             Err(e) => match e.kind() {

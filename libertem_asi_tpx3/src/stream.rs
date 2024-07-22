@@ -11,6 +11,7 @@ use crate::{
 pub enum StreamError {
     Timeout,
     IoError(std::io::Error),
+    Eof,
     FormatError(WireFormatError),
     ControlError(ControlError),
 }
@@ -42,6 +43,7 @@ impl From<ReadExactError<ControlError>> for StreamError {
             ReadExactError::Interrupted { size: _, err } => Self::ControlError(err),
             ReadExactError::IOError { err } => Self::IoError(err),
             ReadExactError::PeekError { size: _ } => Self::Timeout,
+            ReadExactError::Eof => Self::Eof,
         }
     }
 }

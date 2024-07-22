@@ -319,7 +319,7 @@ impl QdFrameMeta {
         // first, split off the header if there is more stuff after it:
         let data_offset: u32 = std::str::from_utf8(&input[11..16])?.parse().map_err(|e| {
             FrameMetaParseError::ValueError {
-                msg: format!("could not parse data offset! {e:?}"),
+                msg: format!("could not parse data offset: {e:?} ({:X?})", &input[11..16]),
             }
         })?;
 

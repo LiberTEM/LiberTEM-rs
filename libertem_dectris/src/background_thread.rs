@@ -360,6 +360,9 @@ fn acquisition(
                 Err(FrameStackWriteError::NonEmpty) => {
                     warn!("acquisition: unexpected non-empty frame stack")
                 }
+                Err(FrameStackWriteError::TooSmall) => {
+                    warn!("acquisition: frame stack too small")
+                }
             }
         }
 
@@ -402,6 +405,9 @@ fn acquisition(
                 }
                 Err(FrameStackWriteError::NonEmpty) => {
                     warn!("acquisition: unexpected non-empty frame stack")
+                }
+                Err(FrameStackWriteError::TooSmall) => {
+                    warn!("acquisition: frame stack too small")
                 }
             }
 

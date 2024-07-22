@@ -292,8 +292,11 @@ impl From<ReadExactError<AcquisitionError>> for AcquisitionError {
                 err
             }
             ReadExactError::IOError { err } => Self::from(err),
-            ReadExactError::PeekError { size } => AcquisitionError::ConnectionError {
+            ReadExactError::PeekError { size } => Self::ConnectionError {
                 msg: format!("could not peek {size} bytes"),
+            },
+            ReadExactError::Eof => Self::ConnectionError {
+                msg: "EOF".to_owned(),
             },
         }
     }

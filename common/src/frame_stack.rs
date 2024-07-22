@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use ipc_test::{SharedSlabAllocator, SlotForWriting};
+use log::{error, warn};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     PyErr,
@@ -41,6 +42,9 @@ pub enum FrameStackWriteError {
 
     #[error("expected empty FrameStackForWriting")]
     NonEmpty,
+
+    #[error("too small")]
+    TooSmall,
 }
 
 impl From<FrameStackWriteError> for PyErr {
@@ -48,6 +52,9 @@ impl From<FrameStackWriteError> for PyErr {
         match value {
             FrameStackWriteError::Empty | FrameStackWriteError::NonEmpty => {
                 PyValueError::new_err(value.to_string())
+            }
+            FrameStackWriteError::TooSmall => {
+                PyValueError::new_err("frame stack too small to handle single frame")
             }
         }
     }
@@ -106,6 +113,14 @@ where
 
     pub fn can_fit(&self, num_bytes: usize) -> bool {
         self.slot.size - self.cursor >= num_bytes
+    }
+
+    pub fn should_fit(&self, num_bytes: usize) -> Result<(), FrameStackWriteError> {
+        if self.can_fit(num_bytes) {
+            Ok(())
+        } else {
+            Err(FrameStackWriteError::TooSmall)
+        }
     }
 
     pub fn slot_size(&self) -> usize {
@@ -371,6 +386,121 @@ mod inner {
 }
 
 pub use inner::FrameStackHandle;
+
+pub struct WriteGuard<'b, M: FrameMeta> {
+    for_writing: Option<FrameStackForWriting<M>>,
+    shm: &'b mut SharedSlabAllocator,
+}
+
+impl<'b, M: FrameMeta> WriteGuard<'b, M> {
+    pub fn new(frame_stack: FrameStackForWriting<M>, shm: &'b mut SharedSlabAllocator) -> Self {
+        Self {
+            for_writing: Some(frame_stack),
+            shm,
+        }
+    }
+
+    pub fn free_empty_frame_stack(mut self) -> Result<(), FrameStackWriteError> {
+        let inner = self.for_writing.take().expect(
+            "only `drop`, `free_empty_frame_stack` and `writing_done` take `for_writing`, why is it `None`?"
+        );
+        inner.free_empty_frame_stack(self.shm)
+    }
+
+    pub fn writing_done(mut self) -> Result<FrameStackHandle<M>, FrameStackWriteError> {
+        let inner = self.for_writing.take().expect(
+            "only `drop`, `free_empty_frame_stack` and `writing_done` take `for_writing`, why is it `None`?"
+        );
+        inner.writing_done(self.shm)
+    }
+
+    pub fn write_frame<E>(
+        &mut self,
+        meta: &M,
+        fill_buffer: impl FnMut(&mut [u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some(inner) = &mut self.for_writing {
+            inner.write_frame(meta, fill_buffer)
+        } else {
+            panic!("must not take without consuming self or dropping");
+        }
+    }
+
+    pub fn can_fit(&self, num_bytes: usize) -> bool {
+        if let Some(inner) = &self.for_writing {
+            inner.can_fit(num_bytes)
+        } else {
+            panic!("must not take without consuming self or dropping");
+        }
+    }
+
+    pub fn should_fit(&self, num_bytes: usize) -> Result<(), FrameStackWriteError> {
+        if let Some(inner) = &self.for_writing {
+            inner.should_fit(num_bytes)
+        } else {
+            panic!("must not take without consuming self or dropping");
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        if let Some(inner) = &self.for_writing {
+            inner.len()
+        } else {
+            panic!("must not take without consuming self or dropping");
+        }
+    }
+
+    pub fn bytes_free(&self) -> usize {
+        if let Some(inner) = &self.for_writing {
+            inner.bytes_free()
+        } else {
+            panic!("must not take without consuming self or dropping");
+        }
+    }
+
+    pub fn slot_size(&self) -> usize {
+        if let Some(inner) = &self.for_writing {
+            inner.slot_size()
+        } else {
+            panic!("must not take without consuming self or dropping");
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        if let Some(inner) = &self.for_writing {
+            inner.is_empty()
+        } else {
+            panic!("must not take without consuming self or dropping");
+        }
+    }
+
+    pub fn take(mut self) -> Option<FrameStackForWriting<M>> {
+        self.for_writing.take()
+    }
+}
+
+impl<'b, M: FrameMeta> Drop for WriteGuard<'b, M> {
+    fn drop(&mut self) {
+        // if there still is a frame stack in here on drop, we free it using `shm`:
+        if let Some(frame_stack) = self.for_writing.take() {
+            if frame_stack.is_empty() {
+                // we can't handle errors in drop, so best we can do is log and continue:
+                if let Err(e) = frame_stack.free_empty_frame_stack(self.shm) {
+                    warn!("WriteGuard::drop for empty frame stack failed: {e:?}");
+                }
+            } else {
+                // we can't handle errors in drop, so best we can do is log and continue:
+                match frame_stack.writing_done(self.shm) {
+                    Ok(frame_stack) => {
+                        warn!("discarding non-empty frame stack as result of previous errors");
+                        frame_stack.free_slot(self.shm);
+                    }
+                    Err(e) => error!("WriteGuard::drop failed: {e:?}"),
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
