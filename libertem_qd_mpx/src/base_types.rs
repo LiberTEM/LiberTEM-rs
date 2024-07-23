@@ -415,7 +415,30 @@ impl FrameMeta for QdFrameMeta {
     }
 
     fn get_dtype_string(&self) -> String {
-        todo!()
+        let raw_dtype = if let Some(mq1a) = &self.mq1a {
+            match mq1a.counter_depth {
+                1 | 6 => "uint8",
+                12 => "uint16",
+                24 => "uint32",
+                _ => {
+                    // FIXME: unknown counter depth; can't determine raw dtype!
+                    "uint8"
+                }
+            }
+        } else {
+            // FIXME: not really correct, but we can't know the data type if the
+            // detector doesn't include the mq1a header!
+            "uint8"
+        };
+
+        match self.dtype {
+            DType::U01 | DType::U08 => "uint8",
+            DType::U16 => "uint16",
+            DType::U32 => "uint32",
+            DType::U64 => "uint64",
+            DType::R64 => raw_dtype,
+        }
+        .to_owned()
     }
 
     fn get_shape(&self) -> (u64, u64) {
