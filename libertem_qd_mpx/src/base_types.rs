@@ -602,6 +602,35 @@ impl QdAcquisitionHeader {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RecoveryStrategyError {
+    #[error("invalid variant: {variant}")]
+    InvalidVariant { variant: String },
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum RecoveryStrategy {
+    #[default]
+    ImmediateReconnect,
+    DrainThenReconnect,
+}
+
+impl FromStr for RecoveryStrategy {
+    type Err = RecoveryStrategyError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "immediate_reconnect" => Self::ImmediateReconnect,
+            "drain_then_reconnect" => Self::DrainThenReconnect,
+            _ => {
+                return Err(RecoveryStrategyError::InvalidVariant {
+                    variant: s.to_owned(),
+                })
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct QdDetectorConnConfig {
     pub data_host: String,
@@ -614,7 +643,9 @@ pub struct QdDetectorConnConfig {
     /// with `frame_stack_size`
     pub bytes_per_frame: usize,
 
-    pub drain: Option<Duration>,
+    pub drain_on_connect: Option<Duration>,
+
+    pub recovery_strategy: RecoveryStrategy,
 
     num_slots: usize,
     enable_huge_pages: bool,
@@ -631,7 +662,8 @@ impl QdDetectorConnConfig {
         num_slots: usize,
         enable_huge_pages: bool,
         shm_handle_path: &str,
-        drain: Option<Duration>,
+        drain_on_connect: Option<Duration>,
+        recovery_strategy: RecoveryStrategy,
     ) -> Self {
         Self {
             data_host: data_host.to_owned(),
@@ -641,7 +673,8 @@ impl QdDetectorConnConfig {
             num_slots,
             enable_huge_pages,
             shm_handle_path: shm_handle_path.to_owned(),
-            drain,
+            drain_on_connect,
+            recovery_strategy,
         }
     }
 }

@@ -1,6 +1,7 @@
 use std::{
     io::{self, ErrorKind, Read},
     net::TcpStream,
+    ops::{Deref, DerefMut},
     sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -18,7 +19,7 @@ use log::{debug, error, info, trace, warn};
 
 use crate::base_types::{
     AcqHeaderParseError, FrameMetaParseError, QdAcquisitionHeader, QdDetectorConnConfig,
-    QdFrameMeta, PREFIX_SIZE,
+    QdFrameMeta, RecoveryStrategy, PREFIX_SIZE,
 };
 
 type QdControlMsg = ControlMsg<()>;
@@ -477,6 +478,63 @@ fn acquisition(
     }
 }
 
+/// Implement a recovery strategy on drop
+struct TcpStreamGuard {
+    // FIXME: make `stream` an `Option` and implement a happy path that doesn't
+    // drain (needs more top-level support for a `ControlMsg::Stop` message or
+    // similar)
+    stream: TcpStream,
+    strategy: RecoveryStrategy,
+    drain_timeout: Duration,
+}
+
+impl Drop for TcpStreamGuard {
+    fn drop(&mut self) {
+        match self.strategy {
+            RecoveryStrategy::ImmediateReconnect => {
+                // nothing to do on drop here, as the outer loop will
+                // immediately try to reconnect.
+            }
+            RecoveryStrategy::DrainThenReconnect => {
+                warn!("RecoveryStrategy::DrainThenReconnect");
+                if let Err(e) = self.stream.set_read_timeout(Some(self.drain_timeout)) {
+                    warn!("could not set read timeout when draining; in case there is no timeout set, no draining will happen; error: {e}");
+                    return;
+                }
+                let mut tmp = vec![0; 1024 * 1024]; // keep this buffer large for efficient draining
+                loop {
+                    match self.stream.read(&mut tmp) {
+                        Ok(size) => {
+                            if size == 0 {
+                                break; // EOF, we are done.
+                            }
+                        }
+                        Err(e) => {
+                            warn!("TcpStreamGuard::drop: {e}");
+                            break;
+                        }
+                    }
+                }
+                warn!("RecoveryStrategy::DrainThenReconnect: done");
+            }
+        }
+    }
+}
+
+impl Deref for TcpStreamGuard {
+    type Target = TcpStream;
+
+    fn deref(&self) -> &Self::Target {
+        &self.stream
+    }
+}
+
+impl DerefMut for TcpStreamGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.stream
+    }
+}
+
 fn passive_acquisition(
     to_thread_r: &Receiver<QdControlMsg>,
     from_thread_s: &Sender<QdReceiverMsg>,
@@ -490,18 +548,18 @@ fn passive_acquisition(
     info!("connecting to {}...", &data_uri);
 
     check_for_control(to_thread_r)?;
-    let mut stream: TcpStream = loop {
+    let mut stream: TcpStreamGuard = loop {
         break match TcpStream::connect(&data_uri) {
-            Ok(s) => s,
+            Ok(s) => TcpStreamGuard {
+                stream: s,
+                strategy: config.recovery_strategy,
+                drain_timeout: Duration::from_millis(100),
+            },
             Err(e) => match e.kind() {
                 ErrorKind::ConnectionRefused
                 | ErrorKind::TimedOut
                 | ErrorKind::ConnectionAborted
                 | ErrorKind::ConnectionReset => {
-                    // If we re-connect too fast after an acquisition, the
-                    // connection might succeed and then be closed from the
-                    // other end. That's why we have to handle Connection{Aborted,Reset}
-                    // here.
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
@@ -512,7 +570,7 @@ fn passive_acquisition(
 
     info!("connected to {}.", &data_uri);
 
-    if let Some(timeout) = &config.drain {
+    if let Some(timeout) = &config.drain_on_connect {
         info!("draining for {timeout:?}...");
         let drained = drain_until_timeout(&mut stream, to_thread_r, timeout)?;
         if drained > 0 {
@@ -528,7 +586,7 @@ fn passive_acquisition(
         // wait for the acquisition header, which is sent when the detector
         // is armed with STARTACQUISITION:
         let acquisition_header: QdAcquisitionHeader =
-            read_acquisition_header(&mut stream, to_thread_r)?;
+            read_acquisition_header(stream.deref_mut(), to_thread_r)?;
 
         info!("acquisition header: {:?}", acquisition_header);
 
@@ -702,7 +760,7 @@ mod test {
         time::timeout,
     };
 
-    use crate::base_types::{QdAcquisitionHeader, QdDetectorConnConfig};
+    use crate::base_types::{QdAcquisitionHeader, QdDetectorConnConfig, RecoveryStrategy};
 
     use super::QdBackgroundThread;
 
@@ -854,6 +912,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             None,
+            RecoveryStrategy::ImmediateReconnect,
         );
 
         std::thread::scope(move |s| {
@@ -919,6 +978,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             None,
+            RecoveryStrategy::ImmediateReconnect,
         );
 
         std::thread::scope(move |s| {
@@ -995,6 +1055,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             None,
+            RecoveryStrategy::ImmediateReconnect,
         );
 
         std::thread::scope(move |s| {
@@ -1116,6 +1177,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             None,
+            RecoveryStrategy::ImmediateReconnect,
         );
 
         std::thread::scope(move |s| {
@@ -1220,6 +1282,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             None,
+            RecoveryStrategy::ImmediateReconnect,
         );
 
         std::thread::scope(move |s| {
@@ -1322,6 +1385,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             Some(Duration::from_millis(100)),
+            RecoveryStrategy::ImmediateReconnect,
         );
 
         std::thread::scope(move |s| {
@@ -1433,6 +1497,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             None,
+            RecoveryStrategy::ImmediateReconnect,
         );
 
         std::thread::scope(move |s| {
@@ -1540,6 +1605,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             None,
+            RecoveryStrategy::ImmediateReconnect,
         );
 
         std::thread::scope(move |s| {
@@ -1657,6 +1723,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             None,
+            RecoveryStrategy::ImmediateReconnect,
         );
 
         std::thread::scope(move |s| {
@@ -1765,6 +1832,169 @@ End
             // tear down the connection/bg thread and join the server thread:
             conn.close();
             server_thread.join().unwrap();
+
+            // we don't leak any slots, yay!
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+        });
+    }
+
+    /// Test the alternative drain error recovery strategy.
+    ///
+    /// It seems like the QD software doesn't really like if we disconnect in
+    /// the middle of a stream, so an alternative strategy is to drain the socket completely
+    /// before reconnecting.
+    #[test]
+    fn test_recovery_strategy_drain() {
+        let env = env_logger::Env::default()
+            .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")
+            .write_style_or("LIBERTEM_QD_LOG_STYLE", "always");
+        let _ = env_logger::Builder::from_env(env)
+            .format_timestamp_micros()
+            .try_init();
+
+        let (fake_server, local_addr) = make_test_server();
+
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let bytes_per_frame = 256 * 256;
+        let slot_size = bytes_per_frame;
+        let mut shm = SharedSlabAllocator::new(100, slot_size, false, &socket_as_path).unwrap();
+
+        let config = &QdDetectorConnConfig::new(
+            "127.0.0.1",
+            local_addr.port() as usize,
+            1,
+            bytes_per_frame,
+            100,
+            false,
+            socket_as_path.to_str().unwrap(),
+            None,
+            RecoveryStrategy::DrainThenReconnect,
+        );
+
+        std::thread::scope(move |s| {
+            let (shutdown_s, shutdown_r) = channel();
+
+            let server_thread = s.spawn(move || {
+                let rt = Runtime::new().unwrap();
+                rt.block_on(async {
+                    let fake_server = TcpListener::from_std(fake_server).unwrap();
+                    {
+                        // the server accepts our connection, and...
+                        let (mut stream, _addr) =
+                            timeout(Duration::from_millis(100), fake_server.accept())
+                                .await
+                                .unwrap()
+                                .unwrap();
+
+                        send_acq_header(&mut stream, 128).await;
+                        send_frames_simple(&mut stream, 0..16).await;
+
+                        // provoke an error in the middle of the stream:
+                        stream.write_all("OOPS".as_bytes()).await.unwrap();
+
+                        // and continue sending stuff (in the reconnect
+                        // immediately strategy, this should crash the thread):
+                        send_frames_simple(&mut stream, 16..128).await;
+                    }
+
+                    info!("server side stream should be proper dead now");
+
+                    {
+                        // restart the whole thing, and now successfully send 16 frames
+                        // without size change:
+                        let (mut stream, _addr) =
+                            timeout(Duration::from_millis(100), fake_server.accept())
+                                .await
+                                .unwrap()
+                                .unwrap();
+
+                        info!("and the server lives again and sends some thtuff");
+
+                        send_acq_header(&mut stream, 16).await;
+                        send_frames_simple(&mut stream, 0..16).await;
+
+                        // and we are done:
+                        shutdown_r.recv_timeout(Duration::from_millis(500)).unwrap();
+                    }
+                });
+            });
+
+            // we let the `GenericConnection` drive the background thread:
+            let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+                GenericConnection::new(bg, &shm).unwrap();
+            conn.start_passive(
+                || Ok::<(), ConnectionError>(()),
+                &Some(Duration::from_millis(100)),
+            )
+            .unwrap();
+
+            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+                Ok::<(), ConnectionError>(())
+            })
+            .unwrap();
+
+            // we only get 15 frames, as the error happens before pushing the
+            // frame stack into the channel:
+            for idx in 0..15 {
+                let stack = conn
+                    .get_next_stack(1, || Ok::<_, std::io::Error>(()))
+                    .unwrap()
+                    .unwrap(); // all frames come through!
+
+                stack.with_slot(&shm, |s| {
+                    assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
+                });
+                stack.free_slot(&mut shm);
+            }
+
+            // next stack is an error:
+            let err = conn.get_next_stack(1, || Ok::<_, std::io::Error>(()));
+            assert!(err.is_err());
+
+            // we can recover after the error:
+            assert_eq!(conn.get_status(), ConnectionStatus::Idle);
+            // restart connection:
+            conn.start_passive(
+                || Ok::<(), ConnectionError>(()),
+                &Some(Duration::from_millis(100)),
+            )
+            .unwrap();
+
+            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+                Ok::<(), ConnectionError>(())
+            })
+            .unwrap();
+
+            // everything should read properly here:
+            for idx in 0..16 {
+                let stack = conn
+                    .get_next_stack(1, || Ok::<_, std::io::Error>(()))
+                    .unwrap()
+                    .unwrap(); // all frames come through!
+
+                stack.with_slot(&shm, |s| {
+                    assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
+                });
+                stack.free_slot(&mut shm);
+            }
+
+            // that was the last stack:
+            assert!(conn
+                .get_next_stack(1, || Ok::<_, std::io::Error>(()))
+                .unwrap()
+                .is_none());
+
+            // allow the server thread to end:
+            shutdown_s.send(()).unwrap();
+
+            // tear down the connection/bg thread and join the server thread:
+            conn.close();
+
+            // especially, the background thread did not panic:
+            server_thread
+                .join()
+                .expect("server should be able to send everything");
 
             // we don't leak any slots, yay!
             assert_eq!(shm.num_slots_total(), shm.num_slots_free());

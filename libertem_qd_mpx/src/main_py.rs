@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use common::{decoder::DecoderTargetPixelType, generic_connection::GenericConnection};
 use numpy::{Element, PyArray1, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
@@ -11,7 +11,7 @@ use pyo3::{
 
 use common::{impl_py_cam_client, impl_py_connection};
 
-use crate::base_types::{DType, Layout, QdDetectorConnConfig, QdFrameMeta};
+use crate::base_types::{DType, Layout, QdDetectorConnConfig, QdFrameMeta, RecoveryStrategy};
 use crate::decoder::QdDecoder;
 use crate::{background_thread::QdBackgroundThread, base_types::QdAcquisitionHeader};
 
@@ -61,6 +61,7 @@ impl QdConnection {
         num_slots: Option<usize>,
         bytes_per_frame: Option<usize>,
         huge: Option<bool>,
+        recovery_strategy: Option<&str>,
     ) -> PyResult<Self> {
         // NOTE: these values don't have to be exact and are mostly important
         // for performance tuning
@@ -73,6 +74,13 @@ impl QdConnection {
             None
         };
 
+        let recovery_strategy = recovery_strategy
+            .map_or_else(
+                || Ok(RecoveryStrategy::default()),
+                RecoveryStrategy::from_str,
+            )
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
         let config = QdDetectorConnConfig::new(
             data_host,
             data_port,
@@ -82,6 +90,7 @@ impl QdConnection {
             huge.unwrap_or(false),
             shm_handle_path,
             drain,
+            recovery_strategy,
         );
 
         let shm =
