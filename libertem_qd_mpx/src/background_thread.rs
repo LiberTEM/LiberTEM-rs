@@ -11,7 +11,7 @@ use common::{
     frame_stack::{FrameMeta, FrameStackForWriting, FrameStackWriteError, WriteGuard},
     generic_connection::AcquisitionConfig,
     tcp::{self, ReadExactError},
-    utils::{num_from_byte_slice, three_way_shift, NumParseError},
+    utils::{num_from_byte_slice, NumParseError},
 };
 use ipc_test::{slab::ShmError, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
@@ -536,6 +536,16 @@ fn passive_acquisition(
         // (for example, if it is triggered with SOFTTRIGGER or by the configured
         // hardware trigger):
         let first_frame_meta: QdFrameMeta = peek_first_frame_header(&mut stream, to_thread_r)?;
+
+        match &first_frame_meta.mq1a {
+            None => warn!("missing mq1a header, this will probably cause issues in raw mode!"),
+            Some(mq1a) => match mq1a.counter_depth {
+                1 | 6 | 12 | 24 => {}
+                _ => {
+                    warn!("unknown counter depth {}", mq1a.counter_depth);
+                }
+            },
+        }
 
         acquisition(
             to_thread_r,
