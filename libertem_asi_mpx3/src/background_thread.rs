@@ -26,9 +26,6 @@ enum ParseError {
     #[error("wrong magic, should be 'P5', got: {got:X?}")]
     WrongMagic { got: [u8; 2] },
 
-    #[error("unexpected end of file")]
-    Eof,
-
     #[error("invalid max val, should be in 0..65536, is {got}")]
     InvalidMaxVal { got: u32 },
 
@@ -146,7 +143,7 @@ fn parse_header(buf: &[u8; HEADER_BUF_SIZE], sequence: u64) -> Result<ASIMpxFram
     }
 
     // •      A raster of Height rows, [...]
-    let raster_start_pos = pos;
+    let _raster_start_pos = pos;
 
     let dtype: DType = DType::from_maxval(maxval);
     let data_length_bytes = width as usize * height as usize * dtype.num_bytes();

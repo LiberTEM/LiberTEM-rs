@@ -67,7 +67,7 @@ pub fn compress_lz4<T>(in_: &[T], block_size: Option<usize>) -> Result<Vec<u8>, 
 
     let max_out_size_bytes =
         unsafe { bs_bindings::bshuf_compress_lz4_bound(size_in_elems, elem_size, block_size) };
-    let mut out: Vec<u8> = Vec::with_capacity(usize::try_from(max_out_size_bytes).unwrap());
+    let mut out: Vec<u8> = Vec::with_capacity(max_out_size_bytes);
     let bytes_used = unsafe {
         let c_out = out.as_mut_ptr().cast();
 

@@ -48,7 +48,6 @@ pub struct ChannelResult {
     udf_name: String,
 }
 
-///
 #[derive(Debug, Clone)]
 pub struct AcquisitionData {
     channel_results: HashMap<(String, String), ChannelResult>,
