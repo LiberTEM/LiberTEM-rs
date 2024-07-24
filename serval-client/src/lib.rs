@@ -297,6 +297,4 @@ impl ServalClient {
 }
 
 #[cfg(test)]
-mod test {
-    use crate::ServalClient;
-}
+mod test {}

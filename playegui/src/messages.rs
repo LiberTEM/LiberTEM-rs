@@ -145,7 +145,7 @@ pub enum CommError {
     /// An unexpected message was received which we don't know how to handle in this state
     UnknownMessageError,
 
-    ///
+    /// An unknown event was received
     UnknownEventError { event: String },
 
     /// An error occured while deserializing json data

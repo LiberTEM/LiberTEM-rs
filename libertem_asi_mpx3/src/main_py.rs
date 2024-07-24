@@ -23,7 +23,7 @@ use crate::decoder::ASIMpxDecoder;
 
 use std::ffi::c_int;
 
-use pyo3::{ffi::PyMemoryView_FromMemory, FromPyPointer};
+use pyo3::ffi::PyMemoryView_FromMemory;
 
 #[pymodule]
 fn libertem_asi_mpx3(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -84,7 +84,7 @@ struct PyDetectorLayout {
 #[pymethods]
 impl PyDetectorLayout {
     fn __repr__(&self) -> String {
-        format!("{:?}", self)
+        format!("{:?}", self.info)
     }
 }
 
@@ -112,7 +112,7 @@ impl PyServalClient {
         self.client
             .get_detector_config()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-            .map(|config| PyDetectorConfig::new(config))
+            .map(PyDetectorConfig::new)
     }
 
     fn get_detector_info(&self) -> PyResult<PyDetectorInfo> {
@@ -285,7 +285,12 @@ impl CamClient {
         let mv = unsafe {
             PyMemoryView_FromMemory(ptr as *mut i8, length.try_into().unwrap(), PyBUF_READ)
         };
-        let from_ptr: &PyAny = unsafe { FromPyPointer::from_owned_ptr(py, mv) };
+
+        let from_ptr: Bound<PyAny> = unsafe {
+            //FromPyPointer::from_owned_ptr(py, mv)
+
+            Bound::from_owned_ptr(py, mv)
+        };
         from_ptr.into_py(py)
     }
 }

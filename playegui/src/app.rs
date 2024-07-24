@@ -294,7 +294,7 @@ impl TemplateApp {
             .iter()
             .map(|result_id| (result_id.udf_name.clone(), result_id.channel_name.clone()))
             .collect::<HashSet<_>>();
-        let mut pairs = Vec::from_iter(pairs.into_iter());
+        let mut pairs = Vec::from_iter(pairs);
         pairs.sort();
 
         pairs

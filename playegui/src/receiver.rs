@@ -1,5 +1,4 @@
 use std::{
-    fmt::Debug,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -16,7 +15,7 @@ use url::Url;
 
 use crate::{
     app::ConnectionStatus,
-    messages::{CommError, ControlMessage, MessagePart, UpdateParams, UpdateParamsInner},
+    messages::{CommError, ControlMessage, MessagePart, UpdateParams},
 };
 
 fn message_part_from_msg(
