@@ -501,6 +501,13 @@ impl QdAcquisitionHeader {
     fn frames_per_trigger(&self) -> usize {
         self.frames_per_trigger
     }
+
+    fn nav_shape(&self) -> Option<(usize, usize)> {
+        if let (Some(scan_x), Some(scan_y)) = (self.scan_x, self.scan_y) {
+            return Some((scan_y, scan_x));
+        }
+        None
+    }
 }
 
 fn get_key_and_parse<T: FromStr>(
@@ -894,6 +901,8 @@ End
         assert_eq!(header.num_frames(), 580);
         assert_eq!(header.get_scan_x(), Some(28));
         assert_eq!(header.get_scan_y(), Some(20));
+
+        assert_eq!(header.nav_shape(), Some((20, 28)));
     }
 
     #[test]
