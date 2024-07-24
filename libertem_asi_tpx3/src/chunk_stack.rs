@@ -249,7 +249,7 @@ impl ChunkStackHandle {
         &self.layout
     }
 
-    pub(crate) fn deserialize_impl<'py>(serialized: &Bound<'py, PyBytes>) -> PyResult<Self> {
+    pub(crate) fn deserialize_impl(serialized: &Bound<'_, PyBytes>) -> PyResult<Self> {
         let data = serialized.as_bytes();
         bincode::deserialize(data).map_err(|e| {
             let msg = format!("could not deserialize FrameStackHandle: {e:?}");
@@ -550,9 +550,9 @@ mod tests {
 
         let fs_handle = fs.writing_done(&mut shm);
 
-        let slot_r = shm.get(fs_handle.slot.slot_idx);
+        let _slot_r = shm.get(fs_handle.slot.slot_idx);
 
-        let old_layout_len = fs_handle.layout.len();
+        let _old_layout_len = fs_handle.layout.len();
 
         let (a, b) = fs_handle.split_at(2, &mut shm);
 

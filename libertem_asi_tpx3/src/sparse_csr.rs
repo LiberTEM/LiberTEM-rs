@@ -50,7 +50,7 @@ impl<'a> CSRSplitter<'a> {
     {
         let view: CSRViewRaw = CSRViewRaw::from_bytes_with_layout(self.raw_data, &self.layout);
 
-        let left_nnz = view.get_indptr::<IP>()[mid].try_into().unwrap();
+        let left_nnz = view.get_indptr::<IP>()[mid].into();
         let left_nframes = mid;
         let left_indptr_size = size_of::<IP>() * (left_nframes + 1);
         let left_indices_size = left_nnz as usize * self.layout.indices_dtype.size();

@@ -1,4 +1,4 @@
-use zerocopy::{AsBytes, FromBytes, LayoutVerified};
+use zerocopy::{AsBytes, FromBytes, Ref};
 
 use crate::{chunk_stack::ChunkCSRLayout, sparse_csr::CSRSizes};
 
@@ -29,7 +29,7 @@ impl<'a> CSRViewRaw<'a> {
         let sizes = self.get_sizes();
         let offset = self.layout.indptr_offset;
         let indptr_raw = &self.raw_data[offset..offset + sizes.indptr];
-        LayoutVerified::new_slice(indptr_raw).unwrap().into_slice()
+        Ref::new_slice(indptr_raw).unwrap().into_slice()
     }
 
     pub fn get_indptr_raw(&self) -> &'a [u8] {
@@ -75,9 +75,7 @@ impl<'a> CSRViewRawMut<'a> {
         let sizes = self.get_sizes();
         let offset = self.layout.indptr_offset;
         let indptr_raw = &mut self.raw_data[offset..offset + sizes.indptr];
-        LayoutVerified::new_slice(indptr_raw)
-            .unwrap()
-            .into_mut_slice()
+        Ref::new_slice(indptr_raw).unwrap().into_mut_slice()
     }
 
     pub fn get_indptr_raw(&mut self) -> &mut [u8] {
