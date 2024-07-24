@@ -274,6 +274,7 @@ impl QdFrameMeta {
     // this is only used internally for testing... could also make everything
     // pub or pub(crate) instead...
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) fn new(
         mpx_length: usize,
         sequence: u32,

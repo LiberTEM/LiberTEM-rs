@@ -84,7 +84,10 @@ where
     ///
     /// This requires that the data is already layed out as a C-contiguous array
     /// in the `FrameStackHandle`.
-    pub fn get_array_zero_copy<M>(&self, handle: &FrameStackHandle<M>) -> Result<(), CamClientError>
+    pub fn get_array_zero_copy<M>(
+        &self,
+        _handle: &FrameStackHandle<M>,
+    ) -> Result<(), CamClientError>
     where
         M: FrameMeta,
     {
