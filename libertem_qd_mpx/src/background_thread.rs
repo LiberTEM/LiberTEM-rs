@@ -1723,7 +1723,7 @@ End
             false,
             socket_as_path.to_str().unwrap(),
             None,
-            RecoveryStrategy::ImmediateReconnect,
+            RecoveryStrategy::DrainThenReconnect, // make sure we don't kill the sending side prematurely
         );
 
         std::thread::scope(move |s| {
