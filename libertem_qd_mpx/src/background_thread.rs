@@ -1746,7 +1746,7 @@ End
 
                         // we only send two frames at correct size, and then...
                         send_frames_simple(&mut stream, 0..2).await;
-                        // ... oops, suddenly quad (at leas the size)!
+                        // ... oops, suddenly quad (at least the size)!
                         send_frames_with_size(&mut stream, 2..3, 512, 512).await;
                     }
 
