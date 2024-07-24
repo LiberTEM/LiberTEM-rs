@@ -10,6 +10,9 @@ on:
       - 'v[0-9]*'
   pull_request:
 
+env:
+  RUST_BACKTRACE: 1
+
 concurrency: 
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -55,7 +58,7 @@ jobs:
       with:
         python-version: '3.10' 
     - run: python3 -m pip install numpy
-    - run: RUST_BACKTRACE=1 cargo test
+    - run: cargo test
       working-directory: ${{ matrix.crate }}
 
   windows:
@@ -116,7 +119,7 @@ jobs:
       with:
         python-version: '3.10' 
     - run: python3 -m pip install numpy
-    - run: RUST_BACKTRACE=1 cargo test
+    - run: cargo test
       working-directory: ${{ matrix.crate }}
 
   macos-test:
@@ -141,7 +144,7 @@ jobs:
       with:
         python-version: '3.10' 
     - run: python3 -m pip install numpy
-    - run: RUST_BACKTRACE=1 cargo test
+    - run: cargo test
       working-directory: ${{ matrix.crate }}
 
   macos:
