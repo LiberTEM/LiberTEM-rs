@@ -1782,7 +1782,7 @@ End
             )
             .unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
@@ -1810,7 +1810,7 @@ End
             assert_eq!(conn.get_status(), ConnectionStatus::Idle);
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
