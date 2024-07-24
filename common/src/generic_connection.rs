@@ -253,10 +253,10 @@ where
             // wait indefinitely:
             loop {
                 let res = self.wait_for_arm_inner(Duration::from_millis(100), &periodic_callback);
-                if let Err(ConnectionError::Timeout) = &res {
-                    continue;
-                } else {
-                    break res;
+                match res {
+                    Err(ConnectionError::Timeout) => continue,
+                    Ok(None) => continue,
+                    other => break other, // error, or Some(result)
                 }
             }
         }
