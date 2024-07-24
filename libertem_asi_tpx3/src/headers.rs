@@ -157,7 +157,6 @@ impl FormatType {
 pub struct AcquisitionStart {
     tag: u8, // const. 0x00
 
-    ///
     pub version: u8,
     pub format_type: FormatType,
 

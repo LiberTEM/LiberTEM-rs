@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(slices.len(), 1);
 
         assert_eq!(
-            slices.get(0).unwrap(),
+            slices.first().unwrap(),
             &(&indptr[..], &indices[..], &values[..])
         );
     }

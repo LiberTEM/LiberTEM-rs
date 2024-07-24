@@ -17,7 +17,6 @@ use crate::{
     stream::{stream_recv_chunk, stream_recv_header, StreamError},
 };
 
-///
 #[derive(PartialEq, Eq, Debug)]
 pub enum ResultMsg {
     SerdeError {

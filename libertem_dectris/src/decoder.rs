@@ -1,7 +1,4 @@
-use std::{
-    any::{type_name, TypeId},
-    fmt::Debug,
-};
+use std::any::TypeId;
 
 use common::{
     decoder::{try_cast_if_safe, Decoder, DecoderError, DecoderTargetPixelType},
@@ -11,8 +8,6 @@ use ipc_test::SharedSlabAllocator;
 
 use numpy::ndarray::s;
 use zerocopy::{AsBytes, FromBytes};
-
-use num::{NumCast, ToPrimitive};
 
 use crate::base_types::{DectrisFrameMeta, NonEmptyString, PixelType};
 

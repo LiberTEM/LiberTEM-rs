@@ -1,8 +1,7 @@
-use zerocopy::{AsBytes, FromBytes, LayoutVerified};
+use zerocopy::{AsBytes, FromBytes, Ref};
 
 use crate::{chunk_stack::ChunkCSRLayout, sparse_csr::CSRSizes};
 
-///
 pub struct CSRView<'a, I, IP, V> {
     pub indices: &'a [I],
     pub indptr: &'a [IP],
@@ -32,9 +31,9 @@ where
         // their data types - in practice that means there should be
         // padding between these slices and we need to properly adjust the sizing calculation
         // according to these alignment requirements
-        let indptr: &[IP] = LayoutVerified::new_slice(indptr_raw).unwrap().into_slice();
-        let indices: &[I] = LayoutVerified::new_slice(indices_raw).unwrap().into_slice();
-        let values: &[V] = LayoutVerified::new_slice(values_raw).unwrap().into_slice();
+        let indptr: &[IP] = Ref::new_slice(indptr_raw).unwrap().into_slice();
+        let indices: &[I] = Ref::new_slice(indices_raw).unwrap().into_slice();
+        let values: &[V] = Ref::new_slice(values_raw).unwrap().into_slice();
 
         Self {
             indices,
@@ -87,15 +86,9 @@ where
         assert_eq!(sizes.values, values_raw.len());
 
         // FIXME: error handling
-        let indptr: &mut [IP] = LayoutVerified::new_slice(indptr_raw)
-            .unwrap()
-            .into_mut_slice();
-        let indices: &mut [I] = LayoutVerified::new_slice(indices_raw)
-            .unwrap()
-            .into_mut_slice();
-        let values: &mut [V] = LayoutVerified::new_slice(values_raw)
-            .unwrap()
-            .into_mut_slice();
+        let indptr: &mut [IP] = Ref::new_slice(indptr_raw).unwrap().into_mut_slice();
+        let indices: &mut [I] = Ref::new_slice(indices_raw).unwrap().into_mut_slice();
+        let values: &mut [V] = Ref::new_slice(values_raw).unwrap().into_mut_slice();
 
         Self {
             indices,
