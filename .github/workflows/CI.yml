@@ -55,7 +55,7 @@ jobs:
       with:
         python-version: '3.10' 
     - run: python3 -m pip install numpy
-    - run: cargo test
+    - run: RUST_BACKTRACE=1 cargo test
       working-directory: ${{ matrix.crate }}
 
   windows:
@@ -116,7 +116,7 @@ jobs:
       with:
         python-version: '3.10' 
     - run: python3 -m pip install numpy
-    - run: cargo test
+    - run: RUST_BACKTRACE=1 cargo test
       working-directory: ${{ matrix.crate }}
 
   macos-test:
@@ -141,7 +141,7 @@ jobs:
       with:
         python-version: '3.10' 
     - run: python3 -m pip install numpy
-    - run: cargo test
+    - run: RUST_BACKTRACE=1 cargo test
       working-directory: ${{ matrix.crate }}
 
   macos:
