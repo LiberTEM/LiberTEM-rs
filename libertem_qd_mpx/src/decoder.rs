@@ -117,11 +117,37 @@ impl QdDecoder {
             }
             crate::base_types::Layout::L2x2 => self.decode_frame_quad(frame_meta, input, output),
             crate::base_types::Layout::L2x2G => self.decode_frame_quad(frame_meta, input, output),
-            layout @ (crate::base_types::Layout::LNx1 | crate::base_types::Layout::LNx1G) => {
-                Err(DecoderError::FrameDecodeFailed {
-                    msg: format!("unsupported layout: {layout:?}"),
-                })
+            crate::base_types::Layout::LNx1 | crate::base_types::Layout::LNx1G => {
+                self.decode_frame_eels(frame_meta, input, output)
             }
+        }
+    }
+
+    fn decode_frame_eels<O>(
+        &self,
+        frame_meta: &QdFrameMeta,
+        input: &[u8],
+        output: &mut [O],
+    ) -> Result<(), DecoderError>
+    where
+        O: DecoderTargetPixelType,
+    {
+        match frame_meta.dtype {
+            // this one could be zero-copy:
+            DType::U01 | DType::U08 => try_cast_if_safe(input, output),
+
+            // these need byte swaps:
+            DType::U16 => decode_ints_be::<_, u16>(input, output),
+            DType::U32 => decode_ints_be::<_, u32>(input, output),
+            DType::U64 => decode_ints_be::<_, u64>(input, output),
+
+            // this is any of the raw formats; dispatch on the "original counter depth" value:
+            DType::R64 => Err(DecoderError::FrameDecodeFailed {
+                msg: format!(
+                    "unsupported layout for raw decoding: {:?}",
+                    frame_meta.layout
+                ),
+            }),
         }
     }
 
@@ -723,9 +749,9 @@ mod test {
         let (width, height, num_chips) = match layout {
             Layout::L1x1 => (256, 256, 1),
             Layout::L2x2 => (512, 512, 4),
-            Layout::LNx1 => (512, 256, 2), // TODO: assumes two chips in "tall" layout
+            Layout::LNx1 => (1024, 256, 2), // eels-like setup
             Layout::L2x2G => (514, 514, 4),
-            Layout::LNx1G => (512, 256, 2), // TODO: assumes two chips in "tall" layout
+            Layout::LNx1G => (1024, 256, 2), // eels-like setup
         };
 
         QdFrameMeta::new(
@@ -846,6 +872,44 @@ mod test {
                 decoder.decode(&shm, &fsh, &mut decoded.view_mut(), 0, 1),
                 Err(DecoderError::FrameDecodeFailed { msg: _ })
             ))
+        }
+        _inner(&Layout::LNx1);
+        _inner(&Layout::LNx1G);
+    }
+
+    #[test]
+    fn test_decoder_eels_like() {
+        fn _inner(layout: &Layout) {
+            let bytes_per_frame = 1024 * 256 * 2;
+            let decoder = QdDecoder::default();
+            let frame_meta = make_test_frame_meta(&DType::U16, layout, 12, bytes_per_frame);
+
+            let (_socket_dir, socket_as_path) = get_socket_path();
+
+            let slot_size = bytes_per_frame;
+            let mut shm = SharedSlabAllocator::new(1, slot_size, false, &socket_as_path).unwrap();
+            let slot = shm.get_mut().expect("get a free shm slot");
+            let mut fs = FrameStackForWriting::new(slot, 1, bytes_per_frame);
+
+            let input_data: Vec<u16> = (0..1024 * 256).map(|i| (i % 0xFFFF) as u16).collect();
+
+            fs.write_frame(&frame_meta, |buf| {
+                assert_eq!(buf.len(), bytes_per_frame);
+
+                for (i, o) in input_data.iter().zip(buf.chunks_exact_mut(2)) {
+                    o.copy_from_slice(&i.to_be_bytes());
+                }
+
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+            let fsh = fs.writing_done(&mut shm).unwrap();
+
+            let mut decoded = Array3::from_shape_simple_fn([1, 1024, 256], || 0u16);
+            decoder
+                .decode(&shm, &fsh, &mut decoded.view_mut(), 0, 1)
+                .unwrap();
+            assert_eq!(input_data, decoded.as_slice().unwrap());
         }
         _inner(&Layout::LNx1);
         _inner(&Layout::LNx1G);
