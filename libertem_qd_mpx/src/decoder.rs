@@ -848,12 +848,12 @@ mod test {
         counter_depth: u8,
         frame_size_bytes: usize,
     ) -> QdFrameMeta {
-        let (width, height, num_chips) = match layout {
-            Layout::L1x1 => (256, 256, 1),
-            Layout::L2x2 => (512, 512, 4),
-            Layout::LNx1 => (1024, 256, 2), // eels-like setup
-            Layout::L2x2G => (514, 514, 4),
-            Layout::LNx1G => (1024, 256, 2), // eels-like setup
+        let (width_raw, height_raw, width, height, num_chips) = match layout {
+            Layout::L1x1 => (256, 256, 256, 256, 1),
+            Layout::L2x2 => (1024, 256, 512, 512, 4),
+            Layout::LNx1 => (1024, 256, 1024, 256, 2), // eels-like setup
+            Layout::L2x2G => (1024, 256, 514, 514, 4),
+            Layout::LNx1G => (1024, 256, 1024, 256, 2), // eels-like setup; FIXME: 2px gap?
         };
 
         QdFrameMeta::new(
@@ -861,6 +861,8 @@ mod test {
             1,
             768,
             num_chips,
+            width_raw,
+            height_raw,
             width,
             height,
             dtype.clone(),
