@@ -251,6 +251,10 @@ pub struct QdFrameMeta {
 
     height_in_pixels: u32,
 
+    width_in_pixels_raw: u32,
+
+    height_in_pixels_raw: u32,
+
     pub dtype: DType,
 
     pub layout: Layout,
@@ -280,6 +284,8 @@ impl QdFrameMeta {
         sequence: u32,
         data_offset: u16,
         num_chips: u8,
+        width_in_pixels_raw: u32,
+        height_in_pixels_raw: u32,
         width_in_pixels: u32,
         height_in_pixels: u32,
         dtype: DType,
@@ -297,6 +303,8 @@ impl QdFrameMeta {
             sequence,
             data_offset,
             num_chips,
+            width_in_pixels_raw,
+            height_in_pixels_raw,
             width_in_pixels,
             height_in_pixels,
             dtype,
@@ -344,8 +352,8 @@ impl QdFrameMeta {
         let sequence: u32 = next_part_from_str(&mut parts)?;
         let data_offset: u16 = next_part_from_str(&mut parts)?;
         let num_chips: u8 = next_part_from_str(&mut parts)?;
-        let width_in_pixels: u32 = next_part_from_str(&mut parts)?;
-        let height_in_pixels: u32 = next_part_from_str(&mut parts)?;
+        let width_in_pixels_raw: u32 = next_part_from_str(&mut parts)?;
+        let height_in_pixels_raw: u32 = next_part_from_str(&mut parts)?;
         let dtype: DType = next_part_from_str(&mut parts)?;
         let layout: Layout = next_part_from_str(&mut parts)?;
         let chip_select: u8 = next_part_from_str_radix(&mut parts, 16)?;
@@ -372,11 +380,40 @@ impl QdFrameMeta {
             None
         };
 
+        // fixups: layout -> width/height mapping
+        let width_in_pixels = if dtype == DType::R64 {
+            match layout {
+                Layout::L1x1 => width_in_pixels_raw,
+                Layout::LNx1 => 1024,
+                Layout::LNx1G => 1024, // FIXME: gap support?
+
+                Layout::L2x2 => 512,
+                Layout::L2x2G => 514,
+            }
+        } else {
+            width_in_pixels_raw
+        };
+
+        let height_in_pixels = if dtype == DType::R64 {
+            match layout {
+                Layout::L1x1 => height_in_pixels_raw,
+                Layout::LNx1 => 256,
+                Layout::LNx1G => 256, // FIXME: gap support?
+
+                Layout::L2x2 => 512,
+                Layout::L2x2G => 514,
+            }
+        } else {
+            height_in_pixels_raw
+        };
+
         Ok(Self {
             mpx_length,
             sequence,
             data_offset,
             num_chips,
+            width_in_pixels_raw,
+            height_in_pixels_raw,
             width_in_pixels,
             height_in_pixels,
             dtype,
@@ -753,6 +790,27 @@ mod test {
         let mq1a = fm.mq1a.unwrap();
         assert_eq!(mq1a.acquisition_time_shutter_ns, 1_000_000);
         assert_eq!(mq1a.counter_depth, 12);
+    }
+
+    #[test]
+    fn test_quad_raw_correct_shape() {
+        let inp = r"MQ1,000001,00768,04,1024,0256,R64,  2x2G,0F,2024-04-25 15:50:41.049778,0.000309,0,0,0,3.400000E+1,5.110000E+2,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,0.000000E+0,3RX,051,511,000,000,000,000,000,000,100,255,100,125,100,100,081,100,074,030,128,004,255,136,128,188,176,000,000,3RX,054,511,000,000,000,000,000,000,100,255,100,125,100,100,079,100,077,030,128,004,255,138,128,191,188,000,000,3RX,051,511,000,000,000,000,000,000,100,255,100,125,100,100,077,100,075,030,128,004,255,140,128,197,177,000,000,3RX,048,511,000,000,000,000,000,000,100,255,100,125,100,100,070,100,073,030,128,004,255,140,128,183,179,000,000,MQ1A,2024-04-25T13:50:41.049778723Z,309200ns,6,";
+        let inp_bytes = inp.as_bytes();
+        let fm = QdFrameMeta::parse_bytes(inp_bytes, 768 + (514 * 514) + 1).unwrap();
+
+        assert_eq!(fm.get_sequence(), 1);
+        assert_eq!(fm.get_mpx_length(), 768 + (514 * 514) + 1);
+        assert_eq!(fm.data_offset, 768);
+        assert_eq!(fm.num_chips, 4);
+        assert_eq!(fm.width_in_pixels, 514);
+        assert_eq!(fm.height_in_pixels, 514);
+        assert_eq!(fm.dtype, DType::R64);
+        assert_eq!(fm.layout, Layout::L2x2G);
+        assert_eq!(fm.get_total_size_header(), 768 + 15);
+
+        let mq1a = fm.mq1a.unwrap();
+        assert_eq!(mq1a.acquisition_time_shutter_ns, 309_200);
+        assert_eq!(mq1a.counter_depth, 6);
     }
 
     #[test]
