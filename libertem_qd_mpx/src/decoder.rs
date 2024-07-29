@@ -5,6 +5,7 @@ use common::decoder::{
     DecoderTargetPixelType,
 };
 use itertools::Itertools;
+use log::trace;
 use num::{NumCast, PrimInt, ToPrimitive};
 use numpy::ndarray::s;
 
@@ -279,22 +280,28 @@ pub trait RawType {
     fn decode_2x2_raw<O>(
         input: &[u8],
         output: &mut [O],
-        _layout: &Layout,
+        layout: &Layout,
     ) -> Result<(), DecoderError>
     where
         O: Copy + ToPrimitive + NumCast + Debug,
     {
         let rows_per_chip: usize = 256; // FIXME: `ROIROWS` support means this would be dynamic? how does that work with raw format?
         let cols_per_chip: usize = 256;
-        let output_row_size: usize = 512; // FIXME: 2x2G -> 514
+        let output_row_size: usize = if *layout == Layout::L2x2G { 514 } else { 512 };
 
-        eprintln!(
+        trace!(
             "input.len()={}, output.len()={}",
             input.len(),
             &mut output.len(),
         );
 
         let (out_top, out_bottom) = output.split_at_mut(output_row_size * rows_per_chip);
+
+        let out_bottom = if *layout == Layout::L2x2G {
+            &mut out_bottom[2 * output_row_size..]
+        } else {
+            out_bottom
+        };
 
         let mut bottom_rows_rev = out_bottom.chunks_exact_mut(output_row_size).rev();
         let mut top_rows = out_top.chunks_exact_mut(output_row_size);
@@ -303,7 +310,9 @@ pub trait RawType {
         // iterate over input rows by four, while taking one row from top and one from bottom:
         let in_by_four_rows = input.chunks_exact(4 * Self::BYTES_PER_CHIP_ROW);
 
-        eprintln!(
+        let col_gap_offset = if *layout == Layout::L2x2G { 2 } else { 0 };
+
+        trace!(
             "top_len={} bottom_len={} in_by_four_len={}",
             top_rows.len(),
             bottom_rows_rev.len(),
@@ -320,7 +329,9 @@ pub trait RawType {
             // Q4:
             Self::decode_all(
                 &four_rows[0..Self::BYTES_PER_CHIP_ROW],
-                &mut bottom_row[cols_per_chip..].iter_mut().rev(),
+                &mut bottom_row[cols_per_chip + col_gap_offset..]
+                    .iter_mut()
+                    .rev(),
             )?;
             // Q3:
             Self::decode_all(
@@ -337,7 +348,7 @@ pub trait RawType {
             // Q2:
             Self::decode_all(
                 &four_rows[2 * Self::BYTES_PER_CHIP_ROW..3 * Self::BYTES_PER_CHIP_ROW],
-                &mut top_row[cols_per_chip..].iter_mut(),
+                &mut top_row[cols_per_chip + col_gap_offset..].iter_mut(),
             )?;
             // Q1:
             Self::decode_all(
@@ -629,18 +640,115 @@ mod test {
         let mut input_data = vec![0; SIZE_PX];
         input_data.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
 
-        let input_data = input_data;
-
         let mut encoded = vec![0u8; ENCODED_SIZE];
         R::encode_2x2_raw(&input_data, &mut encoded).unwrap();
-
-        eprintln!("input_data: {:X?}", &input_data[..]);
-        eprintln!("encoded: {:X?}", &encoded[..]);
 
         let mut output_data = vec![0; SIZE_PX];
         R::decode_2x2_raw(&encoded, &mut output_data, layout).unwrap();
 
+        let matches = output_data
+            .iter()
+            .zip(input_data.iter())
+            .fold(0, |acc, (out, exp)| if out == exp { acc + 1 } else { acc });
+
+        eprintln!("number of matches: {}", matches);
+        eprintln!("input_data: {:X?}", &input_data[..]);
+        eprintln!("encoded: {:X?}", &encoded[..]);
+
         assert_eq!(output_data, input_data);
+    }
+
+    /// Generate 512x512 input data, encode, then decode with a gap
+    /// (the encode part is not so interesting, it's mostly about
+    /// synthesizing the zero'd gap pixels)
+    fn generic_quad_encode_decode_with_gap<R: RawType, const ENCODED_SIZE: usize>() {
+        const SIZE_PX_PAYLOAD: usize = 512 * 512;
+        const SIZE_PX_W_GAP: usize = 514 * 514;
+        let layout = Layout::L2x2G;
+
+        let mut rng = rand::thread_rng();
+        let input_data = {
+            let mut input = vec![0; SIZE_PX_PAYLOAD];
+            input.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
+            input
+        };
+
+        let encoded = {
+            let mut encoded = vec![0u8; ENCODED_SIZE];
+            R::encode_2x2_raw(&input_data, &mut encoded).unwrap();
+            encoded
+        };
+
+        {
+            // to double check, try the no-gap variant, too:
+            let mut output_data_no_gap = vec![0; SIZE_PX_PAYLOAD];
+            R::decode_2x2_raw(&encoded, &mut output_data_no_gap, &Layout::L2x2).unwrap();
+            assert_eq!(output_data_no_gap, input_data);
+        }
+
+        // from the non-gapped input data, build the expected, gapped, data:
+        let expected_data = {
+            let mut expected = vec![0u32; SIZE_PX_W_GAP];
+
+            let top_rows_out = expected.chunks_exact_mut(514).take(256);
+            let mut sanity = 0;
+            for (o, i) in top_rows_out.zip(input_data.chunks_exact(512).take(256)) {
+                // skip two columns here:
+                o[0..256].copy_from_slice(&i[0..256]);
+                o[256 + 2..].copy_from_slice(&i[256..]);
+                sanity += 1;
+            }
+            assert_eq!(sanity, 256);
+
+            // skip two rows in the output starting from 256 (see the `.skip(..) calls below`)
+            let bottom_rows_out = expected.chunks_exact_mut(514).skip(256 + 2);
+            let mut sanity = 0;
+            for (o, i) in bottom_rows_out.zip(input_data.chunks_exact(512).skip(256)) {
+                // skip two columns here:
+                o[0..256].copy_from_slice(&i[0..256]);
+                o[256 + 2..].copy_from_slice(&i[256..]);
+                sanity += 1;
+            }
+            assert_eq!(sanity, 256);
+
+            expected
+        };
+
+        // double check that there are zero'd rows...
+        for v in expected_data[514 * 256..514 * (256 + 2)].iter() {
+            assert_eq!(*v, 0);
+        }
+
+        // and cols:
+        for row in expected_data.chunks_exact(514) {
+            assert_eq!(&row[256..256 + 2], &[0, 0]);
+        }
+
+        let output_data = {
+            let mut output_data = vec![0; SIZE_PX_W_GAP];
+            R::decode_2x2_raw(&encoded, &mut output_data, &layout).unwrap();
+            output_data
+        };
+
+        let matches = output_data
+            .iter()
+            .zip(expected_data.iter())
+            .fold(0, |acc, (out, exp)| if out == exp { acc + 1 } else { acc });
+
+        eprintln!("number of matches: {}", matches);
+
+        // before checking all output_data, check the stuff that should be zero:
+        for v in output_data[514 * 256..514 * (256 + 2)].iter() {
+            assert_eq!(*v, 0);
+        }
+        for row in output_data.chunks_exact(514) {
+            assert_eq!(&row[256..256 + 2], &[0, 0]);
+        }
+
+        eprintln!("input_data: {:X?}", &input_data[..]);
+        eprintln!("encoded: {:X?}", &encoded[..]);
+
+        assert_eq!(output_data, expected_data);
     }
 
     #[test]
@@ -710,27 +818,21 @@ mod test {
     }
 
     #[test]
-    #[ignore = "TODO"]
     fn test_r1_encode_decode_quad_raw_layout_g() {
         const ENCODED_SIZE: usize = 512 * 512 / 8;
-        const SIZE_PX: usize = 514 * 514;
-        generic_quad_encode_decode::<R1, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2G);
+        generic_quad_encode_decode_with_gap::<R1, ENCODED_SIZE>();
     }
 
     #[test]
-    #[ignore = "TODO"]
     fn test_r6_encode_decode_quad_raw_layout_g() {
         const ENCODED_SIZE: usize = 512 * 512;
-        const SIZE_PX: usize = 514 * 514;
-        generic_quad_encode_decode::<R6, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2G);
+        generic_quad_encode_decode_with_gap::<R6, ENCODED_SIZE>();
     }
 
     #[test]
-    #[ignore = "TODO"]
     fn test_r12_encode_decode_quad_raw_layout_g() {
         const ENCODED_SIZE: usize = 512 * 512 * 2;
-        const SIZE_PX: usize = 514 * 514;
-        generic_quad_encode_decode::<R12, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2G);
+        generic_quad_encode_decode_with_gap::<R12, ENCODED_SIZE>();
     }
 
     fn get_socket_path() -> (TempDir, PathBuf) {
