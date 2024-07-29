@@ -1427,7 +1427,7 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(200)),
+                &Some(Duration::from_millis(500)),
             )
             .unwrap();
 
