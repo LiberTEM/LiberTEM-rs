@@ -2,13 +2,14 @@ use std::{any::type_name, fmt::Debug, mem::size_of};
 
 use ipc_test::SharedSlabAllocator;
 use ndarray::ArrayViewMut3;
-use num::{NumCast, ToPrimitive};
+use num::{cast::AsPrimitive, Bounded, Num, NumCast, ToPrimitive};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::frame_stack::{FrameMeta, FrameStackHandle};
 
-pub trait DecoderTargetPixelType: AsBytes + FromBytes + NumCast + Copy + Debug + 'static {
-    const SIZE_OF: usize = std::mem::size_of::<Self>();
+pub trait DecoderTargetPixelType:
+    AsBytes + FromBytes + NumCast + Copy + Debug + Bounded + Num + 'static
+{
 }
 
 impl DecoderTargetPixelType for u8 {}
@@ -45,7 +46,9 @@ pub trait Decoder: Default {
         end_idx: usize,
     ) -> Result<(), DecoderError>
     where
-        T: DecoderTargetPixelType;
+        T: DecoderTargetPixelType,
+        u8: AsPrimitive<T>,
+        u16: AsPrimitive<T>;
 
     fn zero_copy_available(
         &self,
@@ -73,7 +76,7 @@ where
 
 /// Helper function to cast a primitive value or emit a `DecoderError` if it's
 /// not safely possible.
-#[inline]
+#[inline(always)]
 pub fn try_cast_primitive<O, I>(input_value: I) -> Result<O, DecoderError>
 where
     O: Copy + ToPrimitive + NumCast + Debug,

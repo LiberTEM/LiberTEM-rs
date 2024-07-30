@@ -40,6 +40,7 @@ macro_rules! impl_py_cam_client {
             };
             use ipc_test::SharedSlabAllocator;
             use num::{
+                cast::AsPrimitive,
                 complex::{Complex32, Complex64},
                 NumCast,
             };
@@ -58,14 +59,19 @@ macro_rules! impl_py_cam_client {
             }
 
             impl $name {
-                fn decode_impl<'py, T: Element + DecoderTargetPixelType>(
+                fn decode_impl<'py, T>(
                     &self,
                     input: &super::$py_frame_stack,
                     out: &Bound<'py, PyArray3<T>>,
                     start_idx: usize,
                     end_idx: usize,
                     py: Python<'_>,
-                ) -> PyResult<()> {
+                ) -> PyResult<()>
+                where
+                    T: Element + DecoderTargetPixelType,
+                    u8: AsPrimitive<T>,
+                    u16: AsPrimitive<T>,
+                {
                     let mut out_rw = out.try_readwrite()?;
                     let mut out_arr = out_rw.as_array_mut();
                     return self

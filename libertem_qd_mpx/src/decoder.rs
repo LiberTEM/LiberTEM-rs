@@ -4,10 +4,10 @@ use common::decoder::{
     decode_ints_be, try_cast_if_safe, try_cast_primitive, Decoder, DecoderError,
     DecoderTargetPixelType,
 };
-use itertools::Itertools;
 use log::trace;
-use num::{NumCast, PrimInt, ToPrimitive};
+use num::{cast::AsPrimitive, Bounded, Num, NumCast, PrimInt, ToPrimitive};
 use numpy::ndarray::s;
+use zerocopy::FromBytes;
 
 use crate::base_types::{DType, Layout, QdFrameMeta};
 
@@ -27,6 +27,8 @@ impl Decoder for QdDecoder {
     ) -> Result<(), DecoderError>
     where
         T: DecoderTargetPixelType,
+        u8: AsPrimitive<T>,
+        u16: AsPrimitive<T>,
     {
         // Data comes in different pixel formats:
         //
@@ -110,7 +112,9 @@ impl QdDecoder {
         output: &mut [O],
     ) -> Result<(), DecoderError>
     where
-        O: DecoderTargetPixelType,
+        O: DecoderTargetPixelType + 'static,
+        u8: AsPrimitive<O>,
+        u16: AsPrimitive<O>,
     {
         match &frame_meta.layout {
             crate::base_types::Layout::L1x1 => {
@@ -159,7 +163,9 @@ impl QdDecoder {
         output: &mut [O],
     ) -> Result<(), DecoderError>
     where
-        O: DecoderTargetPixelType,
+        O: DecoderTargetPixelType + 'static,
+        u8: AsPrimitive<O>,
+        u16: AsPrimitive<O>,
     {
         match frame_meta.dtype {
             // this one could be zero-copy:
@@ -174,9 +180,9 @@ impl QdDecoder {
             DType::R64 => {
                 if let Some(mq1a) = &frame_meta.mq1a {
                     match mq1a.counter_depth {
-                        1 => R1::decode_2x2_raw(input, output, &frame_meta.layout),
-                        6 => R6::decode_2x2_raw(input, output, &frame_meta.layout),
-                        12 => R12::decode_2x2_raw(input, output, &frame_meta.layout),
+                        1 => R1::decode_2x2_raw::<_, 64>(input, output, &frame_meta.layout),
+                        6 => R6::decode_2x2_raw::<_, 8>(input, output, &frame_meta.layout),
+                        12 => R12::decode_2x2_raw::<_, 4>(input, output, &frame_meta.layout),
                         // 24 => decode_r24(input, output),
                         _ => Err(DecoderError::FrameDecodeFailed {
                             msg: format!("unsupported counter depth: {}", mq1a.counter_depth),
@@ -197,6 +203,8 @@ impl QdDecoder {
     ) -> Result<(), DecoderError>
     where
         O: DecoderTargetPixelType,
+        u8: AsPrimitive<O>,
+        u16: AsPrimitive<O>,
     {
         match frame_meta.dtype {
             // this one could be zero-copy:
@@ -211,9 +219,9 @@ impl QdDecoder {
             DType::R64 => {
                 if let Some(mq1a) = &frame_meta.mq1a {
                     match mq1a.counter_depth {
-                        1 => R1::decode_all(input, &mut output.iter_mut()),
-                        6 => R6::decode_all(input, &mut output.iter_mut()),
-                        12 => R12::decode_all(input, &mut output.iter_mut()),
+                        1 => R1::decode_all::<_, 64>(input, output),
+                        6 => R6::decode_all::<_, 8>(input, output),
+                        12 => R12::decode_all::<_, 4>(input, output),
                         // 24 => decode_r24(input, output),
                         _ => Err(DecoderError::FrameDecodeFailed {
                             msg: format!("unsupported counter depth: {}", mq1a.counter_depth),
@@ -228,6 +236,8 @@ impl QdDecoder {
 }
 
 pub trait RawType {
+    type Intermediate: Num;
+
     /// Bits per pixel excluding padding
     const COUNTER_DEPTH: usize;
 
@@ -238,16 +248,22 @@ pub trait RawType {
     const BYTES_PER_CHIP_ROW: usize;
 
     /// take a raw input chunk (8 bytes) and decode it into an output slice
-    fn decode_chunk<'a, O, OI>(input: &[u8; 8], output: &mut OI) -> Result<(), DecoderError>
+    fn decode_chunk<'a, O, const OUT_PER_CHUNK: usize>(
+        input: &[u8; 8],
+        output: &mut [O; OUT_PER_CHUNK],
+    ) -> Result<(), DecoderError>
     where
-        O: Copy + ToPrimitive + NumCast + Debug + 'a,
-        OI: Iterator<Item = &'a mut O> + ExactSizeIterator;
+        O: Copy + ToPrimitive + NumCast + Bounded + Debug + 'a + 'static,
+        Self::Intermediate: AsPrimitive<O>;
 
     /// Decode all values from `input` into `output`.
-    fn decode_all<'a, O, OI>(input: &[u8], output: &mut OI) -> Result<(), DecoderError>
+    fn decode_all<'a, O, const OUT_PER_CHUNK: usize>(
+        input: &[u8],
+        output: &mut [O],
+    ) -> Result<(), DecoderError>
     where
-        O: Copy + ToPrimitive + NumCast + Debug + 'a,
-        OI: Iterator<Item = &'a mut O> + DoubleEndedIterator + ExactSizeIterator + Itertools,
+        O: Copy + ToPrimitive + NumCast + Num + Bounded + Debug + 'a + 'static,
+        Self::Intermediate: AsPrimitive<O>,
     {
         if input.len() % 8 != 0 {
             return Err(DecoderError::FrameDecodeFailed {
@@ -268,25 +284,28 @@ pub trait RawType {
                 ),
             });
         }
-
         let chunks = input.chunks_exact(8);
-        for in_chunk in chunks {
-            <Self as RawType>::decode_chunk(in_chunk.try_into().expect("chunked by 8"), output)?;
+        for (in_chunk, out_chunk) in chunks.zip(output.chunks_exact_mut(OUT_PER_CHUNK)) {
+            <Self as RawType>::decode_chunk::<_, OUT_PER_CHUNK>(
+                in_chunk.try_into().expect("chunked by 8"),
+                out_chunk.try_into().unwrap(),
+            )?;
         }
 
         Ok(())
     }
 
-    fn decode_2x2_raw<O>(
+    fn decode_2x2_raw<O, const OUT_PER_CHUNK: usize>(
         input: &[u8],
         output: &mut [O],
         layout: &Layout,
     ) -> Result<(), DecoderError>
     where
-        O: Copy + ToPrimitive + NumCast + Debug,
+        O: Copy + ToPrimitive + NumCast + Debug + Num + Bounded + 'static,
+        Self::Intermediate: AsPrimitive<O>,
     {
         let rows_per_chip: usize = 256; // FIXME: `ROIROWS` support means this would be dynamic? how does that work with raw format?
-        let cols_per_chip: usize = 256;
+        const COLS_PER_CHIP: usize = 256;
         let output_row_size: usize = if *layout == Layout::L2x2G { 514 } else { 512 };
 
         trace!(
@@ -327,17 +346,32 @@ pub trait RawType {
                         msg: "eof bottom".to_owned(),
                     })?;
             // Q4:
-            Self::decode_all(
+            let mut tmp: [O; COLS_PER_CHIP] = [O::zero(); COLS_PER_CHIP];
+            Self::decode_all::<_, OUT_PER_CHUNK>(
                 &four_rows[0..Self::BYTES_PER_CHIP_ROW],
-                &mut bottom_row[cols_per_chip + col_gap_offset..]
-                    .iter_mut()
-                    .rev(),
+                &mut tmp,
             )?;
+            for (o, i) in bottom_row[COLS_PER_CHIP + col_gap_offset..]
+                .iter_mut()
+                .rev()
+                .zip(tmp.into_iter())
+            {
+                *o = i;
+            }
+
             // Q3:
-            Self::decode_all(
+            let mut tmp: [O; COLS_PER_CHIP] = [O::zero(); COLS_PER_CHIP];
+            Self::decode_all::<_, OUT_PER_CHUNK>(
                 &four_rows[Self::BYTES_PER_CHIP_ROW..2 * Self::BYTES_PER_CHIP_ROW],
-                &mut bottom_row[0..cols_per_chip].iter_mut().rev(),
+                &mut tmp,
             )?;
+            for (o, i) in bottom_row[0..COLS_PER_CHIP]
+                .iter_mut()
+                .rev()
+                .zip(tmp.into_iter())
+            {
+                *o = i;
+            }
 
             let top_row = top_rows
                 .next()
@@ -346,14 +380,14 @@ pub trait RawType {
                 })?;
 
             // Q2:
-            Self::decode_all(
+            Self::decode_all::<_, OUT_PER_CHUNK>(
                 &four_rows[2 * Self::BYTES_PER_CHIP_ROW..3 * Self::BYTES_PER_CHIP_ROW],
-                &mut top_row[cols_per_chip + col_gap_offset..].iter_mut(),
+                &mut top_row[COLS_PER_CHIP + col_gap_offset..],
             )?;
             // Q1:
-            Self::decode_all(
+            Self::decode_all::<_, OUT_PER_CHUNK>(
                 &four_rows[3 * Self::BYTES_PER_CHIP_ROW..],
-                &mut top_row[0..cols_per_chip].iter_mut(),
+                &mut top_row[0..COLS_PER_CHIP],
             )?;
         }
 
@@ -452,25 +486,25 @@ pub trait RawType {
 pub struct R1 {}
 
 impl RawType for R1 {
+    type Intermediate = u8;
+
     const COUNTER_DEPTH: usize = 1;
     const PIXELS_PER_CHUNK: usize = 64;
     const BYTES_PER_CHIP_ROW: usize = 32;
 
-    fn decode_chunk<'a, O, OI>(input: &[u8; 8], output: &mut OI) -> Result<(), DecoderError>
+    fn decode_chunk<'a, O, const OUT_PER_CHUNK: usize>(
+        input: &[u8; 8],
+        output: &mut [O; OUT_PER_CHUNK],
+    ) -> Result<(), DecoderError>
     where
-        O: Copy + ToPrimitive + NumCast + Debug + 'a,
-        OI: Iterator<Item = &'a mut O> + ExactSizeIterator,
+        O: Copy + ToPrimitive + NumCast + Debug + 'a + 'static,
+        Self::Intermediate: AsPrimitive<O>,
     {
         let value = u64::from_be_bytes(*input);
-        let old_len = output.len();
-        assert!(output.len() >= 64);
-        for (out_dest, bin_digit) in output.take(64).zip(0..) {
-            let out_value = (value >> bin_digit) & 0x1;
-            *out_dest = try_cast_primitive(out_value)?;
+        for (out_dest, bin_digit) in output.iter_mut().zip(0..OUT_PER_CHUNK) {
+            let out_value = ((value >> bin_digit) & 0x1) as Self::Intermediate;
+            *out_dest = (out_value).as_();
         }
-        let diff = old_len - output.len();
-
-        assert_eq!(diff, 64);
 
         Ok(())
     }
@@ -497,17 +531,23 @@ impl RawType for R1 {
 pub struct R6 {}
 
 impl RawType for R6 {
+    type Intermediate = u8;
+
     const COUNTER_DEPTH: usize = 6;
     const PIXELS_PER_CHUNK: usize = 8;
     const BYTES_PER_CHIP_ROW: usize = 256;
 
-    fn decode_chunk<'a, O, OI>(input: &[u8; 8], output: &mut OI) -> Result<(), DecoderError>
+    fn decode_chunk<'a, O, const OUT_PER_CHUNK: usize>(
+        input: &[u8; 8],
+        output: &mut [O; OUT_PER_CHUNK],
+    ) -> Result<(), DecoderError>
     where
-        O: Copy + ToPrimitive + NumCast + Debug + 'a,
-        OI: Iterator<Item = &'a mut O>,
+        O: Copy + ToPrimitive + NumCast + Bounded + Debug + 'a + 'static,
+        Self::Intermediate: AsPrimitive<O>,
     {
-        for (i, o) in input.iter().rev().zip(output) {
-            *o = try_cast_primitive(*i)?;
+        assert!(output.len() >= 8);
+        for (i, o) in input.iter().rev().zip(output.iter_mut()) {
+            *o = (*i).as_();
         }
         Ok(())
     }
@@ -531,19 +571,35 @@ impl RawType for R6 {
 pub struct R12 {}
 
 impl RawType for R12 {
+    type Intermediate = u16;
+
     const COUNTER_DEPTH: usize = 12;
     const PIXELS_PER_CHUNK: usize = 4;
     const BYTES_PER_CHIP_ROW: usize = 512;
 
-    fn decode_chunk<'a, O, OI>(input: &[u8; 8], output: &mut OI) -> Result<(), DecoderError>
+    fn decode_chunk<'a, O, const OUT_PER_CHUNK: usize>(
+        input: &[u8; 8],
+        output: &mut [O; OUT_PER_CHUNK],
+    ) -> Result<(), DecoderError>
     where
-        O: Copy + ToPrimitive + NumCast + Debug + 'a,
-        OI: Iterator<Item = &'a mut O>,
+        O: Copy + ToPrimitive + NumCast + Debug + 'a + 'static,
+        Self::Intermediate: AsPrimitive<O>,
     {
-        // FIXME: in the future, replace with `input.array_chunks` to skip the `try_into` conversion
-        for (value_chunk, out_value) in input.chunks_exact(2).rev().zip(output) {
-            let value = u16::from_be_bytes(value_chunk.try_into().expect("chunked by 2 bytes"));
-            *out_value = try_cast_primitive(value)?;
+        let values: &[u16; 4] = FromBytes::ref_from(input).unwrap();
+        #[cfg(target_endian = "little")]
+        {
+            output[3] = values[0].swap_bytes().as_();
+            output[2] = values[1].swap_bytes().as_();
+            output[1] = values[2].swap_bytes().as_();
+            output[0] = values[3].swap_bytes().as_();
+        }
+
+        #[cfg(target_endian = "big")]
+        {
+            output[3] = values[0].as_();
+            output[2] = values[1].as_();
+            output[1] = values[2].as_();
+            output[0] = values[3].as_();
         }
 
         Ok(())
@@ -573,6 +629,7 @@ mod test {
         frame_stack::FrameStackForWriting,
     };
     use ipc_test::SharedSlabAllocator;
+    use num::cast::AsPrimitive;
     use numpy::ndarray::Array3;
     use rand::Rng;
     use tempfile::{tempdir, TempDir};
@@ -584,7 +641,15 @@ mod test {
 
     use super::{QdDecoder, RawType, R1, R12};
 
-    fn generic_encode_decode<R: RawType, const ENCODED_SIZE: usize, const SIZE_PX: usize>() {
+    fn generic_encode_decode<
+        R: RawType,
+        const ENCODED_SIZE: usize,
+        const SIZE_PX: usize,
+        const OUT_PER_CHUNK: usize,
+    >()
+    where
+        R::Intermediate: AsPrimitive<u32>,
+    {
         let mut rng = rand::thread_rng();
         let mut input_data = vec![0; SIZE_PX];
         input_data.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
@@ -598,12 +663,15 @@ mod test {
         eprintln!("encoded: {:X?}", &encoded[..]);
 
         let mut output_data = vec![0; SIZE_PX];
-        R::decode_all(&encoded, &mut output_data.iter_mut()).unwrap();
+        R::decode_all::<_, OUT_PER_CHUNK>(&encoded, &mut output_data).unwrap();
 
         assert_eq!(output_data, input_data);
     }
 
-    fn generic_encode_decode_chunk<R: RawType, const SIZE_PX: usize>() {
+    fn generic_encode_decode_chunk<R: RawType, const SIZE_PX: usize, const OUT_PER_CHUNK: usize>()
+    where
+        R::Intermediate: AsPrimitive<u32>,
+    {
         const ENCODED_SIZE: usize = 16;
 
         let mut rng = rand::thread_rng();
@@ -628,14 +696,21 @@ mod test {
         eprintln!("encoded: {:X?}", &encoded[..]);
 
         let mut output_data = vec![0; SIZE_PX];
-        R::decode_all(&encoded, &mut output_data.iter_mut()).unwrap();
+        R::decode_all::<_, OUT_PER_CHUNK>(&encoded, &mut output_data).unwrap();
 
         assert_eq!(output_data, input_data);
     }
 
-    fn generic_quad_encode_decode<R: RawType, const ENCODED_SIZE: usize, const SIZE_PX: usize>(
+    fn generic_quad_encode_decode<
+        R: RawType,
+        const ENCODED_SIZE: usize,
+        const SIZE_PX: usize,
+        const OUT_PER_CHUNK: usize,
+    >(
         layout: &Layout,
-    ) {
+    ) where
+        R::Intermediate: AsPrimitive<u32>,
+    {
         let mut rng = rand::thread_rng();
         let mut input_data = vec![0; SIZE_PX];
         input_data.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
@@ -644,7 +719,7 @@ mod test {
         R::encode_2x2_raw(&input_data, &mut encoded).unwrap();
 
         let mut output_data = vec![0; SIZE_PX];
-        R::decode_2x2_raw(&encoded, &mut output_data, layout).unwrap();
+        R::decode_2x2_raw::<_, OUT_PER_CHUNK>(&encoded, &mut output_data, layout).unwrap();
 
         let matches = output_data
             .iter()
@@ -661,7 +736,14 @@ mod test {
     /// Generate 512x512 input data, encode, then decode with a gap
     /// (the encode part is not so interesting, it's mostly about
     /// synthesizing the zero'd gap pixels)
-    fn generic_quad_encode_decode_with_gap<R: RawType, const ENCODED_SIZE: usize>() {
+    fn generic_quad_encode_decode_with_gap<
+        R: RawType,
+        const ENCODED_SIZE: usize,
+        const OUT_PER_CHUNK: usize,
+    >()
+    where
+        R::Intermediate: AsPrimitive<u32>,
+    {
         const SIZE_PX_PAYLOAD: usize = 512 * 512;
         const SIZE_PX_W_GAP: usize = 514 * 514;
         let layout = Layout::L2x2G;
@@ -682,7 +764,8 @@ mod test {
         {
             // to double check, try the no-gap variant, too:
             let mut output_data_no_gap = vec![0; SIZE_PX_PAYLOAD];
-            R::decode_2x2_raw(&encoded, &mut output_data_no_gap, &Layout::L2x2).unwrap();
+            R::decode_2x2_raw::<_, OUT_PER_CHUNK>(&encoded, &mut output_data_no_gap, &Layout::L2x2)
+                .unwrap();
             assert_eq!(output_data_no_gap, input_data);
         }
 
@@ -726,7 +809,7 @@ mod test {
 
         let output_data = {
             let mut output_data = vec![0; SIZE_PX_W_GAP];
-            R::decode_2x2_raw(&encoded, &mut output_data, &layout).unwrap();
+            R::decode_2x2_raw::<_, OUT_PER_CHUNK>(&encoded, &mut output_data, &layout).unwrap();
             output_data
         };
 
@@ -753,86 +836,86 @@ mod test {
 
     #[test]
     fn test_r1_encode_decode() {
-        generic_encode_decode::<R1, 8192, 65536>();
+        generic_encode_decode::<R1, 8192, 65536, 64>();
     }
 
     #[test]
     fn test_r1_encode_decode_small() {
-        generic_encode_decode::<R1, 16, 128>();
+        generic_encode_decode::<R1, 16, 128, 64>();
     }
 
     #[test]
     fn test_r1_encode_decode_small_chunk() {
-        generic_encode_decode_chunk::<R1, 128>();
+        generic_encode_decode_chunk::<R1, 128, 64>();
     }
 
     #[test]
     fn test_r6_encode_decode() {
-        generic_encode_decode::<R6, 65536, 65536>();
+        generic_encode_decode::<R6, 65536, 65536, 8>();
     }
 
     #[test]
     fn test_r6_encode_decode_small() {
-        generic_encode_decode::<R6, 16, 16>();
+        generic_encode_decode::<R6, 16, 16, 8>();
     }
 
     #[test]
     fn test_r6_encode_decode_small_chunk() {
-        generic_encode_decode_chunk::<R6, 16>();
+        generic_encode_decode_chunk::<R6, 16, 8>();
     }
 
     #[test]
     fn test_r12_encode_decode() {
-        generic_encode_decode::<R12, 131072, 65536>();
+        generic_encode_decode::<R12, 131072, 65536, 4>();
     }
 
     #[test]
     fn test_r12_encode_decode_small() {
-        generic_encode_decode::<R12, 32, 16>();
+        generic_encode_decode::<R12, 32, 16, 4>();
     }
 
     #[test]
     fn test_r12_encode_decode_small_chunk() {
-        generic_encode_decode_chunk::<R12, 8>();
+        generic_encode_decode_chunk::<R12, 8, 4>();
     }
 
     #[test]
     fn test_r1_encode_decode_quad_raw() {
         const ENCODED_SIZE: usize = 512 * 512 / 8;
         const SIZE_PX: usize = 512 * 512;
-        generic_quad_encode_decode::<R1, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2);
+        generic_quad_encode_decode::<R1, ENCODED_SIZE, SIZE_PX, 64>(&Layout::L2x2);
     }
 
     #[test]
     fn test_r6_encode_decode_quad_raw() {
         const ENCODED_SIZE: usize = 512 * 512;
         const SIZE_PX: usize = 512 * 512;
-        generic_quad_encode_decode::<R6, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2);
+        generic_quad_encode_decode::<R6, ENCODED_SIZE, SIZE_PX, 8>(&Layout::L2x2);
     }
 
     #[test]
     fn test_r12_encode_decode_quad_raw() {
         const ENCODED_SIZE: usize = 512 * 512 * 2;
         const SIZE_PX: usize = 512 * 512;
-        generic_quad_encode_decode::<R12, ENCODED_SIZE, SIZE_PX>(&Layout::L2x2);
+        generic_quad_encode_decode::<R12, ENCODED_SIZE, SIZE_PX, 4>(&Layout::L2x2);
     }
 
     #[test]
     fn test_r1_encode_decode_quad_raw_layout_g() {
         const ENCODED_SIZE: usize = 512 * 512 / 8;
-        generic_quad_encode_decode_with_gap::<R1, ENCODED_SIZE>();
+        generic_quad_encode_decode_with_gap::<R1, ENCODED_SIZE, 64>();
     }
 
     #[test]
     fn test_r6_encode_decode_quad_raw_layout_g() {
         const ENCODED_SIZE: usize = 512 * 512;
-        generic_quad_encode_decode_with_gap::<R6, ENCODED_SIZE>();
+        generic_quad_encode_decode_with_gap::<R6, ENCODED_SIZE, 8>();
     }
 
     #[test]
     fn test_r12_encode_decode_quad_raw_layout_g() {
         const ENCODED_SIZE: usize = 512 * 512 * 2;
-        generic_quad_encode_decode_with_gap::<R12, ENCODED_SIZE>();
+        generic_quad_encode_decode_with_gap::<R12, ENCODED_SIZE, 4>();
     }
 
     fn get_socket_path() -> (TempDir, PathBuf) {

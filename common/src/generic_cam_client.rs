@@ -2,6 +2,7 @@ use std::fmt::Debug;
 
 use ipc_test::{slab::SlabInitError, SharedSlabAllocator};
 use ndarray::ArrayViewMut3;
+use num::cast::AsPrimitive;
 
 use crate::{
     decoder::{Decoder, DecoderError, DecoderTargetPixelType},
@@ -108,6 +109,8 @@ where
     ) -> Result<(), CamClientError>
     where
         T: DecoderTargetPixelType,
+        u8: AsPrimitive<T>,
+        u16: AsPrimitive<T>,
     {
         self.decode_range_into_buffer(input, dest, 0, input.len())
     }
@@ -125,6 +128,8 @@ where
     ) -> Result<(), CamClientError>
     where
         T: DecoderTargetPixelType,
+        u8: AsPrimitive<T>,
+        u16: AsPrimitive<T>,
     {
         let shm = self.get_shm()?;
         Ok(self.decoder.decode(shm, input, dest, start_idx, end_idx)?)
