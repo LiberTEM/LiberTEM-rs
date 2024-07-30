@@ -81,11 +81,13 @@ where
 }
 
 pub fn bench_num_casting(c: &mut Criterion) {
-    let input_u8 = (0..(96 * 96u16))
+    let input_u8 = (0..(256 * 256))
         .map(|i| (i % 255) as u8)
         .collect::<Vec<u8>>();
-    let input_u16 = (0..(96 * 96)).collect::<Vec<u16>>();
-    let input_u32 = (0..(96 * 96)).collect::<Vec<u32>>();
+    let input_u16 = (0..(256 * 256))
+        .map(|e| (e % 65535) as u16)
+        .collect::<Vec<u16>>();
+    let input_u32 = (0..(256 * 256)).collect::<Vec<u32>>();
     let mut output = Vec::<f32>::new();
     output.resize(input_u16.len(), 0.0);
 
