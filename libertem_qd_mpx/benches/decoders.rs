@@ -1,25 +1,19 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use std::fmt::Debug;
+
+use criterion::{
+    black_box, criterion_group, criterion_main, measurement::Measurement, BenchmarkGroup,
+    Criterion, Throughput,
+};
 use libertem_qd_mpx::decoder::{RawType, R1, R12, R6};
+use num::{NumCast, ToPrimitive};
 
-pub fn bench_raw_formats(c: &mut Criterion) {
-    let input_u8 = (0..(256 * 256u32))
-        .map(|i| (i % 255) as u8)
-        .collect::<Vec<u8>>();
-    let input_u16 = (0..(256 * 256))
-        .map(|i| (i % 65536) as u16)
-        .collect::<Vec<u16>>();
-    // let input_u32 = (0..(256 * 256)).collect::<Vec<u32>>();
-
-    let mut output = Vec::<f32>::new();
-    output.resize(input_u16.len(), 0.0);
-
-    let mut group = c.benchmark_group("bench_raw_to_f32");
-
-    group.throughput(Throughput::Bytes(
-        (input_u16.len() * std::mem::size_of::<f32>()) as u64,
-    ));
-    // group.throughput(Throughput::Elements((input_u16.len()) as u64));
-
+fn bench_raw_generic<'a, O, M: Measurement>(
+    group: &mut BenchmarkGroup<M>,
+    input_u8: &[u8],
+    output: &mut [O],
+) where
+    O: Copy + ToPrimitive + NumCast + Debug + 'a,
+{
     let mut encoded_r1 = vec![0u8; 256 * 256 / 8];
     R1::encode_all(&mut input_u8.iter(), &mut encoded_r1).unwrap();
     group.bench_function("bench_r1", |b| {
@@ -52,28 +46,48 @@ pub fn bench_raw_formats(c: &mut Criterion) {
             )
         })
     });
+}
 
+pub fn bench_raw(c: &mut Criterion) {
+    let input_u8 = (0..(256 * 256u32))
+        .map(|i| (i % 255) as u8)
+        .collect::<Vec<u8>>();
+
+    let mut output = vec![0u8; input_u8.len()];
+    let mut group = c.benchmark_group("bench_raw_to_u8");
+    group.throughput(Throughput::Bytes(input_u8.len() as u64));
+    bench_raw_generic(&mut group, &input_u8, &mut output);
+    group.finish();
+
+    let mut output = vec![0u16; input_u8.len()];
+    let mut group = c.benchmark_group("bench_raw_to_u16");
+    group.throughput(Throughput::Bytes(input_u8.len() as u64));
+    bench_raw_generic(&mut group, &input_u8, &mut output);
+    group.finish();
+
+    let mut output = vec![0u32; input_u8.len()];
+    let mut group = c.benchmark_group("bench_raw_to_u32");
+    group.throughput(Throughput::Bytes(input_u8.len() as u64));
+    bench_raw_generic(&mut group, &input_u8, &mut output);
+    group.finish();
+
+    let mut output = vec![0f32; input_u8.len()];
+    let mut group = c.benchmark_group("bench_raw_to_f32");
+    group.throughput(Throughput::Bytes(input_u8.len() as u64));
+    bench_raw_generic(&mut group, &input_u8, &mut output);
     group.finish();
 }
 
-pub fn bench_raw_formats_quad(c: &mut Criterion) {
+pub fn bench_raw_quad(c: &mut Criterion) {
     let input_u8 = (0..(512 * 512u32))
         .map(|i| (i % 255) as u8)
         .collect::<Vec<u8>>();
-    let input_u16 = (0..(512usize * 512usize))
-        .map(|i| (i % 2u16.pow(12) as usize) as u16)
-        .collect::<Vec<u16>>();
-    // let input_u32 = (0..(512 * 512)).collect::<Vec<u32>>();
 
     let mut output = Vec::<f32>::new();
-    output.resize(input_u16.len(), 0.0);
+    output.resize(input_u8.len(), 0.0);
 
     let mut group = c.benchmark_group("bench_quad_raw_to_f32");
-
-    group.throughput(Throughput::Bytes(
-        (input_u16.len() * std::mem::size_of::<f32>()) as u64,
-    ));
-    // group.throughput(Throughput::Elements((input_u16.len()) as u64));
+    group.throughput(Throughput::Bytes(input_u8.len() as u64));
 
     let mut encoded_r1 = vec![0u8; 512 * 512 / 8];
     R1::encode_2x2_raw(&input_u8, &mut encoded_r1).unwrap();
@@ -111,5 +125,5 @@ pub fn bench_raw_formats_quad(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_raw_formats, bench_raw_formats_quad);
+criterion_group!(benches, bench_raw, bench_raw_quad);
 criterion_main!(benches);
