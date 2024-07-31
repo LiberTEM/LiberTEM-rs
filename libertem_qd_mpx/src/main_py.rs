@@ -3,10 +3,8 @@ use std::{str::FromStr, time::Duration};
 use common::generic_connection::GenericConnection;
 use numpy::PyUntypedArray;
 use pyo3::{
-    exceptions::PyValueError,
-    pyclass, pymethods, pymodule,
-    types::{PyBytes, PyModule, PyType},
-    Bound, PyResult, Python,
+    exceptions::PyValueError, pyclass, pymethods, pymodule, types::PyModule, Bound, PyResult,
+    Python,
 };
 
 use common::{impl_py_cam_client, impl_py_connection};
@@ -34,7 +32,7 @@ fn libertem_qd_mpx(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 impl_py_connection!(
     _PyQdConnection,
-    _PyQdFrameStack,
+    QdFrameStack,
     QdFrameMeta,
     QdBackgroundThread,
     QdAcquisitionHeader,
@@ -135,63 +133,14 @@ impl QdConnection {
         max_size: usize,
         py: Python<'_>,
     ) -> PyResult<Option<QdFrameStack>> {
-        let stack_inner = self.conn.get_next_stack(max_size, py)?;
-        Ok(stack_inner.map(QdFrameStack::new))
-    }
-}
-
-#[pyclass]
-struct QdFrameStack {
-    inner: _PyQdFrameStack,
-}
-
-#[pymethods]
-impl QdFrameStack {
-    fn __len__(&self) -> PyResult<usize> {
-        self.inner.__len__()
-    }
-
-    fn get_dtype_string(&self) -> PyResult<String> {
-        self.inner.get_dtype_string()
-    }
-
-    fn get_shape(&self) -> PyResult<(u64, u64)> {
-        self.inner.get_shape()
-    }
-
-    fn serialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner.serialize(py)
-    }
-
-    #[classmethod]
-    fn deserialize<'py>(
-        _cls: Bound<'py, PyType>,
-        serialized: Bound<'py, PyBytes>,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            inner: _PyQdFrameStack::deserialize_impl(serialized)?,
-        })
-    }
-}
-
-impl QdFrameStack {
-    pub fn new(inner: _PyQdFrameStack) -> Self {
-        Self { inner }
-    }
-
-    fn get_inner(&self) -> &_PyQdFrameStack {
-        &self.inner
-    }
-
-    fn get_inner_mut(&mut self) -> &mut _PyQdFrameStack {
-        &mut self.inner
+        self.conn.get_next_stack(max_size, py)
     }
 }
 
 impl_py_cam_client!(
     _PyQdCamClient,
     QdDecoder,
-    _PyQdFrameStack,
+    QdFrameStack,
     QdFrameMeta,
     libertem_qd_mpx
 );
@@ -219,11 +168,11 @@ impl CamClient {
         py: Python<'py>,
     ) -> PyResult<()> {
         self.inner
-            .decode_range_into_buffer(input.get_inner(), out, start_idx, end_idx, py)
+            .decode_range_into_buffer(input, out, start_idx, end_idx, py)
     }
 
     fn done(&mut self, handle: &mut QdFrameStack) -> PyResult<()> {
-        self.inner.frame_stack_done(handle.get_inner_mut())
+        self.inner.frame_stack_done(handle)
     }
 
     fn close(&mut self) -> PyResult<()> {
