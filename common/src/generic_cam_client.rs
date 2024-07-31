@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use ipc_test::{slab::SlabInitError, SharedSlabAllocator};
+use multiversion::multiversion;
 use ndarray::ArrayViewMut3;
 use num::cast::AsPrimitive;
 
@@ -33,6 +34,29 @@ where
 {
     shm: Option<SharedSlabAllocator>,
     decoder: D,
+}
+
+#[multiversion(targets(
+    "x86_64+adx+aes+avx+avx2+bmi1+bmi2+cmpxchg16b+f16c+fma+fxsr+lzcnt+movbe+pclmulqdq+popcnt+rdrand+rdseed+sha+sse+sse2+sse3+sse4.1+sse4.2+ssse3+xsave+xsavec+xsaveopt+xsaves",
+    "x86_64+avx+avx2+bmi1+bmi2+fma+sse+sse2+sse3+sse4.1+sse4.2+ssse3+popcnt",
+    "x86_64+avx+avx2",
+    "x86_64+avx",
+))]
+fn decode_multi_version<D, T>(
+    decoder: &D,
+    shm: &SharedSlabAllocator,
+    input: &FrameStackHandle<D::FrameMeta>,
+    dest: &mut ArrayViewMut3<'_, T>,
+    start_idx: usize,
+    end_idx: usize,
+) -> Result<(), CamClientError>
+where
+    D: Decoder,
+    T: DecoderTargetPixelType,
+    u8: AsPrimitive<T>,
+    u16: AsPrimitive<T>,
+{
+    Ok(decoder.decode(shm, input, dest, start_idx, end_idx)?)
 }
 
 /// Client for reading dense data from SHM. That means we get the data as stacks
@@ -132,7 +156,7 @@ where
         u16: AsPrimitive<T>,
     {
         let shm = self.get_shm()?;
-        Ok(self.decoder.decode(shm, input, dest, start_idx, end_idx)?)
+        decode_multi_version(&self.decoder, shm, input, dest, start_idx, end_idx)
     }
 
     /// Free the given `FrameStackHandle`. When calling this, no Python objects
