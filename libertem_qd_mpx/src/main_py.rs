@@ -9,7 +9,7 @@ use pyo3::{
 
 use common::{impl_py_cam_client, impl_py_connection};
 
-use crate::base_types::{QdDetectorConnConfig, QdFrameMeta, RecoveryStrategy};
+use crate::base_types::{QdAcquisitionConfig, QdDetectorConnConfig, QdFrameMeta, RecoveryStrategy};
 use crate::decoder::QdDecoder;
 use crate::{background_thread::QdBackgroundThread, base_types::QdAcquisitionHeader};
 
@@ -19,6 +19,7 @@ fn libertem_qd_mpx(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QdFrameStack>()?;
     m.add_class::<CamClient>()?;
     m.add_class::<QdAcquisitionHeader>()?;
+    m.add_class::<QdAcquisitionConfig>()?;
 
     let env = env_logger::Env::default()
         .filter_or("LIBERTEM_QD_LOG_LEVEL", "error")
@@ -35,7 +36,7 @@ impl_py_connection!(
     QdFrameStack,
     QdFrameMeta,
     QdBackgroundThread,
-    QdAcquisitionHeader,
+    QdAcquisitionConfig,
     libertem_qd_mpx
 );
 
@@ -90,13 +91,13 @@ impl QdConnection {
         );
 
         let shm =
-            GenericConnection::<QdBackgroundThread, QdAcquisitionHeader>::shm_from_config(&config)
+            GenericConnection::<QdBackgroundThread, QdAcquisitionConfig>::shm_from_config(&config)
                 .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
 
         let bg_thread = QdBackgroundThread::spawn(&config, &shm)
             .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
         let generic_conn =
-            GenericConnection::<QdBackgroundThread, QdAcquisitionHeader>::new(bg_thread, &shm)
+            GenericConnection::<QdBackgroundThread, QdAcquisitionConfig>::new(bg_thread, &shm)
                 .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
 
         let conn = _PyQdConnection::new(shm, generic_conn);
@@ -108,7 +109,7 @@ impl QdConnection {
         &mut self,
         timeout: Option<f32>,
         py: Python<'_>,
-    ) -> PyResult<Option<QdAcquisitionHeader>> {
+    ) -> PyResult<Option<QdAcquisitionConfig>> {
         self.conn.wait_for_arm(timeout, py)
     }
 
