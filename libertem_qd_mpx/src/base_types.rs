@@ -518,12 +518,6 @@ pub struct QdAcquisitionHeader {
     raw_kv: HashMap<String, String>,
 }
 
-impl AcquisitionConfig for QdAcquisitionHeader {
-    fn num_frames(&self) -> usize {
-        self.frames_in_acquisition
-    }
-}
-
 #[pymethods]
 impl QdAcquisitionHeader {
     #[classmethod]
@@ -539,8 +533,14 @@ impl QdAcquisitionHeader {
     fn frames_per_trigger(&self) -> usize {
         self.frames_per_trigger
     }
+}
 
-    fn nav_shape(&self) -> Option<(usize, usize)> {
+impl QdAcquisitionHeader {
+    pub fn num_frames(&self) -> usize {
+        self.frames_in_acquisition
+    }
+
+    pub fn nav_shape(&self) -> Option<(usize, usize)> {
         if let (Some(scan_x), Some(scan_y)) = (self.scan_x, self.scan_y) {
             return Some((scan_y, scan_x));
         }
@@ -742,9 +742,53 @@ impl DetectorConnectionConfig for QdDetectorConnConfig {
     }
 }
 
+#[pyclass]
+#[derive(Debug, Clone)]
+pub struct QdAcquisitionConfig {
+    acq_header: QdAcquisitionHeader,
+    frame_header: QdFrameMeta,
+}
+
+impl QdAcquisitionConfig {
+    pub fn new(acq_header: QdAcquisitionHeader, frame_header: QdFrameMeta) -> Self {
+        Self {
+            acq_header,
+            frame_header,
+        }
+    }
+}
+
+impl AcquisitionConfig for QdAcquisitionConfig {
+    fn num_frames(&self) -> usize {
+        self.acq_header.frames_in_acquisition
+    }
+}
+
+#[pymethods]
+impl QdAcquisitionConfig {
+    fn frames_in_acquisition(&self) -> usize {
+        self.acq_header.frames_in_acquisition
+    }
+
+    fn frames_per_trigger(&self) -> usize {
+        self.acq_header.frames_per_trigger
+    }
+
+    fn nav_shape(&self) -> Option<(usize, usize)> {
+        self.acq_header.nav_shape()
+    }
+
+    fn detector_shape(&self) -> (u32, u32) {
+        (
+            self.frame_header.height_in_pixels,
+            self.frame_header.width_in_pixels,
+        )
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use common::{frame_stack::FrameMeta, generic_connection::AcquisitionConfig};
+    use common::frame_stack::FrameMeta;
 
     use crate::base_types::{DType, Layout};
 

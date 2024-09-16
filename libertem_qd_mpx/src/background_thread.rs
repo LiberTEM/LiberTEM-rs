@@ -10,7 +10,6 @@ use std::{
 use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
     frame_stack::{FrameMeta, FrameStackForWriting, FrameStackWriteError, WriteGuard},
-    generic_connection::AcquisitionConfig,
     tcp::{self, ReadExactError},
     utils::{num_from_byte_slice, NumParseError},
 };
@@ -18,13 +17,13 @@ use ipc_test::{slab::ShmError, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
 
 use crate::base_types::{
-    AcqHeaderParseError, FrameMetaParseError, QdAcquisitionHeader, QdDetectorConnConfig,
-    QdFrameMeta, RecoveryStrategy, PREFIX_SIZE,
+    AcqHeaderParseError, FrameMetaParseError, QdAcquisitionConfig, QdAcquisitionHeader,
+    QdDetectorConnConfig, QdFrameMeta, RecoveryStrategy, PREFIX_SIZE,
 };
 
 type QdControlMsg = ControlMsg<()>;
 
-type QdReceiverMsg = ReceiverMsg<QdFrameMeta, QdAcquisitionHeader>;
+type QdReceiverMsg = ReceiverMsg<QdFrameMeta, QdAcquisitionConfig>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AcquisitionError {
@@ -407,7 +406,10 @@ fn acquisition(
     let mut last_control_check = Instant::now();
 
     from_thread_s.send(ReceiverMsg::AcquisitionStart {
-        pending_acquisition: acquisition_header.clone(),
+        pending_acquisition: QdAcquisitionConfig::new(
+            acquisition_header.clone(),
+            first_frame_meta.clone(),
+        ),
     })?;
 
     let mut frame_stack = make_frame_stack(shm, config, first_frame_meta, to_thread_r)?;
@@ -714,7 +716,7 @@ impl QdBackgroundThread {
 
 impl BackgroundThread for QdBackgroundThread {
     type FrameMetaImpl = QdFrameMeta;
-    type AcquisitionConfigImpl = QdAcquisitionHeader;
+    type AcquisitionConfigImpl = QdAcquisitionConfig;
     type ExtraControl = ();
 
     fn channel_to_thread(
@@ -760,7 +762,9 @@ mod test {
         time::timeout,
     };
 
-    use crate::base_types::{QdAcquisitionHeader, QdDetectorConnConfig, RecoveryStrategy};
+    use crate::base_types::{
+        QdAcquisitionConfig, QdAcquisitionHeader, QdDetectorConnConfig, RecoveryStrategy,
+    };
 
     use super::QdBackgroundThread;
 
@@ -934,7 +938,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
@@ -1006,7 +1010,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
@@ -1093,7 +1097,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
@@ -1208,7 +1212,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
@@ -1313,7 +1317,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
@@ -1423,7 +1427,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
@@ -1535,7 +1539,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
@@ -1639,7 +1643,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
@@ -1774,7 +1778,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
@@ -1921,7 +1925,7 @@ End
 
             // we let the `GenericConnection` drive the background thread:
             let bg = QdBackgroundThread::spawn(config, &shm).unwrap();
-            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionHeader> =
+            let mut conn: GenericConnection<QdBackgroundThread, QdAcquisitionConfig> =
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
