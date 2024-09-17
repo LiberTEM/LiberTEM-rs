@@ -196,6 +196,15 @@ macro_rules! impl_py_connection {
                     Ok(conn_impl.is_running())
                 }
 
+                pub fn cancel(&mut self) -> PyResult<()> {
+                    let conn_impl = self.get_conn_mut()?;
+                    conn_impl.cancel().map_err(|e| {
+                        PyConnectionError::new_err(format!("cancellation failed: {e}"))
+                    })?;
+
+                    Ok(())
+                }
+
                 pub fn start_passive(
                     &mut self,
                     timeout: Option<f32>,

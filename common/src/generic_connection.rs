@@ -59,6 +59,9 @@ pub enum ConnectionError {
     #[error("operation timed out")]
     Timeout,
 
+    #[error("operation cancelled")]
+    Cancelled,
+
     #[error("background thread failed to start: {0}")]
     SpawnFailed(#[from] BackgroundThreadSpawnError),
 
@@ -204,6 +207,10 @@ where
             ReceiverMsg::FatalError { error } => {
                 log::warn!("adjust_status: fatal error: {error:?}; going back to idle state");
                 self.status = ConnectionStatus::Idle;
+            }
+            ReceiverMsg::Cancelled => {
+                log::warn!("adjust_status: acquisition cancelled");
+                self.status = ConnectionStatus::Idle;
             } // other => {
               //     trace!("adjust_status: other message: {other:?}");
               // }
@@ -247,6 +254,12 @@ where
     where
         E: std::error::Error + 'static + Send + Sync,
     {
+        // if an acquisition is already running, cancel and wait for idle status:
+        if self.is_running() {
+            self.cancel()?;
+            self.wait_for_status(ConnectionStatus::Idle, timeout, &periodic_callback)?;
+        }
+
         if let Some(timeout) = timeout {
             self.wait_for_arm_inner(timeout, periodic_callback)
         } else {
@@ -311,6 +324,11 @@ where
                     frame_stack.free_slot(&mut self.shm);
                     return Err(ConnectionError::UnexpectedMessage(
                         "ReceiverMsg::Finished in wait_for_arm".to_owned(),
+                    ));
+                }
+                ReceiverMsg::Cancelled => {
+                    return Err(ConnectionError::UnexpectedMessage(
+                        "ReceiverMsg::Cancelled in wait_for_arm".to_owned(),
                     ));
                 }
             }
@@ -406,6 +424,9 @@ where
                 } => {
                     trace!("wait_for_status: received ReceiverMsg::AcquisitionStart");
                 }
+                ReceiverMsg::Cancelled => {
+                    trace!("wait_for_status: received ReceiverMsg::Cancelled");
+                }
             }
             if self.status == desired_status {
                 debug!("wait_for_status: successfully got status {desired_status:?}");
@@ -492,6 +513,9 @@ where
                     self.stats.count_stats_item(&frame_stack);
                     return Ok(Some(frame_stack));
                 }
+                ReceiverMsg::Cancelled => {
+                    return Err(ConnectionError::Cancelled);
+                }
             }
         }
     }
@@ -527,6 +551,14 @@ where
 
     pub fn is_running(&self) -> bool {
         self.get_status() == ConnectionStatus::Running
+    }
+
+    pub fn cancel(&mut self) -> Result<(), ConnectionError> {
+        self.bg_thread
+            .channel_to_thread()
+            .send(ControlMsg::CancelAcquisition)
+            .map_err(|_| ConnectionError::Disconnected)?;
+        Ok(())
     }
 
     pub fn log_shm_stats(&self) {

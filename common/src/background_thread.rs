@@ -21,6 +21,10 @@ pub enum ReceiverMsg<M: FrameMeta, P: AcquisitionConfig> {
     /// that were received.
     Finished { frame_stack: FrameStackHandle<M> },
 
+    /// The acquisition was cancelled, as requested
+    /// by `ControlMsg::CancelAcquisition`
+    Cancelled,
+
     /// A non-recoverable error occurred, the underlying connection
     /// to the detector system should re-connect.
     FatalError {
@@ -45,6 +49,9 @@ pub enum ControlMsg<CM: Debug> {
 
     /// Start listening for any acquisitions starting
     StartAcquisitionPassive,
+
+    /// Cancel the currently running acquisition, if any
+    CancelAcquisition,
 
     /// Detector-specific control message
     SpecializedControlMsg { msg: CM },

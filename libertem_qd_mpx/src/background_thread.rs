@@ -30,7 +30,10 @@ pub enum AcquisitionError {
     #[error("channel disconnected")]
     Disconnected,
 
-    #[error("acquisition was cancelled by the user")]
+    #[error("background thread stopped")]
+    ThreadStopped,
+
+    #[error("acquisition cancelled by user")]
     Cancelled,
 
     #[error("receiver state error: {msg}")]
@@ -131,10 +134,11 @@ fn check_for_control(control_channel: &Receiver<QdControlMsg>) -> Result<(), Acq
             msg: "received StartAcquisitionPassive while an acquisition was already running"
                 .to_string(),
         }),
-        Ok(ControlMsg::StopThread) => Err(AcquisitionError::Cancelled),
+        Ok(ControlMsg::StopThread) => Err(AcquisitionError::ThreadStopped),
         Ok(ControlMsg::SpecializedControlMsg { msg: _ }) => {
             panic!("unsupported SpecializedControlMsg")
         }
+        Ok(ControlMsg::CancelAcquisition) => Err(AcquisitionError::Cancelled),
         Err(TryRecvError::Disconnected) => Err(AcquisitionError::Disconnected),
         Err(TryRecvError::Empty) => Ok(()),
     }
@@ -641,7 +645,14 @@ fn background_thread(
                 Ok(ControlMsg::StartAcquisitionPassive) => {
                     match passive_acquisition(to_thread_r, from_thread_s, config, &mut shm) {
                         Ok(_) => {}
-                        e @ Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
+                        Err(AcquisitionError::Cancelled) => {
+                            info!("acquisition cancelled by user");
+                            from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
+                            continue 'outer;
+                        }
+                        e @ Err(
+                            AcquisitionError::Disconnected | AcquisitionError::ThreadStopped,
+                        ) => {
                             info!("background_thread: terminating: {e:?}");
                             return Ok(());
                         }
@@ -653,6 +664,11 @@ fn background_thread(
                             continue 'outer;
                         }
                     }
+                }
+                Ok(ControlMsg::CancelAcquisition) => {
+                    warn!(
+                        "background_thread: got a CancelAcquisition message in main loop; ignoring"
+                    );
                 }
                 Ok(ControlMsg::StopThread) => {
                     debug!("background_thread: got a StopThread message");
@@ -764,9 +780,7 @@ mod test {
         time::timeout,
     };
 
-    use crate::base_types::{
-        QdAcquisitionConfig, QdAcquisitionHeader, QdDetectorConnConfig, RecoveryStrategy,
-    };
+    use crate::base_types::{QdAcquisitionConfig, QdDetectorConnConfig, RecoveryStrategy};
 
     use super::QdBackgroundThread;
 
