@@ -597,6 +597,8 @@ fn passive_acquisition(
         // hardware trigger):
         let first_frame_meta: QdFrameMeta = peek_first_frame_header(&mut stream, to_thread_r)?;
 
+        info!("first frame header: {:?}", first_frame_meta);
+
         match &first_frame_meta.mq1a {
             None => warn!("missing mq1a header, this will probably cause issues in raw mode!"),
             Some(mq1a) => match mq1a.counter_depth {
