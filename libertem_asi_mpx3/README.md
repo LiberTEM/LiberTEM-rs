@@ -13,6 +13,6 @@ also be used stand-alone.
 
 ## Changelog
 
-### v0.2.12
+### v0.2.XXX
 
 - Initial release of LiberTEM-qd-mpx
