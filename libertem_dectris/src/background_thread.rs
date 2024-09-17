@@ -78,6 +78,7 @@ enum AcquisitionError {
     SeriesMismatch,
     FrameIdMismatch { expected_id: u64, got_id: u64 },
     SerdeError { recvd_msg: String, msg: String },
+    StopThread,
     Cancelled,
     ZmqError { err: zmq::Error },
     BufferFull,
@@ -91,7 +92,7 @@ impl Display for AcquisitionError {
             AcquisitionError::ZmqError { err } => {
                 write!(f, "zmq error {err}")
             }
-            AcquisitionError::Cancelled => {
+            AcquisitionError::StopThread => {
                 write!(f, "acquisition cancelled")
             }
             AcquisitionError::SerdeError { recvd_msg, msg } => {
@@ -117,6 +118,9 @@ impl Display for AcquisitionError {
             }
             AcquisitionError::ConfigurationError { msg } => {
                 write!(f, "configuration error: {msg}")
+            }
+            AcquisitionError::Cancelled => {
+                write!(f, "acquisition cancelled")
             }
         }
     }
@@ -157,12 +161,17 @@ fn check_for_control(
         Ok(ControlMsg::StopThread) => {
             debug!("check_for_control: StopThread received");
 
+            Err(AcquisitionError::StopThread)
+        }
+        Ok(ControlMsg::CancelAcquisition) => {
+            debug!("check_for_control: CancelAcquisition");
+
             Err(AcquisitionError::Cancelled)
         }
         Err(TryRecvError::Disconnected) => {
             debug!("check_for_control: Disconnected");
 
-            Err(AcquisitionError::Cancelled)
+            Err(AcquisitionError::StopThread)
         }
         Err(TryRecvError::Empty) => Ok(()),
     }
@@ -507,8 +516,12 @@ fn background_thread(
                         &mut shm,
                     ) {
                         Ok(_) => {}
+                        Err(AcquisitionError::Cancelled) => {
+                            from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
+                            continue 'outer;
+                        }
                         Err(
-                            msg @ (AcquisitionError::Disconnected | AcquisitionError::Cancelled),
+                            msg @ (AcquisitionError::Disconnected | AcquisitionError::StopThread),
                         ) => {
                             debug!("background_thread: passive_acquisition returned {msg:?}");
                             break 'outer;
@@ -572,7 +585,10 @@ fn background_thread(
                         &mut shm,
                     ) {
                         Ok(_) => {}
-                        Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
+                        Err(AcquisitionError::Cancelled) => {
+                            from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
+                        }
+                        Err(AcquisitionError::Disconnected | AcquisitionError::StopThread) => {
                             break 'outer;
                         }
                         Err(e) => {
@@ -593,6 +609,9 @@ fn background_thread(
                 Err(RecvTimeoutError::Disconnected) => {
                     warn!("background_thread: control channel has disconnected");
                     break 'outer;
+                }
+                Ok(ControlMsg::CancelAcquisition) => {
+                    warn!("background_thread: ignoring ControlMsg::CancelAcquisition outside of running acquisition")
                 }
                 Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do
             }

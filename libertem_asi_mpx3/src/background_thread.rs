@@ -234,7 +234,10 @@ enum AcquisitionError {
     #[error("other end has disconnected")]
     Disconnected,
 
-    #[error("acquisition cancelled")]
+    #[error("background thread stopped")]
+    StopThread,
+
+    #[error("acquisition cancelled by user")]
     Cancelled,
 
     #[error("shm buffer is full")]
@@ -315,10 +318,11 @@ fn check_for_control(control_channel: &Receiver<ASIMpxControlMsg>) -> Result<(),
             msg: "received StartAcquisitionPassive while an acquisition was already running"
                 .to_string(),
         }),
-        Ok(ControlMsg::StopThread) => Err(AcquisitionError::Cancelled),
+        Ok(ControlMsg::StopThread) => Err(AcquisitionError::StopThread),
         Ok(ControlMsg::SpecializedControlMsg { msg: _ }) => {
             panic!("unsupported SpecializedControlMsg")
         }
+        Ok(ControlMsg::CancelAcquisition) => Err(AcquisitionError::Cancelled),
         Err(TryRecvError::Disconnected) => Err(AcquisitionError::Disconnected),
         Err(TryRecvError::Empty) => Ok(()),
     }
@@ -548,6 +552,9 @@ fn background_thread(
             // control: main threads tells us to quit
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
+                Ok(ControlMsg::CancelAcquisition) => {
+                    warn!("background_thread: ControlMsg::CancelAcquisition without running acquisition");
+                }
                 Ok(ControlMsg::StartAcquisitionPassive) => {
                     match passive_acquisition(
                         to_thread_r,
@@ -558,7 +565,11 @@ fn background_thread(
                         &mut shm,
                     ) {
                         Ok(_) => {}
-                        e @ Err(AcquisitionError::Disconnected | AcquisitionError::Cancelled) => {
+                        Err(AcquisitionError::Cancelled) => {
+                            from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
+                            continue 'outer;
+                        }
+                        e @ Err(AcquisitionError::Disconnected | AcquisitionError::StopThread) => {
                             info!("background_thread: terminating: {e:?}");
                             return Ok(());
                         }
