@@ -196,13 +196,22 @@ macro_rules! impl_py_connection {
                     Ok(conn_impl.is_running())
                 }
 
-                pub fn cancel(&mut self) -> PyResult<()> {
+                pub fn cancel(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
                     let conn_impl = self.get_conn_mut()?;
-                    conn_impl.cancel().map_err(|e| {
-                        PyConnectionError::new_err(format!("cancellation failed: {e}"))
-                    })?;
 
-                    Ok(())
+                    let timeout = timeout.map(Duration::from_secs_f32);
+                    py.allow_threads(|| {
+                        let conn_impl = self.get_conn_mut()?;
+                        conn_impl
+                            .cancel(&timeout, || {
+                                // re-acquire GIL to check if we need to break
+                                Python::with_gil(|py| py.check_signals())?;
+                                Ok::<_, PyErr>(())
+                            })
+                            .map_err(|e| {
+                                PyConnectionError::new_err(format!("cancellation failed: {e}"))
+                            })
+                    })
                 }
 
                 pub fn start_passive(
