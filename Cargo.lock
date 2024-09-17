@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.1.0"
+version = "0.2.12"
 dependencies = [
  "bincode",
  "criterion",
@@ -2065,7 +2065,7 @@ checksum = "9c198f91728a82281a64e1f4f9eeb25d82cb32a5de251c6bd1b5154d63a8e7bd"
 
 [[package]]
 name = "libertem-asi-mpx3"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "bincode",
  "common",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "libertem-asi-tpx3"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "bincode",
  "common",
@@ -2106,7 +2106,7 @@ dependencies = [
 
 [[package]]
 name = "libertem-dectris"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "bincode",
  "bs_sys",
@@ -2135,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "libertem_qd_mpx"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "bincode",
  "common",

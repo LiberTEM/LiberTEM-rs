@@ -8,6 +8,9 @@ The low-level, high-frequency operations are performed in a background thread
 implemented in rust, and multiple frames are batched together for further
 processing in Python.
 
+It is built for [LiberTEM-live](https://github.com/libertem/libertem-live), but can
+also be used stand-alone.
+
 ## Usage
 
 ```python
@@ -80,6 +83,15 @@ finally:
 ```
 
 ## Changelog
+
+### v0.2.12
+
+- Refactored and unified interface - allows for more code sharing between crates
+- Some robustness changes around adding timeout parameters for many top-level operations
+
+### v0.2.11
+
+- Re-release for CI changes
 
 ### v0.2.10
 
