@@ -256,8 +256,7 @@ where
     {
         // if an acquisition is already running, cancel and wait for idle status:
         if self.is_running() {
-            self.cancel()?;
-            self.wait_for_status(ConnectionStatus::Idle, timeout, &periodic_callback)?;
+            self.cancel(&timeout, &periodic_callback)?;
         }
 
         if let Some(timeout) = timeout {
@@ -553,12 +552,20 @@ where
         self.get_status() == ConnectionStatus::Running
     }
 
-    pub fn cancel(&mut self) -> Result<(), ConnectionError> {
+    pub fn cancel<E>(
+        &mut self,
+        timeout: &Option<Duration>,
+        periodic_callback: impl Fn() -> Result<(), E>,
+    ) -> Result<(), ConnectionError>
+    where
+        E: std::error::Error + 'static + Send + Sync,
+    {
         self.bg_thread
             .channel_to_thread()
             .send(ControlMsg::CancelAcquisition)
             .map_err(|_| ConnectionError::Disconnected)?;
-        Ok(())
+
+        self.wait_for_status(ConnectionStatus::Idle, *timeout, periodic_callback)
     }
 
     pub fn log_shm_stats(&self) {
