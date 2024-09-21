@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.4,<2"]
+requires = ["maturin>=1.5,<2"]
 build-backend = "maturin"
 
 [project]
@@ -9,6 +9,9 @@ classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+    "opentelemetry-api",
 ]
 
 [project.urls]
