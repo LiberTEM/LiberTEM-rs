@@ -9,8 +9,8 @@ rust-version = "1.66"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-egui = "0.21.0"
-eframe = { version = "0.21.0", features = ["default_fonts", "glow"] }
+egui = "0.22"
+eframe = { version = "0.22", features = ["default_fonts", "glow"] }
 serde = { version = "1", features = ["derive"] }
 tracing-subscriber = "0.3"
 serde_json = "1.0.93"
@@ -25,7 +25,7 @@ url = "2.3.1"
 futures-util = "0.3.26"
 tungstenite = "0.18.0"
 rayon = "1.6.1"
-egui_extras = { version = "0.21.0", features = ["image"] }
+egui_extras = { version = "0.22", features = ["image"] }
 image = "0.24.5"
 # scarlet = "1.1.0"
 # colors-transform = "0.2.11"

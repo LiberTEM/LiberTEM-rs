@@ -37,6 +37,7 @@ macro_rules! impl_py_cam_client {
                 decoder::{Decoder, DecoderTargetPixelType},
                 frame_stack::FrameStackHandle,
                 generic_cam_client::GenericCamClient,
+                tracing::span_from_py,
             };
             use ipc_test::SharedSlabAllocator;
             use num::{
@@ -95,7 +96,9 @@ macro_rules! impl_py_cam_client {
             #[pymethods]
             impl $name {
                 #[new]
-                pub fn new(handle_path: &str) -> PyResult<Self> {
+                pub fn new(py: Python, handle_path: &str) -> PyResult<Self> {
+                    let _trace_guard = span_from_py(py, &format!("{}::new", stringify!($name)))?;
+
                     Ok(Self {
                         client_impl: GenericCamClient::new(handle_path)
                             .map_err(|e| PyCamClientError::new_err(e.to_string()))?,

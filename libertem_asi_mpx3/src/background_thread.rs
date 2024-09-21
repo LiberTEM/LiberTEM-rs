@@ -15,6 +15,7 @@ use common::{
 };
 use ipc_test::SharedSlabAllocator;
 use log::{debug, error, info, trace, warn};
+use opentelemetry::Context;
 use serval_client::{DetectorConfig, ServalClient, ServalError};
 
 use crate::base_types::{ASIMpxDetectorConnConfig, ASIMpxFrameMeta, DType, PendingAcquisition};
@@ -655,11 +656,13 @@ impl ASIMpxBackgroundThread {
         let api_uri = config.api_uri.to_owned();
         let shm = shm.clone_and_connect()?;
         let frame_stack_size = config.frame_stack_size;
+        let ctx = Context::current();
 
         Ok(Self {
             bg_thread: builder
                 .name("bg_thread".to_string())
                 .spawn(move || {
+                    let _guard = ctx.attach();
                     background_thread_wrap(
                         &to_thread_r,
                         &from_thread_s,

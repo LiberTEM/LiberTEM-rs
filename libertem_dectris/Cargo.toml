@@ -39,6 +39,7 @@ lz4 = "1.24.0"
 zerocopy = "0.7.35"
 md5 = "0.7.0"
 num = "0.4.3"
+opentelemetry = "0.25.0"
 
 [features]
 extension-module = ["pyo3/extension-module"]

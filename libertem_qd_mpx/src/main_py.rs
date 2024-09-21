@@ -1,6 +1,7 @@
 use std::{str::FromStr, time::Duration};
 
 use common::generic_connection::GenericConnection;
+use common::tracing::span_from_py;
 use numpy::PyUntypedArray;
 use pyo3::{
     exceptions::PyValueError, pyclass, pymethods, pymodule, types::PyModule, Bound, PyResult,
@@ -59,7 +60,10 @@ impl QdConnection {
         bytes_per_frame: Option<usize>,
         huge: Option<bool>,
         recovery_strategy: Option<&str>,
+        py: Python,
     ) -> PyResult<Self> {
+        let _trace_guard = span_from_py(py, "QdConnection::new")?;
+
         // NOTE: these values don't have to be exact and are mostly important
         // for performance tuning
         let num_slots = num_slots.unwrap_or(2000);
@@ -125,8 +129,8 @@ impl QdConnection {
         self.conn.start_passive(timeout, py)
     }
 
-    fn close(&mut self) -> PyResult<()> {
-        self.conn.close()
+    fn close(&mut self, py: Python) -> PyResult<()> {
+        self.conn.close(py)
     }
 
     fn get_next_stack(
@@ -154,9 +158,9 @@ struct CamClient {
 #[pymethods]
 impl CamClient {
     #[new]
-    fn new(handle_path: &str) -> PyResult<Self> {
+    fn new(py: Python, handle_path: &str) -> PyResult<Self> {
         Ok(Self {
-            inner: _PyQdCamClient::new(handle_path)?,
+            inner: _PyQdCamClient::new(py, handle_path)?,
         })
     }
 

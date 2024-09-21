@@ -26,6 +26,7 @@ zerocopy = "0.7.35"
 numpy = "0.21.0"
 num = "0.4.3"
 thiserror = "1.0.61"
+opentelemetry = "0.25.0"
 
 [features]
 extension-module = ["pyo3/extension-module"]

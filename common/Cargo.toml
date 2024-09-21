@@ -21,6 +21,11 @@ ndarray = { version = "0.15.6" }
 zerocopy = "0.7.35"
 num = "0.4.3"
 multiversion = "0.7.4"
+opentelemetry = "0.25.0"
+opentelemetry-otlp = "0.25.0"
+opentelemetry-semantic-conventions = "0.25.0"
+opentelemetry_sdk = { version = "0.25.0", features = ["rt-tokio"] }
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "io-util", "rt-multi-thread"] } 
 
 [dev-dependencies]
 criterion = "0.5.1"

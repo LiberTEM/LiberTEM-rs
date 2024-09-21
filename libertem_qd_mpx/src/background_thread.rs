@@ -15,6 +15,7 @@ use common::{
 };
 use ipc_test::{slab::ShmError, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
+use opentelemetry::Context;
 
 use crate::base_types::{
     AcqHeaderParseError, FrameMetaParseError, QdAcquisitionConfig, QdAcquisitionHeader,
@@ -718,13 +719,17 @@ impl QdBackgroundThread {
         let builder = std::thread::Builder::new();
         let shm = shm.clone_and_connect()?;
         let config = config.clone();
+        let ctx = Context::current();
 
         debug!("connection config: {config:?}");
 
         Ok(Self {
             bg_thread: builder
                 .name("bg_thread".to_string())
-                .spawn(move || background_thread_wrap(&config, &to_thread_r, &from_thread_s, shm))
+                .spawn(move || {
+                    let _ctx_guard = ctx.attach();
+                    background_thread_wrap(&config, &to_thread_r, &from_thread_s, shm)
+                })
                 .map_err(BackgroundThreadSpawnError::SpawnFailed)?,
             from_thread: from_thread_r,
             to_thread: to_thread_s,
