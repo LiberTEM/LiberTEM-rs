@@ -12,6 +12,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.16.0",
+    "opentelemetry-api",
 ]
 dynamic = ["version"]
 
