@@ -15,6 +15,7 @@ use common::{
 };
 use ipc_test::{slab::ShmError, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
+use opentelemetry::Context;
 use zmq::{Message, Socket};
 
 use crate::base_types::{
@@ -681,6 +682,7 @@ impl DectrisBackgroundThread {
         let (to_thread_s, to_thread_r) = channel();
         let (from_thread_s, from_thread_r) = channel();
         let builder = std::thread::Builder::new();
+        let ctx = Context::current();
 
         let shm = shm.clone_and_connect()?;
 
@@ -690,6 +692,7 @@ impl DectrisBackgroundThread {
             bg_thread: builder
                 .name("bg_thread".to_string())
                 .spawn(move || {
+                    let _ctx_guard = ctx.attach();
                     background_thread_wrap(
                         &to_thread_r,
                         &from_thread_s,

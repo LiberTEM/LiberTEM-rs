@@ -4,7 +4,10 @@
 //! pending future unification with full compatability between detectors.
 use std::time::Duration;
 
-use common::generic_connection::{ConnectionStatus, GenericConnection};
+use common::{
+    generic_connection::{ConnectionStatus, GenericConnection},
+    tracing::span_from_py,
+};
 
 use crate::{
     background_thread::{DectrisBackgroundThread, DectrisDetectorConnConfig, DectrisExtraControl},
@@ -90,7 +93,10 @@ impl DectrisConnection {
         num_slots: Option<usize>,
         bytes_per_frame: Option<usize>,
         huge: Option<bool>,
+        py: Python,
     ) -> PyResult<Self> {
+        let _trace_guard = span_from_py(py, "DectrisConnection::new")?;
+
         let num_slots = num_slots.map_or_else(|| 2000, |x| x);
         let bytes_per_frame = bytes_per_frame.map_or_else(|| 512 * 512 * 2, |x| x);
         let config = DectrisDetectorConnConfig::new(
@@ -153,8 +159,8 @@ impl DectrisConnection {
         self.conn.start_passive(timeout, py)
     }
 
-    fn close(&mut self) -> PyResult<()> {
-        self.conn.close()
+    fn close(&mut self, py: Python) -> PyResult<()> {
+        self.conn.close(py)
     }
 
     fn log_shm_stats(&self) -> PyResult<()> {
@@ -289,9 +295,9 @@ pub struct CamClient {
 #[pymethods]
 impl CamClient {
     #[new]
-    fn new(handle_path: &str) -> PyResult<Self> {
+    fn new(py: Python, handle_path: &str) -> PyResult<Self> {
         Ok(Self {
-            inner: _PyDectrisCamClient::new(handle_path)?,
+            inner: _PyDectrisCamClient::new(py, handle_path)?,
         })
     }
 
@@ -439,14 +445,14 @@ mod tests {
             assert_eq!(fs_handle, new_handle);
         });
 
-        let client = CamClient::new(socket_as_path.to_str().unwrap()).unwrap();
-
         fs_handle.with_slot(&shm, |slot_r| {
             let slice = slot_r.as_slice();
             println!("slice: {:x?}", slice);
         });
 
         Python::with_gil(|py| {
+            let client = CamClient::new(py, socket_as_path.to_str().unwrap()).unwrap();
+
             let flat: Vec<u16> = (0..256).collect();
             let out = PyArray::from_vec_bound(py, flat)
                 .reshape((1, 16, 16))
@@ -537,8 +543,6 @@ mod tests {
             assert_eq!(fs_handle, new_handle);
         });
 
-        let client = CamClient::new(socket_as_path.to_str().unwrap()).unwrap();
-
         fs_handle.with_slot(&shm, |slot_r| {
             let slice = slot_r.as_slice();
             let slice_for_frame = fs_handle.get_slice_for_frame(0, slot_r);
@@ -557,6 +561,8 @@ mod tests {
         });
 
         Python::with_gil(|py| {
+            let client = CamClient::new(py, socket_as_path.to_str().unwrap()).unwrap();
+
             let flat: Vec<u16> = (0..256).collect();
             let out = PyArray::from_vec_bound(py, flat)
                 .reshape((1, 16, 16))

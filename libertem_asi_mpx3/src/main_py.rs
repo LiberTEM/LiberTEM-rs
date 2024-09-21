@@ -7,7 +7,10 @@ use crate::{
     exceptions::{ConnectionError, TimeoutError},
 };
 
-use common::{generic_connection::GenericConnection, impl_py_cam_client, impl_py_connection};
+use common::{
+    generic_connection::GenericConnection, impl_py_cam_client, impl_py_connection,
+    tracing::span_from_py,
+};
 
 use log::trace;
 use numpy::PyUntypedArray;
@@ -131,6 +134,7 @@ struct ServalConnection {
 #[pymethods]
 impl ServalConnection {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         data_uri: &str,
         api_uri: &str,
@@ -139,7 +143,10 @@ impl ServalConnection {
         num_slots: Option<usize>,
         bytes_per_frame: Option<usize>,
         huge: Option<bool>,
+        py: Python,
     ) -> PyResult<Self> {
+        let _trace_guard = span_from_py(py, "ServalConnection::new")?;
+
         let num_slots = num_slots.map_or_else(|| 2000, |x| x);
         let bytes_per_frame = bytes_per_frame.map_or_else(|| 512 * 512 * 2, |x| x);
 
@@ -190,8 +197,8 @@ impl ServalConnection {
         self.conn.start_passive(timeout, py)
     }
 
-    fn close(&mut self) -> PyResult<()> {
-        self.conn.close()
+    fn close(&mut self, py: Python) -> PyResult<()> {
+        self.conn.close(py)
     }
 
     fn get_next_stack(
@@ -298,9 +305,9 @@ impl CamClient {
 #[pymethods]
 impl CamClient {
     #[new]
-    fn new(handle_path: &str) -> PyResult<Self> {
+    fn new(py: Python, handle_path: &str) -> PyResult<Self> {
         Ok(Self {
-            inner: _PyASIMpxCamClient::new(handle_path)?,
+            inner: _PyASIMpxCamClient::new(py, handle_path)?,
         })
     }
 

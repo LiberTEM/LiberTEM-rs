@@ -29,13 +29,14 @@ encoding_rs = { version = "0.8.34", features = [] }
 itertools = "0.13.0"
 rand = "0.8.5"
 criterion = "0.5.1"
+opentelemetry = "0.25.0"
 
 [features]
 extension-module = ["pyo3/extension-module"]
 
 [dev-dependencies]
 tempfile = "3.3.0"
-tokio = { version = "1.38.1", features = ["rt", "net", "time", "sync", "io-util", "rt-multi-thread"] } 
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "io-util", "rt-multi-thread"] } 
 
 [[bench]]
 name = "decoders"

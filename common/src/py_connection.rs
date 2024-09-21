@@ -21,6 +21,7 @@ macro_rules! impl_py_connection {
                 frame_stack::{FrameMeta, FrameStackHandle},
                 generic_cam_client::GenericCamClient,
                 generic_connection::{ConnectionStatus, GenericConnection},
+                tracing::span_from_py,
             };
             use ipc_test::SharedSlabAllocator;
             use num::NumCast;
@@ -143,7 +144,10 @@ macro_rules! impl_py_connection {
                     max_size: usize,
                     py: Python<'_>,
                 ) -> PyResult<Option<$name_frame_stack>> {
+                    let _trace_guard =
+                        span_from_py(py, &format!("{}::get_next_stack", stringify!($name)))?;
                     let conn_impl = self.get_conn_mut()?;
+
                     match py.allow_threads(|| {
                         conn_impl.get_next_stack(max_size, || {
                             // re-acquire GIL to check if we need to break
@@ -162,7 +166,10 @@ macro_rules! impl_py_connection {
                     timeout: Option<f32>,
                     py: Python<'_>,
                 ) -> PyResult<Option<super::$pending_acquisition_type>> {
+                    let _trace_guard =
+                        span_from_py(py, &format!("{}::wait_for_arm", stringify!($name)))?;
                     let timeout = timeout.map(Duration::from_secs_f32);
+
                     py.allow_threads(|| {
                         let conn_impl = self.get_conn_mut()?;
                         conn_impl
@@ -180,7 +187,9 @@ macro_rules! impl_py_connection {
                     Ok(shm.get_handle().os_handle)
                 }
 
-                pub fn close(&mut self) -> PyResult<()> {
+                pub fn close(&mut self, py: Python) -> PyResult<()> {
+                    let _trace_guard = span_from_py(py, &format!("{}::close", stringify!($name)))?;
+
                     if let Some(mut conn_impl) = self.conn_impl.take() {
                         conn_impl.log_shm_stats();
                         conn_impl.reset_stats();
@@ -197,6 +206,7 @@ macro_rules! impl_py_connection {
                 }
 
                 pub fn cancel(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
+                    let _trace_guard = span_from_py(py, &format!("{}::cancel", stringify!($name)))?;
                     let conn_impl = self.get_conn_mut()?;
 
                     let timeout = timeout.map(Duration::from_secs_f32);
@@ -219,6 +229,8 @@ macro_rules! impl_py_connection {
                     timeout: Option<f32>,
                     py: Python<'_>,
                 ) -> PyResult<()> {
+                    let _trace_guard =
+                        span_from_py(py, &format!("{}::start_passive", stringify!($name)))?;
                     let timeout = timeout.map(Duration::from_secs_f32);
 
                     py.allow_threads(|| {
