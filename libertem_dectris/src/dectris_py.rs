@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use common::{
     generic_connection::{ConnectionStatus, GenericConnection},
-    tracing::span_from_py,
+    tracing::{span_from_py, tracing_from_env},
 };
 
 use crate::{
@@ -54,6 +54,8 @@ fn libertem_dectris(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
         .filter_or("LIBERTEM_DECTRIS_LOG_LEVEL", "error")
         .write_style_or("LIBERTEM_DECTRIS_LOG_STYLE", "always");
     env_logger::init_from_env(env);
+
+    tracing_from_env("libertem-dectris".to_owned());
 
     Ok(())
 }

@@ -9,6 +9,7 @@ use std::{
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
+use opentelemetry::Context;
 
 use crate::{
     chunk_stack::{ChunkCSRLayout, ChunkStackForWriting, ChunkStackHandle},
@@ -574,6 +575,7 @@ impl TPXReceiver {
 
         let builder = std::thread::Builder::new();
         let uri = uri.to_string();
+        let ctx = Context::current();
 
         let shm_handle = shm.get_handle();
 
@@ -582,6 +584,8 @@ impl TPXReceiver {
                 builder
                     .name("bg_thread".to_string())
                     .spawn(move || {
+                        let _ctx_guard = ctx.attach();
+
                         background_thread_wrap(
                             &to_thread_r,
                             &from_thread_s,

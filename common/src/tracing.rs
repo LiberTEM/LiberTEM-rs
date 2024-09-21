@@ -29,19 +29,27 @@ fn init_tracer(service_name: String, otlp_endpoint: String) -> Result<(), TraceE
     Ok(())
 }
 
-fn get_tracer() -> BoxedTracer {
+pub fn get_tracer() -> BoxedTracer {
     global::tracer(env!("CARGO_PKG_NAME"))
 }
 
-pub fn spawn_tracing_thread(service_name: &str, otlp_endpoint: &str) {
+pub fn tracing_from_env(service_name: String) {
+    // example OTEL config via environment variables:
+    // OTEL_ENABLE=1
+    // OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+    if std::env::var("OTEL_ENABLE") == Ok("1".to_owned()) {
+        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .unwrap_or_else(|_| "http://localhost:4317".to_owned());
+        spawn_tracing_thread(service_name, endpoint);
+    }
+}
+
+pub fn spawn_tracing_thread(service_name: String, otlp_endpoint: String) {
     let thread_builder = std::thread::Builder::new();
 
     // for waiting until tracing is initialized:
     let barrier = Arc::new(Barrier::new(2));
     let barrier_bg = Arc::clone(&barrier);
-
-    let service_name = service_name.to_owned();
-    let otlp_endpoint = otlp_endpoint.to_owned();
 
     thread_builder
         .name("tracing".to_string())

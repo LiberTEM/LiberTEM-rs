@@ -1,7 +1,7 @@
 use std::{str::FromStr, time::Duration};
 
 use common::generic_connection::GenericConnection;
-use common::tracing::span_from_py;
+use common::tracing::{span_from_py, tracing_from_env};
 use numpy::PyUntypedArray;
 use pyo3::{
     exceptions::PyValueError, pyclass, pymethods, pymodule, types::PyModule, Bound, PyResult,
@@ -28,6 +28,8 @@ fn libertem_qd_mpx(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     env_logger::Builder::from_env(env)
         .format_timestamp_micros()
         .init();
+
+    tracing_from_env("libertem-qd-mpx".to_owned());
 
     Ok(())
 }

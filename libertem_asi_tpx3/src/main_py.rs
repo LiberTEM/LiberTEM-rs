@@ -15,6 +15,7 @@ use crate::{
     headers_py::make_sim_data,
 };
 
+use common::tracing::{span_from_py, tracing_from_env};
 use ipc_test::SharedSlabAllocator;
 use log::{info, trace, warn};
 use pyo3::{
@@ -47,6 +48,8 @@ fn libertem_asi_tpx3(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
         .filter_or("LIBERTEM_TPX_LOG_LEVEL", "error")
         .write_style_or("LIBERTEM_TPX_LOG_STYLE", "always");
     env_logger::init_from_env(env);
+
+    tracing_from_env("libertem-asi-tpx3".to_owned());
 
     Ok(())
 }
@@ -207,7 +210,9 @@ impl ASITpx3Connection {
         num_slots: Option<usize>,
         bytes_per_chunk: Option<usize>,
         huge: Option<bool>,
+        py: Python,
     ) -> PyResult<Self> {
+        let _tracing_guard = span_from_py(py, "ASITpx3Connection::new")?;
         let num_slots = num_slots.map_or_else(|| 2000, |x| x);
         let bytes_per_chunk = bytes_per_chunk.map_or_else(|| 512 * 512 * 2, |x| x);
         let slot_size = chunks_per_stack * bytes_per_chunk;
@@ -244,6 +249,7 @@ impl ASITpx3Connection {
     /// Returns `None` in case of timeout, the detector config otherwise.
     /// This method drops the GIL to allow concurrent Python threads.
     fn wait_for_arm(&mut self, timeout: f32, py: Python) -> PyResult<Option<AcquisitionStart>> {
+        let _tracing_guard = span_from_py(py, "ASITpx3Connection::wait_for_arm")?;
         let timeout = Duration::from_secs_f32(timeout);
         let deadline = Instant::now() + timeout;
         let step = Duration::from_millis(100);
@@ -301,7 +307,9 @@ impl ASITpx3Connection {
 
     /// Start listening for global acquisition headers on the tcp socket.
     /// Call `wait_for_arm` to wait
-    fn start_passive(mut slf: PyRefMut<Self>) -> PyResult<()> {
+    fn start_passive(mut slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
+        let _tracing_guard = span_from_py(py, "ASITpx3Connection::start_passive")?;
+
         slf.start_passive_impl()
     }
 

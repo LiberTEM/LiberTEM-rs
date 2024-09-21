@@ -8,8 +8,9 @@ use crate::{
 };
 
 use common::{
-    generic_connection::GenericConnection, impl_py_cam_client, impl_py_connection,
-    tracing::span_from_py,
+    generic_connection::GenericConnection,
+    impl_py_cam_client, impl_py_connection,
+    tracing::{span_from_py, tracing_from_env},
 };
 
 use log::trace;
@@ -51,6 +52,8 @@ fn libertem_asi_mpx3(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     env_logger::Builder::from_env(env)
         .format_timestamp_micros()
         .init();
+
+    tracing_from_env("libertem-asi-mpx3".to_owned());
 
     Ok(())
 }
