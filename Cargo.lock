@@ -2319,6 +2319,7 @@ dependencies = [
  "ipc-test",
  "log",
  "numpy",
+ "opentelemetry",
  "page_size",
  "pyo3",
  "serde",
