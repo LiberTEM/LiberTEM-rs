@@ -1490,19 +1490,6 @@ dependencies = [
 
 [[package]]
 name = "env_logger"
-version = "0.11.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13fa619b91fb2381732789fc5de83b45675e882f66623b7d8cb4f643017018d"
-dependencies = [
- "anstream",
- "anstyle",
- "env_filter",
- "humantime",
- "log",
-]
-
-[[package]]
-name = "env_logger"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cd405aab171cb85d6735e5c8d9db038c17d3ca007a4d2c25f337935c3d90580"
@@ -1512,6 +1499,19 @@ dependencies = [
  "log",
  "regex",
  "termcolor",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13fa619b91fb2381732789fc5de83b45675e882f66623b7d8cb4f643017018d"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "env_filter",
+ "humantime",
+ "log",
 ]
 
 [[package]]
@@ -2493,7 +2493,7 @@ version = "0.2.14"
 dependencies = [
  "bincode",
  "common",
- "env_logger 0.9.3",
+ "env_logger 0.11.5",
  "ipc-test",
  "log",
  "num",
@@ -2516,7 +2516,7 @@ dependencies = [
  "common",
  "crossbeam",
  "crossbeam-channel",
- "env_logger 0.9.3",
+ "env_logger 0.11.5",
  "ipc-test",
  "log",
  "numpy",
@@ -2539,7 +2539,7 @@ dependencies = [
  "bs_sys",
  "clap 3.2.25",
  "common",
- "env_logger 0.9.3",
+ "env_logger 0.11.5",
  "ipc-test",
  "log",
  "lz4",
@@ -2567,8 +2567,6 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "common",
- "crossbeam",
- "crossbeam-channel",
  "env_logger 0.10.2",
  "ipc-test",
  "k2o",
@@ -2580,6 +2578,7 @@ dependencies = [
  "sendfd",
  "serde",
  "stats",
+ "thiserror",
  "tokio",
  "zerocopy",
 ]
@@ -2592,7 +2591,7 @@ dependencies = [
  "common",
  "criterion 0.5.1",
  "encoding_rs",
- "env_logger 0.9.3",
+ "env_logger 0.11.5",
  "ipc-test",
  "itertools 0.13.0",
  "log",

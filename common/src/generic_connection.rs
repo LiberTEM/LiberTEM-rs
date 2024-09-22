@@ -22,7 +22,7 @@ pub trait DetectorConnectionConfig: Clone {
     /// calculate number of SHM slots
     fn get_shm_num_slots(&self) -> usize;
 
-    /// calculate SHM slot size
+    /// calculate SHM slot size in bytes
     fn get_shm_slot_size(&self) -> usize;
 
     /// should huge pages be enabled, if available?

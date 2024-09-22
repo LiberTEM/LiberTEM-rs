@@ -635,7 +635,7 @@ fn background_thread(
 ) -> Result<(), AcquisitionError> {
     'outer: loop {
         loop {
-            // control: main threads tells us to quit
+            // control: main threads tells us what to do
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
                 Ok(ControlMsg::StartAcquisitionPassive) => {

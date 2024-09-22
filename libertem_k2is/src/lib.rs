@@ -1,12 +1,14 @@
+pub mod background_thread;
+pub mod config;
+pub mod decoder;
+pub mod frame_meta;
 pub mod main_py;
-mod shm_helpers;
 
 use common::tracing::{get_tracer, span_from_py, tracing_from_env};
 use env_logger::Builder;
 use ipc_test::SharedSlabAllocator;
 use log::info;
 use opentelemetry::trace::Tracer;
-use shm_helpers::{CamClient, FrameRef};
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -33,9 +35,6 @@ fn libertem_k2is(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SyncFlags>()?;
     m.add_class::<PyMode>()?;
     m.add_class::<PyAcquisitionParams>()?;
-
-    m.add_class::<CamClient>()?;
-    m.add_class::<FrameRef>()?;
 
     let env = env_logger::Env::default()
         .filter_or("LIBERTEM_K2IS_LOG_LEVEL", "error")

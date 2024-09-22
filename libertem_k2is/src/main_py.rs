@@ -1,74 +1,32 @@
-use pyo3::{pyclass, pymodule, types::PyModule, Bound, PyResult};
-use serde::{Deserialize, Serialize};
+use common::generic_connection::GenericConnection;
+use common::tracing::{span_from_py, tracing_from_env};
+use pyo3::{pyclass, pymethods, Python};
+use pyo3::{pymodule, types::PyModule, Bound, PyResult};
 
-use common::{
-    background_thread::BackgroundThread, decoder::Decoder, frame_stack::FrameMeta,
-    generic_connection::AcquisitionConfig, impl_py_cam_client, impl_py_connection,
-};
+use common::{impl_py_cam_client, impl_py_connection};
+
+use crate::background_thread::K2BackgroundThread;
+use crate::config::{K2AcquisitionConfig, K2DetectorConnectionConfig, K2Mode};
+use crate::decoder::K2Decoder;
+use crate::frame_meta::K2FrameMeta;
 
 #[pymodule]
 fn libertem_k2is(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let env = env_logger::Env::default()
+        .filter_or("LIBERTEM_K2IS_LOG_LEVEL", "error")
+        .write_style_or("LIBERTEM_K2IS_LOG_STYLE", "always");
+    env_logger::Builder::from_env(env)
+        .format_timestamp_micros()
+        .init();
+
+    tracing_from_env("libertem-k2is".to_owned());
+
+    // FIXME: register Python types here
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct K2FrameMeta {}
-
-impl FrameMeta for K2FrameMeta {
-    fn get_data_length_bytes(&self) -> usize {
-        todo!()
-    }
-
-    fn get_dtype_string(&self) -> String {
-        todo!()
-    }
-
-    fn get_shape(&self) -> (u64, u64) {
-        todo!()
-    }
-}
-
-#[pyclass]
-#[derive(Debug, Clone)]
-struct K2AcquisitionConfig {}
-
-impl AcquisitionConfig for K2AcquisitionConfig {
-    fn num_frames(&self) -> usize {
-        todo!()
-    }
-}
-
-struct K2BackgroundThread {}
-
-impl BackgroundThread for K2BackgroundThread {
-    type FrameMetaImpl = K2FrameMeta;
-
-    type AcquisitionConfigImpl = K2AcquisitionConfig;
-
-    type ExtraControl = ();
-
-    fn channel_to_thread(
-        &mut self,
-    ) -> &mut std::sync::mpsc::Sender<common::background_thread::ControlMsg<Self::ExtraControl>>
-    {
-        todo!()
-    }
-
-    fn channel_from_thread(
-        &mut self,
-    ) -> &mut std::sync::mpsc::Receiver<
-        common::background_thread::ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>,
-    > {
-        todo!()
-    }
-
-    fn join(self) {
-        todo!()
-    }
-}
-
 impl_py_connection!(
-    _PyK2ISConnection,
+    _PyK2Connection,
     K2FrameStack,
     K2FrameMeta,
     K2BackgroundThread,
@@ -76,38 +34,92 @@ impl_py_connection!(
     libertem_k2is
 );
 
-#[derive(Debug, Clone, Default)]
-struct K2Decoder {}
+#[pyclass]
+struct K2Connection {
+    conn: _PyK2Connection,
+}
 
-impl Decoder for K2Decoder {
-    type FrameMeta = K2FrameMeta;
+#[pymethods]
+impl K2Connection {
+    #[new]
+    fn new(
+        local_addr_top: &str,
+        local_addr_bottom: &str,
+        frame_stack_size: usize,
+        shm_handle_path: &str,
+        mode: Option<K2Mode>,
+        huge: Option<bool>,
+        py: Python,
+    ) -> PyResult<Self> {
+        let _trace_guard = span_from_py(py, "K2Connection::new")?;
 
-    fn decode<T>(
-        &self,
-        shm: &ipc_test::SharedSlabAllocator,
-        input: &common::frame_stack::FrameStackHandle<Self::FrameMeta>,
-        output: &mut numpy::ndarray::ArrayViewMut3<'_, T>,
-        start_idx: usize,
-        end_idx: usize,
-    ) -> Result<(), common::decoder::DecoderError>
-    where
-        T: common::decoder::DecoderTargetPixelType,
-        u8: num::cast::AsPrimitive<T>,
-        u16: num::cast::AsPrimitive<T>,
-    {
-        todo!()
+        // to have some slack, we need some more memory in IS mode:
+        let mode = mode.unwrap_or(K2Mode::IS);
+        let num_slots = match mode {
+            K2Mode::IS => 1600,    // about 2 seconds
+            K2Mode::Summit => 100, // TODO: update with realistic value here
+        };
+
+        let config = K2DetectorConnectionConfig::new(
+            mode,
+            local_addr_top.to_owned(),
+            local_addr_bottom.to_owned(),
+            num_slots,
+            huge.unwrap_or(false),
+            shm_handle_path.to_owned(),
+            frame_stack_size,
+        );
+
+        let shm =
+            GenericConnection::<K2BackgroundThread, K2AcquisitionConfig>::shm_from_config(&config)
+                .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
+
+        let bg_thread = K2BackgroundThread::spawn(&config, &shm)
+            .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
+
+        let generic_conn =
+            GenericConnection::<K2BackgroundThread, K2AcquisitionConfig>::new(bg_thread, &shm)
+                .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
+
+        let conn = _PyK2Connection::new(shm, generic_conn);
+        Ok(Self { conn })
     }
 
-    fn zero_copy_available(
-        &self,
-        handle: &common::frame_stack::FrameStackHandle<Self::FrameMeta>,
-    ) -> Result<bool, common::decoder::DecoderError> {
-        todo!()
+    fn wait_for_arm(
+        &mut self,
+        timeout: Option<f32>,
+        py: Python<'_>,
+    ) -> PyResult<Option<K2AcquisitionConfig>> {
+        self.conn.wait_for_arm(timeout, py)
+    }
+
+    fn get_socket_path(&self) -> PyResult<String> {
+        self.conn.get_socket_path()
+    }
+
+    fn is_running(&self) -> PyResult<bool> {
+        self.conn.is_running()
+    }
+
+    fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
+        self.conn.start_passive(timeout, py)
+    }
+
+    fn close(&mut self, py: Python) -> PyResult<()> {
+        self.conn.close(py)
+    }
+
+    fn get_next_stack(
+        &mut self,
+        max_size: usize,
+        py: Python<'_>,
+    ) -> PyResult<Option<K2FrameStack>> {
+        self.conn.get_next_stack(max_size, py)
     }
 }
 
 impl_py_cam_client!(
-    _PyK2ISCamClient,
+    _PyK2CamClient,
     K2Decoder,
     K2FrameStack,
     K2FrameMeta,
