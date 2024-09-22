@@ -11,7 +11,7 @@ use crate::frame_summit::K2SummitFrame;
 use crate::helpers::{set_cpu_affinity, CPU_AFF_WRITER};
 use crate::params::CameraMode;
 use crate::recv::{recv_decode_loop, RecvConfig};
-use crate::tracing::get_tracer;
+use common::tracing::get_tracer;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
 use std::sync::{Arc, Condvar, Mutex};
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use log::debug;
 use opentelemetry::trace::Tracer;
-use opentelemetry::{global, Context};
+use opentelemetry::Context;
 
 #[derive(Debug, Clone)]
 pub struct AddrConfig {
@@ -193,7 +193,6 @@ fn k2_bg_thread<
         })
         .unwrap();
     });
-    global::force_flush_tracer_provider();
 }
 
 ///
@@ -401,7 +400,6 @@ impl AcquisitionRuntime {
                     }
                 },
                 Err(RecvTimeoutError::Timeout) => {
-                    global::force_flush_tracer_provider();
                     panic!("timeout while waiting for init event");
                 }
                 Err(RecvTimeoutError::Disconnected) => panic!("error while waiting for init event"),
@@ -513,7 +511,6 @@ impl AcquisitionRuntime {
         // self.events
         //     .send(&k2o::events::EventMsg::CancelAcquisition {});
         self.main_events_tx.send(EventMsg::Shutdown {})?;
-        global::force_flush_tracer_provider();
         Ok(())
     }
 
@@ -526,7 +523,6 @@ impl AcquisitionRuntime {
                 return Some(());
             }
         }
-        global::force_flush_tracer_provider();
         Some(())
     }
 

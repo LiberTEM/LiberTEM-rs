@@ -1,13 +1,11 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use common::tracing::get_tracer;
 use crossbeam_channel::TryRecvError;
 use log::debug;
 use opentelemetry::trace::{TraceContextExt, Tracer};
 
-use crate::{
-    events::{AcquisitionParams, EventBus, EventMsg, Events, MessagePump},
-    tracing::get_tracer,
-};
+use crate::events::{AcquisitionParams, EventBus, EventMsg, Events, MessagePump};
 
 ///
 /// Global acquisition state

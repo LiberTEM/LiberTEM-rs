@@ -64,7 +64,7 @@ pub async fn recv_decode_loop<const PACKET_SIZE: usize, const DECODED_SIZE: usiz
                 assert_eq!(number_of_bytes, PACKET_SIZE);
                 let block: K2ISBlock = K2ISBlock::from_bytes(&buf, id as u8, 0);
                 block.validate();
-                channel.send(block).await;
+                channel.send(block).await.unwrap();
                 /*
                 for x in &block.payload {
                     pls = pls + (*x as u64);
@@ -78,7 +78,7 @@ pub async fn recv_decode_loop<const PACKET_SIZE: usize, const DECODED_SIZE: usiz
             // return (); // not really, because it will never execute because of the infinite loop above
         })
     });
-    return Vec::from_iter(join_handles);
+    Vec::from_iter(join_handles)
 }
 
 ///
@@ -91,7 +91,7 @@ async fn recv_and_get_packet_size() -> u32 {
     let mut buf: [u8; HEADER_SIZE] = [0; HEADER_SIZE];
     let (number_of_bytes, _src_addr) = socket.recv_from(&mut buf).await.expect("recv_from failed");
     assert_eq!(number_of_bytes, HEADER_SIZE);
-    return decode_packet_size(&buf);
+    decode_packet_size(&buf)
 }
 
 #[tokio::main]

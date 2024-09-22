@@ -3,12 +3,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use common::tracing::get_tracer;
 use crossbeam_channel::{Receiver, RecvError, Select, SelectedOperation, Sender};
 use human_bytes::human_bytes;
 use ipc_test::SharedSlabAllocator;
 use log::{error, info, warn};
 use opentelemetry::{
-    global,
     trace::{self, Span, TraceContextExt, Tracer},
     Context, Key,
 };
@@ -20,8 +20,6 @@ use crate::{
     events::{AcquisitionParams, AcquisitionSize, EventBus, EventMsg, EventReceiver, Events},
     frame::{FrameMeta, GenericFrame, K2Frame},
     ordering::{FrameOrdering, FrameOrderingResult, FrameWithIdx},
-    tracing::get_tracer,
-    write::{Writer, WriterBuilder},
 };
 
 const PRE_ALLOC_CHUNKS: usize = 400; // pre-allocate chunks of this number of frames
@@ -146,7 +144,6 @@ struct FrameHandler<'a, F: K2Frame> {
     channel: &'a Receiver<AssemblyResult<F>>,
     next_hop_tx: &'a Sender<AcquisitionResult<GenericFrame>>,
     events_rx: &'a EventReceiver,
-    writer_builder: &'a dyn WriterBuilder,
     shm: &'a mut SharedSlabAllocator,
     params: AcquisitionParams,
     ref_frame_id: u32,
@@ -168,7 +165,6 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
         channel: &'a Receiver<AssemblyResult<F>>,
         next_hop_tx: &'a Sender<AcquisitionResult<GenericFrame>>,
         events_rx: &'a EventReceiver,
-        writer_builder: &'a dyn WriterBuilder,
         shm: &'a mut SharedSlabAllocator,
         params: AcquisitionParams,
         ref_frame_id: u32,
@@ -178,7 +174,6 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
             channel,
             next_hop_tx,
             events_rx,
-            writer_builder,
             shm,
             params,
             ref_frame_id,
@@ -207,13 +202,6 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
 
         let frame_shape = F::get_shape_for_binning(&self.params.binning);
         let pixel_size_bytes = F::get_pixel_size_bytes();
-        let mut writer: Box<dyn Writer> = self
-            .writer_builder
-            .open_for_writing(&self.params.size, &frame_shape, pixel_size_bytes)
-            .expect("failed to open for writing");
-        writer
-            .resize(PRE_ALLOC_CHUNKS)
-            .expect("failed to pre-allocate");
 
         loop {
             let oper = sel.select();
@@ -238,7 +226,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                     // to keep a "generation" counter, which is incremented for each
                     // wrap-around or reset. Note that frames may be retired from the
                     // pipeline out-of-order, which the logic needs to account for.
-                    match self.handle_frame(oper, &mut writer) {
+                    match self.handle_frame(oper) {
                         Some(result) => return result,
                         None => continue,
                     }
@@ -249,11 +237,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
     }
 
     #[must_use]
-    fn handle_frame(
-        &mut self,
-        oper: SelectedOperation,
-        writer: &mut Box<dyn Writer>,
-    ) -> Option<HandleFramesResult> {
+    fn handle_frame(&mut self, oper: SelectedOperation) -> Option<HandleFramesResult> {
         let cx = Context::current();
         let span = cx.span();
 
@@ -265,7 +249,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
                     vec![Key::new("frame_id").i64(frame_id as i64)],
                 );
                 if frame.get_acquisition_id() == self.acquisition_id {
-                    self.handle_assembled_frame(frame, writer)
+                    self.handle_assembled_frame(frame)
                 } else {
                     warn!("dropped assembled frame from unrelated acquisition");
                     frame.free_payload(self.shm);
@@ -300,11 +284,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
     }
 
     #[must_use]
-    fn handle_assembled_frame(
-        &mut self,
-        frame: F,
-        writer: &mut Box<dyn Writer>,
-    ) -> Option<HandleFramesResult> {
+    fn handle_assembled_frame(&mut self, frame: F) -> Option<HandleFramesResult> {
         let frame_idx_raw: i64 = frame.get_frame_id() as i64 - self.ref_frame_id as i64;
         let upper_limit = match self.params.size {
             AcquisitionSize::Continuous => u32::MAX,
@@ -313,7 +293,6 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
         if frame_idx_raw >= 0 && (frame_idx_raw as usize) % PRE_ALLOC_CHUNKS == 0 {
             // pre-allocate in chunks of PRE_ALLOC_CHUNKS frames
             let new_size = core::cmp::min(upper_limit as usize, self.counter + PRE_ALLOC_CHUNKS);
-            writer.resize(new_size).expect("could not resize");
         }
         if let Some(frame_idx) =
             frame_in_acquisition(frame.get_frame_id(), self.ref_frame_id, &self.params)
@@ -324,7 +303,7 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
             let frame_size_bytes = frame_shape.0 * frame_shape.1 * pixel_size_bytes;
             for subframe_idx in frame.subframe_indexes(&self.params.binning) {
                 let subframe = frame.get_subframe(subframe_idx, &self.params.binning, self.shm);
-                writer.write_frame(&subframe, out_frame_idx_base + subframe_idx);
+                // writer.write_frame(&subframe, out_frame_idx_base + subframe_idx);
                 self.ref_bytes_written += frame_size_bytes;
                 self.counter += 1;
             }
@@ -487,13 +466,11 @@ pub fn acquisition_loop<F: K2Frame>(
                                     Context::current()
                                         .span()
                                         .add_event("AcquisitionStarted", vec![]);
-                                    let writer_builder = params.writer_settings.get_writer_builder();
                                     let fh = FrameHandler::new(
                                         acquisition_id,
                                         channel,
                                         next_hop_tx,
                                         events_rx,
-                                        &*writer_builder, // lol
                                         &mut shm,
                                         params,
                                         frame_id,
@@ -577,5 +554,4 @@ pub fn acquisition_loop<F: K2Frame>(
             }
         }
     });
-    global::force_flush_tracer_provider();
 }

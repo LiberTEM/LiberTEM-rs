@@ -3,10 +3,10 @@ extern crate crossbeam_channel;
 extern crate jemallocator;
 
 use std::path::Path;
-use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use clap::Parser;
+use common::tracing::tracing_from_env;
 use crossbeam_channel::{unbounded, RecvTimeoutError};
 use ipc_test::SharedSlabAllocator;
 use k2o::acquisition::{acquisition_loop, AcquisitionResult};
@@ -17,10 +17,7 @@ use k2o::block_is::K2ISBlock;
 use k2o::block_summit::K2SummitBlock;
 use k2o::cli_args::{Args, Mode};
 use k2o::control::control_loop;
-use k2o::events::{
-    AcquisitionParams, AcquisitionSize, AcquisitionSync, Events, MessagePump, WriterSettings,
-    WriterType,
-};
+use k2o::events::{AcquisitionParams, AcquisitionSize, AcquisitionSync, Events, MessagePump};
 use k2o::events::{ChannelEventBus, EventBus, EventMsg};
 use k2o::frame::K2Frame;
 use k2o::frame_is::K2ISFrame;
@@ -28,9 +25,7 @@ use k2o::frame_summit::K2SummitFrame;
 use k2o::helpers::CPU_AFF_WRITER;
 use k2o::helpers::{recv_and_get_init, set_cpu_affinity};
 use k2o::recv::{recv_decode_loop, RecvConfig};
-use k2o::tracing::init_tracer;
 use log::info;
-use tokio::runtime::Runtime;
 
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
@@ -174,13 +169,6 @@ fn start_threads<
 
         events.send(&EventMsg::Init {});
 
-        let method: WriterType = args.write_mode.into();
-        let writer_settings = WriterSettings::Enabled {
-            method,
-            filename: args.write_to.to_owned(),
-        };
-        let writer_settings = WriterSettings::Disabled;
-
         events.send(&EventMsg::Arm {
             params: AcquisitionParams {
                 size: AcquisitionSize::NumFrames(1800),
@@ -188,7 +176,6 @@ fn start_threads<
                 //sync: AcquisitionSync::WaitForSync,
                 sync: AcquisitionSync::Immediately,
                 binning: k2o::events::Binning::Bin1x,
-                writer_settings,
             },
             acquisition_id: 0,
         });
@@ -200,34 +187,13 @@ fn start_threads<
 
 pub fn main() {
     let args = Args::parse();
-    let thread_builder = std::thread::Builder::new();
 
     let env = env_logger::Env::default()
         .filter_or("LIBERTEM_K2IS_LOG_LEVEL", "info")
         .write_style_or("LIBERTEM_K2IS_LOG_STYLE", "always");
     env_logger::init_from_env(env);
 
-    // for waiting until tracing is initialized:
-    let barrier = Arc::new(Barrier::new(2));
-    let barrier_bg = Arc::clone(&barrier);
-    thread_builder
-        .name("tracing".to_string())
-        .spawn(move || {
-            let rt = Runtime::new().unwrap();
-
-            rt.block_on(async {
-                init_tracer().unwrap();
-                barrier_bg.wait();
-
-                // do we need to keep this thread alive like this? I think so!
-                // otherwise we get:
-                // OpenTelemetry trace error occurred. cannot send span to the batch span processor because the channel is closed
-                loop {
-                    tokio::time::sleep(Duration::from_secs(10)).await;
-                }
-            });
-        })
-        .unwrap();
+    tracing_from_env("k2o".to_owned());
 
     let mode = match args.mode {
         None => {
@@ -242,7 +208,6 @@ pub fn main() {
         Some(mode) => mode,
     };
 
-    info!("writing to {}", args.write_to);
     let events: Events = ChannelEventBus::new();
     let pump = MessagePump::new(&events);
 

@@ -34,6 +34,9 @@ pub fn get_tracer() -> BoxedTracer {
 }
 
 pub fn tracing_from_env(service_name: String) {
+    // FIXME: add an atexit handler calling `global::shutdown_tracer_provider`
+    // so we don't lose any spans at shutdown
+
     // example OTEL config via environment variables:
     // OTEL_ENABLE=1
     // OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317

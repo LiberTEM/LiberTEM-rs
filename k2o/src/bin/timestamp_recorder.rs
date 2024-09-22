@@ -11,7 +11,7 @@ use k2o::{
     block_summit::K2SummitBlock,
     events::{
         AcquisitionParams, AcquisitionSize, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
-        Events, WriterSettings,
+        Events,
     },
     recv::{recv_decode_loop, RecvConfig},
 };
@@ -99,7 +99,6 @@ fn start_threads<
                 size: AcquisitionSize::Continuous,
                 sync: AcquisitionSync::Immediately,
                 binning: k2o::events::Binning::Bin1x,
-                writer_settings: WriterSettings::disabled(),
             },
             acquisition_id: 0,
         });

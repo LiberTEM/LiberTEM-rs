@@ -1,114 +1,38 @@
+pub mod main_py;
 mod shm_helpers;
 
+use common::tracing::{get_tracer, span_from_py, tracing_from_env};
 use env_logger::Builder;
 use ipc_test::SharedSlabAllocator;
 use log::info;
+use opentelemetry::trace::Tracer;
 use shm_helpers::{CamClient, FrameRef};
 use std::{
     path::Path,
-    sync::{Arc, Barrier},
     time::{Duration, Instant},
 };
-use tokio::runtime::Runtime;
 
 use k2o::runtime::{AcquisitionRuntimeConfig, AddrConfig, RuntimeError, WaitResult};
 
 use k2o::{
     acquisition::AcquisitionResult,
-    events::{AcquisitionParams, AcquisitionSync, WriterSettings, WriterTypeError},
+    events::{AcquisitionParams, AcquisitionSync},
     frame::GenericFrame,
     params::CameraMode,
     runtime::AcquisitionRuntime,
-    tracing::{get_tracer, init_tracer},
 };
 
-#[cfg(feature = "hdf5")]
-use k2o::write::HDF5WriterBuilder;
-
-use opentelemetry::{
-    trace::{self, SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer},
-    Context, ContextGuard,
-};
 use pyo3::{exceptions, prelude::*, types::PyType};
 
-fn tracing_thread() {
-    let thread_builder = std::thread::Builder::new();
-
-    // for waiting until tracing is initialized:
-    let barrier = Arc::new(Barrier::new(2));
-    let barrier_bg = Arc::clone(&barrier);
-
-    thread_builder
-        .name("tracing".to_string())
-        .spawn(move || {
-            let rt = Runtime::new().unwrap();
-
-            rt.block_on(async {
-                init_tracer().unwrap();
-                barrier_bg.wait();
-
-                // do we need to keep this thread alive like this? I think so!
-                // otherwise we get:
-                // OpenTelemetry trace error occurred. cannot send span to the batch span processor because the channel is closed
-                loop {
-                    tokio::time::sleep(Duration::from_secs(10)).await;
-                }
-            });
-        })
-        .unwrap();
-
-    barrier.wait();
-}
-
-fn get_py_span_context(py: Python) -> PyResult<SpanContext> {
-    let span_context_py = PyModule::import(py, "opentelemetry.trace")?
-        .getattr("get_current_span")?
-        .call0()?
-        .getattr("get_span_context")?
-        .call0()?;
-
-    let trace_id_py: u128 = span_context_py.getattr("trace_id")?.extract()?;
-    let span_id_py: u64 = span_context_py.getattr("span_id")?.extract()?;
-    let trace_flags_py: u8 = span_context_py.getattr("trace_flags")?.extract()?;
-
-    let trace_id = TraceId::from_bytes(trace_id_py.to_be_bytes());
-    let span_id = SpanId::from_bytes(span_id_py.to_be_bytes());
-    let trace_flags = TraceFlags::new(trace_flags_py);
-
-    // FIXME: Python has a list of something here, wtf is that & do we need it?
-    let trace_state = TraceState::default();
-
-    let span_context = SpanContext::new(trace_id, span_id, trace_flags, false, trace_state);
-
-    Ok(span_context)
-}
-
-fn get_tracing_context(py: Python) -> PyResult<Context> {
-    let span_context = get_py_span_context(py)?;
-    let context = Context::default().with_remote_span_context(span_context);
-
-    Ok(context)
-}
-
-fn span_from_py(py: Python, name: &str) -> PyResult<ContextGuard> {
-    let tracer = get_tracer();
-    let context = get_tracing_context(py)?;
-    let span = tracer.start_with_context(name.to_string(), &context);
-    Ok(trace::mark_span_as_active(span))
-}
-
 #[pymodule]
-fn libertem_k2is(_py: Python, m: &PyModule) -> PyResult<()> {
-    // FIXME: add an atexit handler calling `global::shutdown_tracer_provider`
-    // so we don't lose any spans at shutdown
-    tracing_thread();
+fn libertem_k2is(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    tracing_from_env("libertem-k2is".to_owned());
 
     m.add_class::<Acquisition>()?;
     m.add_class::<Cam>()?;
     m.add_class::<SyncFlags>()?;
     m.add_class::<PyMode>()?;
     m.add_class::<PyAcquisitionParams>()?;
-    m.add_class::<PyWriter>()?;
 
     m.add_class::<CamClient>()?;
     m.add_class::<FrameRef>()?;
@@ -169,7 +93,7 @@ impl From<PyMode> for CameraMode {
 #[pymethods]
 impl PyMode {
     #[classmethod]
-    fn from_string(_cls: &PyType, mode: &str) -> PyResult<Self> {
+    fn from_string(_cls: &Bound<'_, PyType>, mode: &str) -> PyResult<Self> {
         match mode.to_lowercase().as_ref() {
             "is" => Ok(Self::IS),
             "summit" => Ok(Self::Summit),
@@ -181,57 +105,18 @@ impl PyMode {
     }
 }
 
-#[pyclass(name = "Writer")]
-#[derive(Debug, Clone)]
-struct PyWriter {
-    pub settings: WriterSettings,
-}
-
-impl PyWriter {
-    pub fn get_setttings(&self) -> &WriterSettings {
-        &self.settings
-    }
-}
-
-#[pymethods]
-impl PyWriter {
-    #[new]
-    fn new(filename: &str, method: &str) -> PyResult<Self> {
-        let settings = match WriterSettings::new(method, filename) {
-            Ok(s) => s,
-            Err(WriterTypeError::InvalidWriterType) => {
-                let msg = format!(
-                    "unknown method {method}, choose one: mmap, direct, hdf5 (optional feature)"
-                );
-                return Err(exceptions::PyValueError::new_err(msg));
-            }
-        };
-
-        Ok(PyWriter { settings })
-    }
-}
-
 #[pyclass(name = "AcquisitionParams")]
 #[derive(Debug, Clone)]
 struct PyAcquisitionParams {
     pub size: Option<u32>,
     pub sync: SyncFlags,
-    pub writer_settings: WriterSettings,
 }
 
 #[pymethods]
 impl PyAcquisitionParams {
     #[new]
-    fn new(sync: SyncFlags, size: Option<u32>, writer: Option<PyWriter>) -> Self {
-        let writer_settings = match writer {
-            None => WriterSettings::disabled(),
-            Some(py_writer) => py_writer.get_setttings().clone(),
-        };
-        PyAcquisitionParams {
-            size,
-            sync,
-            writer_settings,
-        }
+    fn new(sync: SyncFlags, size: Option<u32>) -> Self {
+        PyAcquisitionParams { size, sync }
     }
 }
 
@@ -576,7 +461,6 @@ impl Cam {
             size: p.size.into(),
             sync: p.sync.into(),
             binning: k2o::events::Binning::Bin1x,
-            writer_settings: p.writer_settings,
         };
         if let Some(runtime) = &mut self.runtime {
             if runtime.arm(acq_params).is_err() {
