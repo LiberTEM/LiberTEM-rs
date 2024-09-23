@@ -1,5 +1,4 @@
 extern crate crossbeam;
-extern crate crossbeam_channel;
 
 use k2o::{block::K2Block, block_is::K2ISBlock};
 use std::net::Ipv4Addr;

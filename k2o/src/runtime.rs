@@ -12,7 +12,7 @@ use crate::helpers::{set_cpu_affinity, CPU_AFF_WRITER};
 use crate::params::CameraMode;
 use crate::recv::{recv_decode_loop, RecvConfig};
 use common::tracing::get_tracer;
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
+use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
 use ipc_test::{SHMHandle, SharedSlabAllocator};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -35,7 +35,7 @@ pub struct AssemblyConfig {
 }
 
 impl AssemblyConfig {
-    fn new(timeout: Duration, realtime: bool) -> Self {
+    pub fn new(timeout: Duration, realtime: bool) -> Self {
         Self { timeout, realtime }
     }
 }

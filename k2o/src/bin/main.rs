@@ -1,5 +1,4 @@
 extern crate crossbeam;
-extern crate crossbeam_channel;
 extern crate jemallocator;
 
 use std::path::Path;
@@ -7,7 +6,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use common::tracing::tracing_from_env;
-use crossbeam_channel::{unbounded, RecvTimeoutError};
+use crossbeam::channel::{unbounded, RecvTimeoutError};
 use ipc_test::SharedSlabAllocator;
 use k2o::acquisition::{acquisition_loop, AcquisitionResult};
 use k2o::assemble::{assembler_main, AssemblyResult};

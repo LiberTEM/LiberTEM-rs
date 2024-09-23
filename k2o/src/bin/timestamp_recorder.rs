@@ -4,7 +4,7 @@ use std::{
 };
 
 use clap::Parser;
-use crossbeam_channel::unbounded;
+use crossbeam::channel::unbounded;
 use k2o::{
     block::{BlockRouteInfo, K2Block},
     block_is::K2ISBlock,
@@ -182,7 +182,7 @@ fn start_threads<
     .unwrap();
 }
 
-#[derive(clap::ArgEnum, Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum Mode {
     IS,
     Summit,
@@ -192,7 +192,7 @@ pub enum Mode {
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
     /// Camera mode
-    #[clap(short, long, arg_enum, default_value = "is")]
+    #[clap(short, long, value_enum, default_value = "is")]
     pub mode: Mode,
 
     /// Duration to run the experiment, in seconds

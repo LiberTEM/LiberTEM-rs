@@ -25,6 +25,7 @@ num = "0.4.3"
 zerocopy = "0.7.35"
 serde = "1.0.210"
 thiserror = "1.0.63"
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 
 [features]
 extension-module = ["pyo3/extension-module"]

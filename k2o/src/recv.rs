@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use log::{debug, error, info, warn};
 
 use crate::{

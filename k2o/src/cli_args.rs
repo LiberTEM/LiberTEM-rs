@@ -1,6 +1,6 @@
 use clap::Parser;
 
-#[derive(clap::ArgEnum, Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum Mode {
     IS,
     Summit,
@@ -11,7 +11,7 @@ pub enum Mode {
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
     /// Camera mode, determined automatically from first frame if not given
-    #[clap(short, long, arg_enum)]
+    #[clap(short, long, value_enum)]
     pub mode: Option<Mode>,
 
     /// Disable allocation re-use

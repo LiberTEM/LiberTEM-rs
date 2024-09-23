@@ -4,7 +4,7 @@ use std::{
 };
 
 use common::tracing::get_tracer;
-use crossbeam_channel::{Receiver, RecvError, Select, SelectedOperation, Sender};
+use crossbeam::channel::{Receiver, RecvError, Select, SelectedOperation, Sender};
 use human_bytes::human_bytes;
 use ipc_test::SharedSlabAllocator;
 use log::{error, info, warn};
@@ -111,6 +111,8 @@ pub fn frame_in_acquisition(
     }
 }
 
+/// Take `result` and either directly send it on to the `next_hop_tx` channel,
+/// or buffer it in `ordering`.
 fn next_hop_ordered(
     ordering: &mut FrameOrdering,
     next_hop_tx: &Sender<AcquisitionResult<GenericFrame>>,

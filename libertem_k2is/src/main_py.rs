@@ -21,7 +21,12 @@ fn libertem_k2is(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     tracing_from_env("libertem-k2is".to_owned());
 
-    // FIXME: register Python types here
+    m.add_class::<K2Connection>()?;
+    m.add_class::<K2FrameStack>()?;
+    // m.add_class::<CamClient>()?; FIXME
+    m.add_class::<_PyK2CamClient>()?;
+    m.add_class::<K2AcquisitionConfig>()?;
+
     Ok(())
 }
 
@@ -56,7 +61,7 @@ impl K2Connection {
         // to have some slack, we need some more memory in IS mode:
         let mode = mode.unwrap_or(K2Mode::IS);
         let num_slots = match mode {
-            K2Mode::IS => 1600,    // about 2 seconds
+            K2Mode::IS => 1600,    // about 2 seconds of buffering
             K2Mode::Summit => 100, // TODO: update with realistic value here
         };
 
@@ -67,7 +72,9 @@ impl K2Connection {
             num_slots,
             huge.unwrap_or(false),
             shm_handle_path.to_owned(),
-            frame_stack_size,
+            1, // FIXME: pass down `frame_stack_size` once a value != 1 is supported
+            false,
+            false,
         );
 
         let shm =

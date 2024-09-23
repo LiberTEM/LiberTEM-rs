@@ -1,5 +1,6 @@
 use std::{ops::Range, time::Instant};
 
+use common::frame_stack::FrameStackHandle;
 use ipc_test::{SharedSlabAllocator, Slot, SlotInfo};
 use multiversion::multiversion;
 use ndarray::{s, ArrayView2, ArrayViewMut2};
@@ -309,6 +310,10 @@ impl GenericFrame {
 
     pub fn into_slot(self, shm: &SharedSlabAllocator) -> Slot {
         shm.get(self.payload.slot_idx)
+    }
+
+    pub fn into_payload(self) -> SlotInfo {
+        self.payload
     }
 
     pub fn free_payload(self, shm: &mut SharedSlabAllocator) {

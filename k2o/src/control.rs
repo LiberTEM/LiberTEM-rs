@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::tracing::get_tracer;
-use crossbeam_channel::TryRecvError;
+use crossbeam::channel::TryRecvError;
 use log::debug;
 use opentelemetry::trace::{TraceContextExt, Tracer};
 

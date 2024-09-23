@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{select, unbounded, Receiver, RecvError, SendError, Sender};
+use crossbeam::channel::{select, unbounded, Receiver, RecvError, SendError, Sender};
 use log::debug;
 
 pub trait EventBus<T: Clone + Debug> {

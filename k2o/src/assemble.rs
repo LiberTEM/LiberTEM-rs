@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender};
+use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender};
 use ipc_test::SharedSlabAllocator;
 use log::{debug, error, info, warn};
 use opentelemetry::Context;

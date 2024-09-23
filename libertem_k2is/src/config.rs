@@ -1,6 +1,8 @@
 use common::generic_connection::{AcquisitionConfig, DetectorConnectionConfig};
 use pyo3::pyclass;
 
+use crate::frame_meta::K2FrameType;
+
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct K2AcquisitionConfig {
@@ -36,17 +38,30 @@ impl K2Mode {
             K2Mode::Summit => (3840, 4096),
         }
     }
+
+    pub fn get_frame_type(&self) -> K2FrameType {
+        match &self {
+            K2Mode::IS => K2FrameType::IS,
+            K2Mode::Summit => K2FrameType::Summit,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct K2DetectorConnectionConfig {
-    mode: K2Mode,
+    pub mode: K2Mode,
 
     /// IP address of the local interface that receives data from the top detector
-    local_addr_top: String,
+    pub local_addr_top: String,
 
     /// IP address of the local interface that receives data from the bottom detector
-    local_addr_bottom: String,
+    pub local_addr_bottom: String,
+
+    /// Run frame assembly in a prioritized thread
+    pub assembly_realtime: bool,
+
+    /// Run UDP receivers in prioritized threads
+    pub recv_realtime: bool,
 
     /// Number of frames per frame stack
     frame_stack_size: usize,
@@ -65,6 +80,8 @@ impl K2DetectorConnectionConfig {
         enable_huge_pages: bool,
         shm_handle_path: String,
         frame_stack_size: usize,
+        recv_realtime: bool,
+        assembly_realtime: bool,
     ) -> Self {
         Self {
             mode,
@@ -74,6 +91,8 @@ impl K2DetectorConnectionConfig {
             enable_huge_pages,
             shm_handle_path,
             frame_stack_size,
+            recv_realtime,
+            assembly_realtime,
         }
     }
 }

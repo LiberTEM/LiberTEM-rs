@@ -11,7 +11,13 @@ pub enum K2FrameType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct K2FrameMeta {
     acquisition_id: usize,
+
+    /// the frame id as received
     frame_id: u32,
+
+    /// the frame index in the acquisition
+    frame_idx: u32,
+
     // FIXME: replace with the proper type
     // created_timestamp: Instant,
     frame_type: K2FrameType,
@@ -22,12 +28,14 @@ impl K2FrameMeta {
     pub fn new(
         acquisition_id: usize,
         frame_id: u32,
+        frame_idx: u32,
         frame_type: K2FrameType,
         bytes_per_pixel: usize,
     ) -> Self {
         Self {
             acquisition_id,
             frame_id,
+            frame_idx,
             frame_type,
             bytes_per_pixel,
         }
