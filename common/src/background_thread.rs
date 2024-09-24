@@ -19,7 +19,9 @@ pub enum ReceiverMsg<M: FrameMeta, P: AcquisitionConfig> {
 
     /// The acquisition is finished, `frame_stack` contains the remaining frames
     /// that were received.
-    Finished { frame_stack: FrameStackHandle<M> },
+    Finished {
+        frame_stack: Option<FrameStackHandle<M>>,
+    },
 
     /// The acquisition was cancelled, as requested
     /// by `ControlMsg::CancelAcquisition`

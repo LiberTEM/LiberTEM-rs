@@ -327,7 +327,9 @@ where
                     ));
                 }
                 ReceiverMsg::Finished { frame_stack } => {
-                    frame_stack.free_slot(&mut self.shm)?;
+                    if let Some(frame_stack) = frame_stack {
+                        frame_stack.free_slot(&mut self.shm)?;
+                    }
                     return Err(ConnectionError::UnexpectedMessage(
                         "ReceiverMsg::Finished in wait_for_arm".to_owned(),
                     ));
@@ -417,7 +419,9 @@ where
                 }
                 ReceiverMsg::Finished { frame_stack } => {
                     warn!("wait_for_status: ignoring FrameStackHandle received in ReceiverMsg::Finished message");
-                    frame_stack.free_slot(&mut self.shm)?;
+                    if let Some(frame_stack) = frame_stack {
+                        frame_stack.free_slot(&mut self.shm)?;
+                    }
                 }
                 ReceiverMsg::FatalError { error } => {
                     return Err(ConnectionError::FatalError(error));
@@ -509,11 +513,13 @@ where
                     // it does _not_ mean that the data consumer has processed them all.
 
                     // do stats update here to make sure we count the last frame stack!
-                    self.stats.count_stats_item(&frame_stack);
+                    if let Some(frame_stack) = &frame_stack {
+                        self.stats.count_stats_item(frame_stack);
+                    }
                     self.stats.log_stats();
                     self.stats.reset();
 
-                    return Ok(Some(frame_stack));
+                    return Ok(frame_stack);
                 }
                 ReceiverMsg::FrameStack { frame_stack } => {
                     self.stats.count_stats_item(&frame_stack);

@@ -26,6 +26,8 @@ use k2o::{
 
 use pyo3::{exceptions, prelude::*, types::PyType};
 
+/*
+
 #[pymodule]
 fn libertem_k2is(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     tracing_from_env("libertem-k2is".to_owned());
@@ -492,3 +494,5 @@ impl Cam {
         }
     }
 }
+
+*/

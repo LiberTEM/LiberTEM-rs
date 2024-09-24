@@ -492,13 +492,13 @@ fn acquisition(
 
             let handle = frame_stack.writing_done(shm)?;
             from_thread_s.send(ReceiverMsg::Finished {
-                frame_stack: handle,
+                frame_stack: Some(handle),
             })?;
 
             if !extra_frame_stack.is_empty() {
                 let handle = extra_frame_stack.writing_done(shm)?;
                 from_thread_s.send(ReceiverMsg::Finished {
-                    frame_stack: handle,
+                    frame_stack: Some(handle),
                 })?;
             } else {
                 // let's not leak the `extra_frame_stack`:
@@ -507,6 +507,7 @@ fn acquisition(
                 // in case of error handling.
                 // ah, but it can't, because it doesn't have a reference to `shm`! hmm
                 extra_frame_stack.free_empty_frame_stack(shm)?;
+                from_thread_s.send(ReceiverMsg::Finished { frame_stack: None })?;
             }
 
             return Ok(());

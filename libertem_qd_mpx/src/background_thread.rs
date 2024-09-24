@@ -472,7 +472,7 @@ fn acquisition(
             info!("done in {elapsed:?}");
             let handle = frame_stack.writing_done()?;
             from_thread_s.send(ReceiverMsg::Finished {
-                frame_stack: handle,
+                frame_stack: Some(handle),
             })?;
 
             return Ok(());

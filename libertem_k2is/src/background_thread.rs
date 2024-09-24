@@ -8,14 +8,17 @@ use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
     frame_stack::FrameStackHandle,
 };
-use crossbeam::channel::unbounded;
+use crossbeam::channel::{unbounded, RecvTimeoutError as CRecvTimeoutError};
 use ipc_test::SharedSlabAllocator;
 use k2o::{
     acquisition::AcquisitionResult,
     block::K2Block,
     block_is::K2ISBlock,
     block_summit::K2SummitBlock,
-    events::{ChannelEventBus, Events, MessagePump},
+    events::{
+        AcquisitionParams, AcquisitionSize, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
+        Events, MessagePump,
+    },
     frame::GenericFrame,
     frame_is::K2ISFrame,
     frame_summit::K2SummitFrame,
@@ -79,11 +82,11 @@ fn background_thread(
     config: &K2DetectorConnectionConfig,
     to_thread_r: &Receiver<K2ControlMsg>,
     from_thread_s: &Sender<K2ReceiverMsg>,
-    shm: SharedSlabAllocator,
+    mut shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     let events: Events = ChannelEventBus::new();
     let pump = MessagePump::new(&events);
-    // let (main_events_tx, main_events_rx) = pump.get_ext_channels();
+    let (main_events_tx, main_events_rx) = pump.get_ext_channels();
 
     let (tx_writer_to_consumer, rx_writer_to_consumer) =
         unbounded::<AcquisitionResult<GenericFrame>>();
@@ -117,12 +120,48 @@ fn background_thread(
         )),
     };
 
+    loop {
+        match main_events_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(EventMsg::Init) => {
+                info!("init done");
+                break;
+            }
+            Ok(e) => {
+                info!("unexpected event: {e:?}");
+                continue;
+            }
+            Err(_timeout) => {
+                info!("still waiting for init...");
+                continue;
+            }
+        }
+    }
+
+    from_thread_s.send(ReceiverMsg::ReceiverArmed).unwrap();
+
     'outer: loop {
         loop {
             // control: main threads tells us what to do.
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
                 Ok(ControlMsg::StartAcquisitionPassive) => {
+                    main_events_tx
+                        .send(EventMsg::Arm {
+                            params: AcquisitionParams {
+                                size: AcquisitionSize::NumFrames(200),
+                                sync: AcquisitionSync::Immediately,
+                                binning: k2o::events::Binning::Bin1x,
+                            },
+                            acquisition_id: 1,
+                        })
+                        .unwrap();
+
+                    from_thread_s
+                        .send(ReceiverMsg::AcquisitionStart {
+                            pending_acquisition: K2AcquisitionConfig::new(200),
+                        })
+                        .unwrap();
+
                     'acquisition: loop {
                         match rx_writer_to_consumer.recv_timeout(Duration::from_millis(120)) {
                             Ok(AcquisitionResult::Frame(f, idx)) => {
@@ -145,12 +184,30 @@ fn background_thread(
                                 acquisition_id,
                             }) => {
                                 info!("acquisition {acquisition_id} done with {dropped} frames dropped");
+                                from_thread_s
+                                    .send(ReceiverMsg::Finished { frame_stack: None })
+                                    .unwrap();
                                 break 'acquisition;
+                            }
+                            Ok(AcquisitionResult::DoneAborted {
+                                dropped,
+                                acquisition_id,
+                            }) => {
+                                warn!("aborted acquisition {acquisition_id}");
+                                from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
+                                break 'acquisition;
+                            }
+                            Ok(AcquisitionResult::DoneShuttingDown { acquisition_id }) => {
+                                warn!("shutting down; current acquisition {acquisition_id}");
+                                from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
+                                break 'outer;
                             }
                             Ok(result) => {
                                 info!("some result received: {result:?}");
                             }
-                            Err(e) => todo!(),
+                            Err(e) => {
+                                continue 'acquisition;
+                            }
                         }
                     }
 
@@ -196,6 +253,7 @@ fn background_thread(
             }
         }
     }
+    main_events_tx.send(EventMsg::Shutdown).unwrap();
     inner_bg_thread.unwrap().join().unwrap();
     debug!("background_thread: is done");
     Ok(())

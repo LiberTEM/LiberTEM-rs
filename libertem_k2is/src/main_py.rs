@@ -23,6 +23,7 @@ fn libertem_k2is(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<K2Connection>()?;
     m.add_class::<K2FrameStack>()?;
+    m.add_class::<K2Mode>()?;
     // m.add_class::<CamClient>()?; FIXME
     m.add_class::<_PyK2CamClient>()?;
     m.add_class::<K2AcquisitionConfig>()?;
@@ -109,6 +110,8 @@ impl K2Connection {
     }
 
     fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
+        let _trace_guard = span_from_py(py, "K2Connection::start_passive")?;
+
         self.conn.start_passive(timeout, py)
     }
 

@@ -9,6 +9,12 @@ pub struct K2AcquisitionConfig {
     num_frames: usize,
 }
 
+impl K2AcquisitionConfig {
+    pub fn new(num_frames: usize) -> Self {
+        Self { num_frames }
+    }
+}
+
 impl AcquisitionConfig for K2AcquisitionConfig {
     fn num_frames(&self) -> usize {
         self.num_frames

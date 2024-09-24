@@ -18,7 +18,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use log::debug;
+use log::{debug, info};
 use opentelemetry::trace::Tracer;
 use opentelemetry::Context;
 
@@ -94,6 +94,7 @@ fn k2_bg_thread<
         let first_block_counter = Arc::new((Mutex::new(0u8), Condvar::new()));
 
         crossbeam::scope(|s| {
+            info!("spawning recv threads...");
             let (assembly_tx, assembly_rx) = unbounded::<(B, BlockRouteInfo)>();
             for sector_id in ids.clone() {
                 let tx = assembly_tx.clone();
@@ -132,6 +133,8 @@ fn k2_bg_thread<
             let asm_ctx = ctx.clone();
             let asm_shm_handle = shm.get_handle().os_handle;
 
+            info!("spawning assembly threads...");
+
             // assembly main thread:
             s.builder()
                 .name("assembly".to_string())
@@ -158,6 +161,8 @@ fn k2_bg_thread<
 
             let acq_shm_handle = shm.get_handle();
 
+            info!("spawning acquisition threads...");
+
             // acquisition/writer thread:
             let w1rx = full_frames_rx;
             let writer_events_rx = events.subscribe();
@@ -181,13 +186,20 @@ fn k2_bg_thread<
 
             let (lock, cvar) = &*first_block_counter;
 
+            info!("waiting for first blocks...");
+
             drop(
                 cvar.wait_while(lock.lock().unwrap(), |counter| {
                     (*counter as usize) < ids.len()
                 })
                 .unwrap(),
             );
+
+            info!("sending Init event");
+
             events.send(&EventMsg::Init {});
+
+            info!("starting control loop...");
 
             control_loop(events, &Some(pump));
         })

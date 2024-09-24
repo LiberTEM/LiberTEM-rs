@@ -402,7 +402,9 @@ fn acquisition(
 
             let handle = frame_stack.writing_done(shm);
             match handle {
-                Ok(frame_stack) => from_thread_s.send(ReceiverMsg::Finished { frame_stack })?,
+                Ok(frame_stack) => from_thread_s.send(ReceiverMsg::Finished {
+                    frame_stack: Some(frame_stack),
+                })?,
                 Err(FrameStackWriteError::Empty) => {
                     warn!("acquisition: unexpected empty frame stack")
                 }
