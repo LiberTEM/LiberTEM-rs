@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use clap::Parser;
+use common::background_thread::AcquisitionSize;
 use common::tracing::tracing_from_env;
 use crossbeam::channel::{unbounded, RecvTimeoutError};
 use ipc_test::SharedSlabAllocator;
@@ -16,7 +17,7 @@ use k2o::block_is::K2ISBlock;
 use k2o::block_summit::K2SummitBlock;
 use k2o::cli_args::{Args, Mode};
 use k2o::control::control_loop;
-use k2o::events::{AcquisitionParams, AcquisitionSize, AcquisitionSync, Events, MessagePump};
+use k2o::events::{AcquisitionParams, AcquisitionSync, Events, MessagePump};
 use k2o::events::{ChannelEventBus, EventBus, EventMsg};
 use k2o::frame::K2Frame;
 use k2o::frame_is::K2ISFrame;

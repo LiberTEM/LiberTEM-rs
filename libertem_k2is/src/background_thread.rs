@@ -1,14 +1,16 @@
 use std::{
-    sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender},
+    sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError},
     thread::JoinHandle,
     time::Duration,
 };
 
 use common::{
-    background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
+    background_thread::{AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ConcreteAcquisitionSize, ControlMsg, ReceiverMsg},
     frame_stack::FrameStackHandle,
 };
-use crossbeam::channel::{unbounded, RecvTimeoutError as CRecvTimeoutError};
+use crossbeam::channel::{
+    unbounded, Receiver as CReceiver, RecvTimeoutError as CRecvTimeoutError, Sender as CSender,
+};
 use ipc_test::SharedSlabAllocator;
 use k2o::{
     acquisition::AcquisitionResult,
@@ -16,7 +18,7 @@ use k2o::{
     block_is::K2ISBlock,
     block_summit::K2SummitBlock,
     events::{
-        AcquisitionParams, AcquisitionSize, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
+        AcquisitionParams, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
         Events, MessagePump,
     },
     frame::GenericFrame,
@@ -37,35 +39,6 @@ type K2ControlMsg = ControlMsg<()>;
 
 type K2ReceiverMsg = ReceiverMsg<K2FrameMeta, K2AcquisitionConfig>;
 
-pub struct K2BackgroundThread {
-    bg_thread: JoinHandle<()>,
-    to_thread: Sender<ControlMsg<()>>,
-    from_thread: Receiver<ReceiverMsg<K2FrameMeta, K2AcquisitionConfig>>,
-}
-
-impl BackgroundThread for K2BackgroundThread {
-    type FrameMetaImpl = K2FrameMeta;
-    type AcquisitionConfigImpl = K2AcquisitionConfig;
-    type ExtraControl = ();
-
-    fn channel_to_thread(&mut self) -> &mut Sender<ControlMsg<Self::ExtraControl>> {
-        &mut self.to_thread
-    }
-
-    fn channel_from_thread(
-        &mut self,
-    ) -> &mut Receiver<ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>> {
-        &mut self.from_thread
-    }
-
-    fn join(self) {
-        if let Err(e) = self.bg_thread.join() {
-            // FIXME: should we have an error boundary here instead and stop the panic?
-            std::panic::resume_unwind(e)
-        }
-    }
-}
-
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AcquisitionError {
     #[error("cancelled by the user")]
@@ -76,6 +49,121 @@ pub enum AcquisitionError {
 
     #[error("thread stopped")]
     ThreadStopped,
+
+    #[error("receiver state error: {msg}")]
+    StateError { msg: String },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PassiveAcquisitionControlFlow {
+    Shutdown,
+    Continue,
+}
+
+/// With a running acquisition, check for control messages;
+/// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
+fn check_for_control(control_channel: &Receiver<K2ControlMsg>) -> Result<(), AcquisitionError> {
+    match control_channel.try_recv() {
+        Ok(m @ ControlMsg::StartAcquisitionPassive { .. }) => Err(AcquisitionError::StateError {
+            msg: format!("received {m:?} while an acquisition was already running")
+        }),
+        Ok(ControlMsg::StopThread) => Err(AcquisitionError::ThreadStopped),
+        Ok(ControlMsg::SpecializedControlMsg { msg: _ }) => {
+            panic!("unsupported SpecializedControlMsg")
+        }
+        Ok(ControlMsg::CancelAcquisition) => Err(AcquisitionError::Cancelled),
+        Err(TryRecvError::Disconnected) => Err(AcquisitionError::Disconnected),
+        Err(TryRecvError::Empty) => Ok(()),
+    }
+}
+
+/// Start a passive acquisition. This always synchronizes with the sync flag,
+/// meaning with the STEM scan.
+fn passive_acquisition(
+    acquisition_size: AcquisitionSize,
+    config: &K2DetectorConnectionConfig,
+    to_thread_r: &Receiver<K2ControlMsg>,
+    from_thread_s: &Sender<K2ReceiverMsg>,
+    main_events_tx: &CSender<EventMsg>,
+    rx_writer_to_consumer: &CReceiver<AcquisitionResult<GenericFrame>>,
+) -> Result<PassiveAcquisitionControlFlow, AcquisitionError> {
+    main_events_tx
+        .send(EventMsg::Arm {
+            params: AcquisitionParams {
+                size: acquisition_size,
+                sync: AcquisitionSync::Immediately,
+                binning: k2o::events::Binning::Bin1x,
+            },
+            acquisition_id: 1,
+        })
+        .unwrap();
+
+    let effective_frame_shape = config.effective_shape();
+
+    let acq_size = match acquisition_size {
+        AcquisitionSize::Auto => ConcreteAcquisitionSize::Continuous,
+        AcquisitionSize::NumFrames(n) => ConcreteAcquisitionSize::NumFrames(n),
+        AcquisitionSize::Continuous => ConcreteAcquisitionSize::Continuous,
+    };
+
+    from_thread_s
+        .send(ReceiverMsg::AcquisitionStart {
+            pending_acquisition: K2AcquisitionConfig::new(acq_size, effective_frame_shape),
+        })
+        .unwrap();
+
+    'acquisition: loop {
+        check_for_control(&to_thread_r)?;
+
+        match rx_writer_to_consumer.recv_timeout(Duration::from_millis(120)) {
+            Ok(AcquisitionResult::Frame(f, idx)) => {
+                let meta = vec![K2FrameMeta::new(
+                    f.acquisition_id,
+                    f.frame_id,
+                    idx,
+                    config.mode.get_frame_type(),
+                    config.mode.get_bytes_per_pixel(),
+                    config.crop_to_image_data,
+                )];
+                let slot_info = f.into_payload();
+                let frame_stack = FrameStackHandle::new(slot_info, meta, vec![0], 0);
+                from_thread_s
+                    .send(ReceiverMsg::FrameStack { frame_stack })
+                    .unwrap();
+            }
+            Ok(AcquisitionResult::DoneSuccess {
+                dropped,
+                acquisition_id,
+            }) => {
+                info!("acquisition {acquisition_id} done with {dropped} frames dropped");
+                from_thread_s
+                    .send(ReceiverMsg::Finished { frame_stack: None })
+                    .unwrap();
+                break 'acquisition;
+            }
+            Ok(AcquisitionResult::DoneAborted {
+                dropped,
+                acquisition_id,
+            }) => {
+                warn!("aborted acquisition {acquisition_id}");
+                from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
+                break 'acquisition;
+            }
+            Ok(AcquisitionResult::DoneShuttingDown { acquisition_id }) => {
+                warn!("shutting down; current acquisition {acquisition_id}");
+                from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
+                return Ok(PassiveAcquisitionControlFlow::Shutdown);
+            }
+            Ok(result) => {
+                info!("some result received: {result:?}");
+            }
+            Err(e) => {
+                continue 'acquisition;
+            }
+        }
+    }
+
+    Ok(PassiveAcquisitionControlFlow::Continue)
 }
 
 fn background_thread(
@@ -144,94 +232,41 @@ fn background_thread(
             // control: main threads tells us what to do.
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
-                Ok(ControlMsg::StartAcquisitionPassive) => {
-                    main_events_tx
-                        .send(EventMsg::Arm {
-                            params: AcquisitionParams {
-                                size: AcquisitionSize::NumFrames(200),
-                                sync: AcquisitionSync::Immediately,
-                                binning: k2o::events::Binning::Bin1x,
-                            },
-                            acquisition_id: 1,
-                        })
-                        .unwrap();
-
-                    from_thread_s
-                        .send(ReceiverMsg::AcquisitionStart {
-                            pending_acquisition: K2AcquisitionConfig::new(200),
-                        })
-                        .unwrap();
-
-                    'acquisition: loop {
-                        match rx_writer_to_consumer.recv_timeout(Duration::from_millis(120)) {
-                            Ok(AcquisitionResult::Frame(f, idx)) => {
-                                let meta = vec![K2FrameMeta::new(
-                                    f.acquisition_id,
-                                    f.frame_id,
-                                    idx,
-                                    config.mode.get_frame_type(),
-                                    config.mode.get_bytes_per_pixel(),
-                                )];
-                                let slot_info = f.into_payload();
-                                let frame_stack =
-                                    FrameStackHandle::new(slot_info, meta, vec![0], 0);
-                                from_thread_s
-                                    .send(ReceiverMsg::FrameStack { frame_stack })
-                                    .unwrap();
-                            }
-                            Ok(AcquisitionResult::DoneSuccess {
-                                dropped,
-                                acquisition_id,
-                            }) => {
-                                info!("acquisition {acquisition_id} done with {dropped} frames dropped");
-                                from_thread_s
-                                    .send(ReceiverMsg::Finished { frame_stack: None })
-                                    .unwrap();
-                                break 'acquisition;
-                            }
-                            Ok(AcquisitionResult::DoneAborted {
-                                dropped,
-                                acquisition_id,
-                            }) => {
-                                warn!("aborted acquisition {acquisition_id}");
-                                from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
-                                break 'acquisition;
-                            }
-                            Ok(AcquisitionResult::DoneShuttingDown { acquisition_id }) => {
-                                warn!("shutting down; current acquisition {acquisition_id}");
-                                from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
-                                break 'outer;
-                            }
-                            Ok(result) => {
-                                info!("some result received: {result:?}");
-                            }
-                            Err(e) => {
-                                continue 'acquisition;
-                            }
+                Ok(ControlMsg::StartAcquisitionPassive { acquisition_size }) => {
+                    match passive_acquisition(
+                        acquisition_size,
+                        config,
+                        to_thread_r,
+                        from_thread_s,
+                        &main_events_tx,
+                        &rx_writer_to_consumer,
+                    ) {
+                        Ok(PassiveAcquisitionControlFlow::Continue) => {
+                            info!("passive acquisition returned, waiting for next")
+                        }
+                        Ok(PassiveAcquisitionControlFlow::Shutdown) => {
+                            warn!("shutting down background thread");
+                            break 'outer;
+                        }
+                        Err(AcquisitionError::Cancelled) => {
+                            info!("acquisition cancelled by user");
+                            from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
+                            continue 'outer;
+                        }
+                        e @ Err(
+                            AcquisitionError::Disconnected | AcquisitionError::ThreadStopped,
+                        ) => {
+                            info!("background_thread: terminating: {e:?}");
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            error!("background_thread: error: {}; re-connecting", e);
+                            from_thread_s
+                                .send(ReceiverMsg::FatalError { error: Box::new(e) })
+                                .unwrap();
+                            continue 'outer;
                         }
                     }
-
-                    // match passive_acquisition(to_thread_r, from_thread_s, config, &mut shm) {
-                    //     Ok(_) => {}
-                    //     Err(AcquisitionError::Cancelled) => {
-                    //         info!("acquisition cancelled by user");
-                    //         from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
-                    //         continue 'outer;
-                    //     }
-                    //     e @ Err(
-                    //         AcquisitionError::Disconnected | AcquisitionError::ThreadStopped,
-                    //     ) => {
-                    //         info!("background_thread: terminating: {e:?}");
-                    //         return Ok(());
-                    //     }
-                    //     Err(e) => {
-                    //         error!("background_thread: error: {}; re-connecting", e);
-                    //         from_thread_s
-                    //             .send(ReceiverMsg::FatalError { error: Box::new(e) })
-                    //             .unwrap();
-                    //         continue 'outer;
-                    //     }
-                    // }
                 }
                 Ok(ControlMsg::CancelAcquisition) => {
                     warn!(
@@ -274,6 +309,35 @@ fn background_thread_wrap(
                 error: Box::new(err),
             })
             .unwrap();
+    }
+}
+
+pub struct K2BackgroundThread {
+    bg_thread: JoinHandle<()>,
+    to_thread: Sender<ControlMsg<()>>,
+    from_thread: Receiver<ReceiverMsg<K2FrameMeta, K2AcquisitionConfig>>,
+}
+
+impl BackgroundThread for K2BackgroundThread {
+    type FrameMetaImpl = K2FrameMeta;
+    type AcquisitionConfigImpl = K2AcquisitionConfig;
+    type ExtraControl = ();
+
+    fn channel_to_thread(&mut self) -> &mut Sender<ControlMsg<Self::ExtraControl>> {
+        &mut self.to_thread
+    }
+
+    fn channel_from_thread(
+        &mut self,
+    ) -> &mut Receiver<ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>> {
+        &mut self.from_thread
+    }
+
+    fn join(self) {
+        if let Err(e) = self.bg_thread.join() {
+            // FIXME: should we have an error boundary here instead and stop the panic?
+            std::panic::resume_unwind(e)
+        }
     }
 }
 

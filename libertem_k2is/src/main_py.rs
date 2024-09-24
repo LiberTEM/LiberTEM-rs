@@ -1,3 +1,4 @@
+use common::background_thread::PyAcquisitionSize;
 use common::generic_connection::GenericConnection;
 use common::tracing::{span_from_py, tracing_from_env};
 use pyo3::{pyclass, pymethods, Python};
@@ -27,6 +28,7 @@ fn libertem_k2is(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // m.add_class::<CamClient>()?; FIXME
     m.add_class::<_PyK2CamClient>()?;
     m.add_class::<K2AcquisitionConfig>()?;
+    m.add_class::<PyAcquisitionSize>()?;
 
     Ok(())
 }
@@ -55,16 +57,20 @@ impl K2Connection {
         shm_handle_path: &str,
         mode: Option<K2Mode>,
         huge: Option<bool>,
+        crop_to_image_data: Option<bool>,
         py: Python,
     ) -> PyResult<Self> {
         let _trace_guard = span_from_py(py, "K2Connection::new")?;
 
         // to have some slack, we need some more memory in IS mode:
         let mode = mode.unwrap_or(K2Mode::IS);
+
         let num_slots = match mode {
             K2Mode::IS => 1600,    // about 2 seconds of buffering
             K2Mode::Summit => 100, // TODO: update with realistic value here
         };
+
+        let crop_to_image_data = crop_to_image_data.unwrap_or(true);
 
         let config = K2DetectorConnectionConfig::new(
             mode,
@@ -76,6 +82,7 @@ impl K2Connection {
             1, // FIXME: pass down `frame_stack_size` once a value != 1 is supported
             false,
             false,
+            crop_to_image_data,
         );
 
         let shm =
@@ -109,14 +116,27 @@ impl K2Connection {
         self.conn.is_running()
     }
 
-    fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
+    fn start_passive(
+        &mut self,
+        timeout: Option<f32>,
+        acquisition_size: Option<PyAcquisitionSize>,
+        py: Python<'_>,
+    ) -> PyResult<()> {
         let _trace_guard = span_from_py(py, "K2Connection::start_passive")?;
 
-        self.conn.start_passive(timeout, py)
+        self.conn.start_passive(timeout, acquisition_size, py)
+    }
+
+    fn passive_is_running(&self) -> PyResult<bool> {
+        self.conn.passive_is_running()
     }
 
     fn close(&mut self, py: Python) -> PyResult<()> {
         self.conn.close(py)
+    }
+
+    fn cancel(&mut self, timeout: Option<f32>, py: Python) -> PyResult<()> {
+        self.conn.cancel(timeout, py)
     }
 
     fn get_next_stack(

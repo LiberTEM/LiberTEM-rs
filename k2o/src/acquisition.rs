@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::tracing::get_tracer;
+use common::{background_thread::AcquisitionSize, tracing::get_tracer};
 use crossbeam::channel::{Receiver, RecvError, Select, SelectedOperation, Sender};
 use human_bytes::human_bytes;
 use ipc_test::SharedSlabAllocator;
@@ -17,7 +17,7 @@ use partialdebug::placeholder::PartialDebug;
 use crate::{
     assemble::AssemblyResult,
     control::AcquisitionState,
-    events::{AcquisitionParams, AcquisitionSize, EventBus, EventMsg, EventReceiver, Events},
+    events::{AcquisitionParams, EventBus, EventMsg, EventReceiver, Events},
     frame::{FrameMeta, GenericFrame, K2Frame},
     ordering::{FrameOrdering, FrameOrderingResult, FrameWithIdx},
 };
@@ -102,7 +102,8 @@ pub fn frame_in_acquisition(
     let frame_idx_raw: i64 = frame_id as i64 - ref_frame_id as i64;
     let upper_limit = match params.size {
         AcquisitionSize::Continuous => u32::MAX,
-        AcquisitionSize::NumFrames(n) => n,
+        AcquisitionSize::NumFrames(n) => n.try_into().expect("too many frames in acquisition size"),
+        AcquisitionSize::Auto => u32::MAX, // FIXME: is this the correct default?
     };
     if frame_idx_raw >= 0 && frame_idx_raw < upper_limit as i64 {
         Some(frame_idx_raw as u32)
@@ -290,7 +291,8 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
         let frame_idx_raw: i64 = frame.get_frame_id() as i64 - self.ref_frame_id as i64;
         let upper_limit = match self.params.size {
             AcquisitionSize::Continuous => u32::MAX,
-            AcquisitionSize::NumFrames(n) => n,
+            AcquisitionSize::NumFrames(n) => n.try_into().expect("too many frames in acqusition size"),
+            AcquisitionSize::Auto => u32::MAX,
         };
         if frame_idx_raw >= 0 && (frame_idx_raw as usize) % PRE_ALLOC_CHUNKS == 0 {
             // pre-allocate in chunks of PRE_ALLOC_CHUNKS frames

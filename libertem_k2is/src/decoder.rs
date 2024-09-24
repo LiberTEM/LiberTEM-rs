@@ -1,12 +1,42 @@
+use std::fmt::Debug;
+
 use common::{
-    decoder::{self, try_cast_if_safe, Decoder, DecoderError},
-    frame_stack,
+    decoder::{self, try_cast_if_safe, try_cast_primitive, Decoder, DecoderError},
+    frame_stack::{self, FrameMeta},
 };
 use ipc_test::SharedSlabAllocator;
+use num::{NumCast, ToPrimitive};
 use numpy::ndarray::{s, ArrayViewMut3};
 use zerocopy::FromBytes;
 
 use crate::frame_meta::K2FrameMeta;
+
+/// Same as `common::decoder::try_cast_if_safe`, but crop the frame width
+/// (useful for getting rid of non-frame-data on K2{IS,Summit})
+pub fn try_cast_with_crop<I, O>(
+    input: &[I],
+    output: &mut [O],
+    frame_width: usize,
+    frame_width_orig: usize,
+) -> Result<(), DecoderError>
+where
+    O: Copy + NumCast + Debug,
+    I: Copy + ToPrimitive + Debug,
+{
+    let in_rows = input.chunks_exact(frame_width_orig);
+    let out_rows = output.chunks_exact_mut(frame_width);
+
+    for (in_row, out_row) in in_rows.zip(out_rows) {
+        for (dest, src) in out_row.iter_mut().zip(in_row[0..frame_width].iter()) {
+            *dest = try_cast_primitive(*src)?;
+        }
+    }
+
+    // assert!(in_rows.remainder().len() == 0);
+    // assert!(out_rows.into_remainder().len() == 0);
+
+    Ok(())
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct K2Decoder {}
@@ -31,7 +61,7 @@ impl Decoder for K2Decoder {
         // possibly from the 12bit raw format, so all that's left here is to
         // convert/copy to target pixel type `T`:
         input.with_slot(shm, |slot| {
-            for ((_frame_meta, out_idx), in_idx) in
+            for ((frame_meta, out_idx), in_idx) in
                 input.get_meta().iter().zip(0..).zip(start_idx..end_idx)
             {
                 let mut out_view = output.slice_mut(s![out_idx, .., ..]);
@@ -48,7 +78,16 @@ impl Decoder for K2Decoder {
                             msg: "could not interprete input data as u16".to_owned(),
                         }
                     })?;
-                try_cast_if_safe(data_as_u16, out_slice)?;
+                if frame_meta.get_crop() {
+                    try_cast_with_crop(
+                        data_as_u16,
+                        out_slice,
+                        frame_meta.get_effective_frame_shape().width,
+                        frame_meta.get_raw_frame_shape().width,
+                    )?;
+                } else {
+                    try_cast_if_safe(data_as_u16, out_slice)?;
+                }
             }
 
             Ok(())

@@ -14,7 +14,7 @@ use log::{debug, info, trace, warn};
 use stats::Stats;
 
 use crate::{
-    background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
+    background_thread::{AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ConcreteAcquisitionSize, ControlMsg, ReceiverMsg},
     frame_stack::{FrameMeta, FrameStackHandle, SplitError},
 };
 
@@ -33,8 +33,8 @@ pub trait DetectorConnectionConfig: Clone {
 }
 
 pub trait AcquisitionConfig: Debug {
-    /// total number of frames in the acquisition
-    fn num_frames(&self) -> usize;
+    /// Total number of frames in the acquisition, or Continuous
+    fn acquisition_size(&self) -> ConcreteAcquisitionSize;
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -450,6 +450,7 @@ where
         &mut self,
         periodic_callback: impl Fn() -> Result<(), E>,
         timeout: &Option<Duration>,
+        acquisition_size: AcquisitionSize,
     ) -> Result<(), ConnectionError>
     where
         E: std::error::Error + 'static + Send + Sync,
@@ -462,7 +463,7 @@ where
 
         self.bg_thread
             .channel_to_thread()
-            .send(ControlMsg::StartAcquisitionPassive)
+            .send(ControlMsg::StartAcquisitionPassive { acquisition_size })
             .map_err(|_e| ConnectionError::Disconnected)?;
 
         self.wait_for_status(ConnectionStatus::Armed, *timeout, periodic_callback)
@@ -563,6 +564,10 @@ where
 
     pub fn is_running(&self) -> bool {
         self.get_status() == ConnectionStatus::Running
+    }
+
+    pub fn passive_is_running(&self) -> bool {
+        todo!();  // properly track states!
     }
 
     pub fn cancel<E>(

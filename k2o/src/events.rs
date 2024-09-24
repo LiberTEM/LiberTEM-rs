@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use common::background_thread::AcquisitionSize;
 use crossbeam::channel::{select, unbounded, Receiver, RecvError, SendError, Sender};
 use log::debug;
 
@@ -140,21 +141,6 @@ impl MessagePump {
             self.tx_from_ext_to_bus.clone(),
             self.rx_from_bus_to_ext.clone(),
         )
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AcquisitionSize {
-    Continuous,
-    NumFrames(u32),
-}
-
-impl From<Option<u32>> for AcquisitionSize {
-    fn from(size: Option<u32>) -> Self {
-        match size {
-            None => AcquisitionSize::Continuous,
-            Some(num_frames) => AcquisitionSize::NumFrames(num_frames),
-        }
     }
 }
 

@@ -8,7 +8,7 @@ use std::{
 };
 
 use common::{
-    background_thread::{self, BackgroundThread, ControlMsg, ReceiverMsg},
+    background_thread::{self, AcquisitionSize, BackgroundThread, ControlMsg, ReceiverMsg},
     frame_stack::{FrameStackForWriting, FrameStackWriteError},
     generic_connection::DetectorConnectionConfig,
 };
@@ -139,9 +139,8 @@ fn check_for_control(
         }) => Err(AcquisitionError::StateError {
             msg: "received StartAcquisition while an acquisition was already running".to_string(),
         }),
-        Ok(ControlMsg::StartAcquisitionPassive) => Err(AcquisitionError::StateError {
-            msg: "received StartAcquisitionPassive while an acquisition was already running"
-                .to_string(),
+        Ok(m @ ControlMsg::StartAcquisitionPassive { .. }) => Err(AcquisitionError::StateError {
+            msg: format!("received {m:?} while an acquisition was already running"),
         }),
         Ok(ControlMsg::StopThread) => {
             debug!("check_for_control: StopThread received");
@@ -505,7 +504,13 @@ fn background_thread(
             // control: main threads tells us to quit
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
-                Ok(ControlMsg::StartAcquisitionPassive) => {
+                Ok(ControlMsg::StartAcquisitionPassive { acquisition_size }) => {
+                    if acquisition_size != AcquisitionSize::Auto {
+                        return Err(AcquisitionError::ConfigurationError {
+                            msg: format!("unsupported parameter: acquisition_size must be Auto, is {acquisition_size:?}"),
+                        });
+                    }
+
                     from_thread_s.send(ReceiverMsg::ReceiverArmed).unwrap();
                     match passive_acquisition(
                         to_thread_r,

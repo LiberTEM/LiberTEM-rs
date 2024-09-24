@@ -2,7 +2,7 @@
 
 use std::ops::Deref;
 
-use common::{frame_stack::FrameMeta, generic_connection::AcquisitionConfig};
+use common::{background_thread::ConcreteAcquisitionSize, frame_stack::FrameMeta, generic_connection::AcquisitionConfig};
 use log::info;
 use serde::{Deserialize, Serialize};
 
@@ -152,8 +152,8 @@ impl DectrisPendingAcquisition {
 }
 
 impl AcquisitionConfig for DectrisPendingAcquisition {
-    fn num_frames(&self) -> usize {
-        self.detector_config.get_num_images() as usize
+    fn acquisition_size(&self) -> common::background_thread::ConcreteAcquisitionSize {
+        ConcreteAcquisitionSize::NumFrames(self.detector_config.get_num_images() as usize)
     }
 }
 

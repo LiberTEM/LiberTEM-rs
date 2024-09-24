@@ -4,13 +4,14 @@ use std::{
 };
 
 use clap::Parser;
+use common::background_thread::AcquisitionSize;
 use crossbeam::channel::unbounded;
 use k2o::{
     block::{BlockRouteInfo, K2Block},
     block_is::K2ISBlock,
     block_summit::K2SummitBlock,
     events::{
-        AcquisitionParams, AcquisitionSize, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
+        AcquisitionParams, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
         Events,
     },
     recv::{recv_decode_loop, RecvConfig},

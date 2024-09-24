@@ -5,6 +5,7 @@ use std::{
 };
 
 use ipc_test::slab::SlabInitError;
+use pyo3::{pyclass, pymethods};
 
 use crate::{
     frame_stack::{FrameMeta, FrameStackHandle},
@@ -43,16 +44,80 @@ pub enum ReceiverMsg<M: FrameMeta, P: AcquisitionConfig> {
     AcquisitionStart { pending_acquisition: P },
 }
 
+/// Like AcquisitionSize, but with the `Auto` resolved to either a number of frames or `Continuous`
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConcreteAcquisitionSize {
+    /// Set the number of frames to the given value
+    NumFrames(usize),
+
+    /// Acquire data until a cancel command is received from the user
+    Continuous,
+}
+
+/// Configured acquisition size
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AcquisitionSize {
+    /// Automatically determine number of frames from acquisition headers or similar
+    #[default]
+    Auto,
+
+    /// Set the number of frames to the given value
+    NumFrames(usize),
+
+    /// Acquire data until a cancel command is received from the user
+    Continuous,
+}
+
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyAcquisitionSize {
+    inner: AcquisitionSize,
+}
+
+impl PyAcquisitionSize {
+    pub fn inner(&self) -> AcquisitionSize {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyAcquisitionSize {
+    #[staticmethod]
+    pub fn from_num_frames(num_frames: usize) -> Self {
+        Self {
+            inner: AcquisitionSize::NumFrames(num_frames),
+        }
+    }
+
+    #[staticmethod]
+    pub fn auto() -> Self {
+        Self {
+            inner: AcquisitionSize::Auto,
+        }
+    }
+
+    #[staticmethod]
+    pub fn continuous() -> Self {
+        Self {
+            inner: AcquisitionSize::Continuous,
+        }
+    }
+}
+
 /// Control messages from the foreground code to the background thread
 #[derive(Debug)]
 pub enum ControlMsg<CM: Debug> {
     /// Stop processing ASAP
     StopThread,
 
-    /// Start listening for any acquisitions starting
-    StartAcquisitionPassive,
+    /// Start listening for any acquisitions starting. Depending on the
+    /// detector, the acquisition size needs to be passed in, or it can be
+    /// determined automatically.
+    StartAcquisitionPassive { acquisition_size: AcquisitionSize },
 
-    /// Cancel the currently running acquisition, if any
+    /// Cancel the currently running acquisition, if any, going back to idle.
+    /// Afterwards, another acquisition can be started, for example via
+    /// `StartAcquisitionPassive`.
     CancelAcquisition,
 
     /// Detector-specific control message

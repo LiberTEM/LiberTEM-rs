@@ -1,23 +1,41 @@
-use common::generic_connection::{AcquisitionConfig, DetectorConnectionConfig};
-use pyo3::pyclass;
+use common::{background_thread::{AcquisitionSize, ConcreteAcquisitionSize}, generic_connection::{AcquisitionConfig, DetectorConnectionConfig}};
+use pyo3::{pyclass, pymethods};
+use serde::{Deserialize, Serialize};
 
 use crate::frame_meta::K2FrameType;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Shape {
+    pub width: usize,
+    pub height: usize,
+}
 
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct K2AcquisitionConfig {
-    num_frames: usize,
+    acquisition_size: ConcreteAcquisitionSize,
+    effective_frame_shape: Shape,
 }
 
 impl K2AcquisitionConfig {
-    pub fn new(num_frames: usize) -> Self {
-        Self { num_frames }
+    pub fn new(acquisition_size: ConcreteAcquisitionSize, effective_frame_shape: Shape) -> Self {
+        Self {
+            acquisition_size,
+            effective_frame_shape,
+        }
     }
 }
 
 impl AcquisitionConfig for K2AcquisitionConfig {
-    fn num_frames(&self) -> usize {
-        self.num_frames
+    fn acquisition_size(&self) -> ConcreteAcquisitionSize {
+        self.acquisition_size
+    }
+}
+
+#[pymethods]
+impl K2AcquisitionConfig {
+    fn frame_shape(&self) -> (usize, usize) {
+        (self.effective_frame_shape.height, self.effective_frame_shape.width)
     }
 }
 
@@ -30,18 +48,32 @@ pub enum K2Mode {
 
 impl K2Mode {
     pub fn get_bytes_per_frame(&self) -> usize {
-        let shape = self.get_frame_shape();
-        (shape.0 * shape.1) as usize * self.get_bytes_per_pixel()
+        let shape = self.get_frame_shape(false);
+        shape.width * shape.height * self.get_bytes_per_pixel()
     }
 
     pub fn get_bytes_per_pixel(&self) -> usize {
         2
     }
 
-    pub fn get_frame_shape(&self) -> (u64, u64) {
-        match self {
-            K2Mode::IS => (1860, 2048),
-            K2Mode::Summit => (3840, 4096),
+    pub fn get_frame_shape(&self, crop: bool) -> Shape {
+        match (self, crop) {
+            (K2Mode::IS, true) => Shape {
+                height: 1920,
+                width: 2048 - 128,
+            },
+            (K2Mode::IS, false) => Shape {
+                height: 1920,
+                width: 2048,
+            },
+            (K2Mode::Summit, true) => Shape {
+                height: 3840,
+                width: 4096 - 256,
+            },
+            (K2Mode::Summit, false) => Shape {
+                height: 3840,
+                width: 4096,
+            }
         }
     }
 
@@ -69,6 +101,9 @@ pub struct K2DetectorConnectionConfig {
     /// Run UDP receivers in prioritized threads
     pub recv_realtime: bool,
 
+    /// Crop K2CamClient output to actually usable image data
+    pub crop_to_image_data: bool,
+
     /// Number of frames per frame stack
     frame_stack_size: usize,
 
@@ -88,6 +123,7 @@ impl K2DetectorConnectionConfig {
         frame_stack_size: usize,
         recv_realtime: bool,
         assembly_realtime: bool,
+        crop_to_image_data: bool,
     ) -> Self {
         Self {
             mode,
@@ -99,7 +135,12 @@ impl K2DetectorConnectionConfig {
             frame_stack_size,
             recv_realtime,
             assembly_realtime,
+            crop_to_image_data,
         }
+    }
+
+    pub fn effective_shape(&self) -> Shape {
+        self.mode.get_frame_shape(self.crop_to_image_data)
     }
 }
 

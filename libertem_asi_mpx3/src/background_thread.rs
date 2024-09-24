@@ -7,7 +7,9 @@ use std::{
 };
 
 use common::{
-    background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
+    background_thread::{
+        AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg,
+    },
     frame_stack::{FrameStackForWriting, FrameStackWriteError},
     tcp::{self, ReadExactError},
     utils::{num_from_byte_slice, three_way_shift, NumParseError},
@@ -317,9 +319,8 @@ impl From<std::io::Error> for AcquisitionError {
 /// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
 fn check_for_control(control_channel: &Receiver<ASIMpxControlMsg>) -> Result<(), AcquisitionError> {
     match control_channel.try_recv() {
-        Ok(ControlMsg::StartAcquisitionPassive) => Err(AcquisitionError::StateError {
-            msg: "received StartAcquisitionPassive while an acquisition was already running"
-                .to_string(),
+        Ok(m @ ControlMsg::StartAcquisitionPassive { .. }) => Err(AcquisitionError::StateError {
+            msg: format!("received {m:?} while an acquisition was already running"),
         }),
         Ok(ControlMsg::StopThread) => Err(AcquisitionError::StopThread),
         Ok(ControlMsg::SpecializedControlMsg { msg: _ }) => {
@@ -334,6 +335,7 @@ fn check_for_control(control_channel: &Receiver<ASIMpxControlMsg>) -> Result<(),
 /// Passively listen for the start of an acquisition
 /// and automatically latch on to it.
 fn passive_acquisition(
+    acquisition_size: AcquisitionSize,
     control_channel: &Receiver<ASIMpxControlMsg>,
     from_thread_s: &Sender<ReceiverMsg<ASIMpxFrameMeta, PendingAcquisition>>,
     frame_stack_size: usize,
@@ -342,6 +344,14 @@ fn passive_acquisition(
     shm: &mut SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     let client = ServalClient::new(api_uri);
+
+    if acquisition_size != AcquisitionSize::Auto {
+        return Err(AcquisitionError::ConfigurationError {
+            msg: format!(
+                "unsupported parameter: acquisition_size must be Auto, is {acquisition_size:?}"
+            ),
+        });
+    }
 
     loop {
         trace!("connecting to {data_uri}...");
@@ -559,8 +569,9 @@ fn background_thread(
                 Ok(ControlMsg::CancelAcquisition) => {
                     warn!("background_thread: ControlMsg::CancelAcquisition without running acquisition");
                 }
-                Ok(ControlMsg::StartAcquisitionPassive) => {
+                Ok(ControlMsg::StartAcquisitionPassive { acquisition_size }) => {
                     match passive_acquisition(
+                        acquisition_size,
                         to_thread_r,
                         from_thread_s,
                         frame_stack_size,

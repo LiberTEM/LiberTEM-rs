@@ -158,7 +158,7 @@ impl DectrisConnection {
 
     /// Start listening for global acquisition headers on the zeromq socket.
     fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
-        self.conn.start_passive(timeout, py)
+        self.conn.start_passive(timeout, None, py)
     }
 
     fn close(&mut self, py: Python) -> PyResult<()> {
