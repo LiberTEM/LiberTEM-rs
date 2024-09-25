@@ -10,7 +10,7 @@ use crossbeam::channel::{bounded, Sender};
 use raw_sync::locks::{LockImpl, LockInit, Mutex};
 use serde::{Deserialize, Serialize};
 
-use crate::{align_to, freestack::FreeStack, shm::Shm};
+use crate::{align_to, common::ShmConnectError, freestack::FreeStack, shm::Shm};
 
 /// A handle for reading from a shared memory slot
 pub struct Slot {
@@ -100,7 +100,10 @@ pub struct SharedSlabAllocator {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum SlabInitError {}
+pub enum SlabInitError {
+    #[error("connection failed: {0}")]
+    ConnectError(#[from] ShmConnectError),
+}
 
 ///
 /// Single-producer multiple consumer communication via shared memory
@@ -168,7 +171,7 @@ impl SharedSlabAllocator {
             slot_size,
             total_size,
         };
-        let shm = Shm::new(huge_pages, shm_path, total_size, slab_info);
+        let shm = Shm::new(huge_pages, shm_path, total_size, slab_info)?;
 
         Self::from_shm_and_slab_info(shm, slab_info, true)
     }
@@ -247,7 +250,7 @@ impl SharedSlabAllocator {
     }
 
     pub fn connect(handle_path: &str) -> Result<Self, SlabInitError> {
-        let (shm, slab_info): (_, SlabInfo) = Shm::connect(handle_path);
+        let (shm, slab_info): (_, SlabInfo) = Shm::connect(handle_path)?;
         Self::from_shm_and_slab_info(shm, slab_info, false)
     }
 

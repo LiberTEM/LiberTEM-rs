@@ -1,6 +1,5 @@
+#![forbid(clippy::unwrap_used)]
 //! Raw memory backend using memfd with huge page support
-// TODO:
-// #![forbid(clippy::unwrap_used)]
 use std::{
     fs::{remove_file, File},
     io::{self, Read, Write},
@@ -23,6 +22,8 @@ use memmap2::{MmapOptions, MmapRaw};
 use nix::poll::{PollFd, PollFlags};
 use sendfd::{RecvWithFd, SendWithFd};
 use serde::{de::DeserializeOwned, Serialize};
+
+use crate::common::ShmConnectError;
 
 fn read_size(mut stream: &UnixStream) -> usize {
     let mut buf: [u8; std::mem::size_of::<usize>()] = [0; std::mem::size_of::<usize>()];
@@ -73,7 +74,7 @@ pub fn serve_shm_handle<I>(
     init_data: I,
     fd: RawFd,
     socket_path: &Path,
-) -> (Arc<AtomicBool>, JoinHandle<()>)
+) -> Result<(Arc<AtomicBool>, JoinHandle<()>), ShmConnectError>
 where
     I: Serialize,
 {
@@ -83,11 +84,9 @@ where
         remove_file(socket_path).expect("remove existing socket");
     }
 
-    let listener = UnixListener::bind(socket_path).unwrap();
-
+    let listener = UnixListener::bind(socket_path)?;
     let outer_stop = Arc::clone(&stop_event);
-
-    let init_data_serialized = bincode::serialize(&init_data).unwrap();
+    let init_data_serialized = bincode::serialize(&init_data)?;
 
     listener
         .set_nonblocking(true)
@@ -126,7 +125,7 @@ where
         }
     });
 
-    (outer_stop, join_handle)
+    Ok((outer_stop, join_handle))
 }
 
 pub struct MemfdShm {
@@ -150,7 +149,12 @@ impl MemfdShm {
     /// If `enable_huge` is specified and not enough huge pages are available
     /// from the operating system, mapping the memory area can fail.
     ///
-    pub fn new<I>(enable_huge: bool, socket_path: &Path, size: usize, init_data: I) -> Self
+    pub fn new<I>(
+        enable_huge: bool,
+        socket_path: &Path,
+        size: usize,
+        init_data: I,
+    ) -> Result<Self, ShmConnectError>
     where
         I: Serialize,
     {
@@ -160,27 +164,30 @@ impl MemfdShm {
         } else {
             memfd_options
         };
-        let memfd = memfd_options.create("MemfdShm").unwrap();
+        let memfd = memfd_options
+            .create("MemfdShm")
+            .map_err(|e| ShmConnectError::Other { msg: e.to_string() })?;
         let file = memfd.as_file();
-        file.set_len(size as u64).unwrap();
+        file.set_len(size as u64)?;
 
         memfd
             .add_seals(&[FileSeal::SealShrink, FileSeal::SealGrow])
-            .unwrap();
-
-        memfd.add_seal(FileSeal::SealSeal).unwrap();
+            .map_err(|e| ShmConnectError::Other { msg: e.to_string() })?;
+        memfd
+            .add_seal(FileSeal::SealSeal)
+            .map_err(|e| ShmConnectError::Other { msg: e.to_string() })?;
 
         let file = memfd.into_file();
-        let mmap = MmapOptions::new().map_raw(&file).unwrap();
+        let mmap = MmapOptions::new().map_raw(&file)?;
 
-        let bg_thread = serve_shm_handle(&init_data, file.as_raw_fd(), socket_path);
+        let bg_thread = serve_shm_handle(&init_data, file.as_raw_fd(), socket_path)?;
 
-        Self {
+        Ok(Self {
             mmap,
             file,
             socket_path: socket_path.to_owned(),
             bg_thread: Some(bg_thread),
-        }
+        })
     }
 
     pub fn as_mut_ptr(&self) -> *mut u8 {
@@ -191,7 +198,7 @@ impl MemfdShm {
         self.socket_path.to_string_lossy().deref().to_owned()
     }
 
-    pub fn connect<I>(handle: &str) -> (Self, I)
+    pub fn connect<I>(handle: &str) -> Result<(Self, I), ShmConnectError>
     where
         I: DeserializeOwned,
     {
@@ -201,9 +208,9 @@ impl MemfdShm {
         // safety: we exlusively own the fd, which we just received via
         // the unix domain socket, so it must be open and valid.
         let file = unsafe { File::from_raw_fd(fd) };
-        let mmap = MmapOptions::new().map_raw(&file).unwrap();
+        let mmap = MmapOptions::new().map_raw(&file)?;
 
-        (
+        Ok((
             Self {
                 mmap,
                 file,
@@ -211,7 +218,7 @@ impl MemfdShm {
                 bg_thread: None,
             },
             init_data,
-        )
+        ))
     }
 }
 

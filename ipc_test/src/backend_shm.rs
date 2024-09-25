@@ -1,7 +1,5 @@
-// TODO:
-// #![forbid(clippy::unwrap_used)]
-///! Raw memory backend using the `shared_memory` crate
-///
+//#![forbid(clippy::unwrap_used)]
+//! Raw memory backend using the `shared_memory` crate
 use std::{
     fs::{remove_file, OpenOptions},
     io::Write,
@@ -12,6 +10,8 @@ use std::{
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use shared_memory::{Shmem, ShmemConf};
+
+use crate::common::ShmConnectError;
 
 /// Initialization data that we serialize to a file, so our users don't have to
 /// pass around so many things out-of-band.
@@ -32,16 +32,25 @@ impl SharedMemory {
     /// Create a new shared memory mapping
     ///
     /// `enable_huge` is not supported and ignored.
-    pub fn new<I>(_enable_huge: bool, handle_path: &Path, size: usize, init_data: I) -> Self
+    pub fn new<I>(
+        _enable_huge: bool,
+        handle_path: &Path,
+        size: usize,
+        init_data: I,
+    ) -> Result<Self, ShmConnectError>
     where
         I: Serialize,
     {
-        let shm_impl = ShmemConf::new().size(size).create().unwrap();
+        let shm_impl = ShmemConf::new()
+            .size(size)
+            .create()
+            .map_err(|e| ShmConnectError::Other { msg: e.to_string() })?;
+
         let mut f = OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
-            .open(handle_path)
-            .unwrap();
+            .open(handle_path)?;
 
         let init_data_wrapped = InitData {
             size,
@@ -49,15 +58,15 @@ impl SharedMemory {
             payload: init_data,
         };
 
-        bincode::serialize_into(&f, &init_data_wrapped).unwrap();
+        bincode::serialize_into(&f, &init_data_wrapped)?;
 
-        f.flush().unwrap();
+        f.flush()?;
 
-        Self {
+        Ok(Self {
             shm_impl: Mutex::new(shm_impl),
             handle_path: handle_path.to_owned(),
             is_owner: true,
-        }
+        })
     }
 
     pub fn as_mut_ptr(&self) -> *mut u8 {
@@ -68,13 +77,13 @@ impl SharedMemory {
         self.handle_path.to_str().unwrap().to_owned()
     }
 
-    pub fn connect<I>(handle_path: &str) -> (Self, I)
+    pub fn connect<I>(handle_path: &str) -> Result<(Self, I), ShmConnectError>
     where
         I: DeserializeOwned,
     {
-        let f = OpenOptions::new().read(true).open(handle_path).unwrap();
+        let f = OpenOptions::new().read(true).open(handle_path)?;
 
-        let init_data_wrapped: InitData<I> = bincode::deserialize_from(f).unwrap();
+        let init_data_wrapped: InitData<I> = bincode::deserialize_from(f)?;
         let InitData {
             os_handle,
             size,
@@ -82,16 +91,20 @@ impl SharedMemory {
             ..
         } = init_data_wrapped;
 
-        let shm_impl = ShmemConf::new().os_id(os_handle).size(size).open().unwrap();
+        let shm_impl = ShmemConf::new()
+            .os_id(os_handle)
+            .size(size)
+            .open()
+            .map_err(|e| ShmConnectError::Other { msg: e.to_string() })?;
 
-        (
+        Ok((
             Self {
                 shm_impl: Mutex::new(shm_impl),
                 handle_path: PathBuf::from_str(handle_path).unwrap(),
                 is_owner: false,
             },
             payload,
-        )
+        ))
     }
 }
 
