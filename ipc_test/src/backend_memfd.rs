@@ -25,48 +25,48 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::common::ShmConnectError;
 
-fn read_size(mut stream: &UnixStream) -> usize {
+fn read_size(mut stream: &UnixStream) -> Result<usize, ShmConnectError> {
     let mut buf: [u8; std::mem::size_of::<usize>()] = [0; std::mem::size_of::<usize>()];
-    stream.read_exact(&mut buf).expect("read message size");
-    usize::from_be_bytes(buf)
+    stream.read_exact(&mut buf)?;
+    Ok(usize::from_be_bytes(buf))
 }
 
 /// connect to the given unix domain socket and grab a SHM handle
-fn recv_shm_handle<H>(socket_path: &Path) -> (H, RawFd)
+fn recv_shm_handle<H>(socket_path: &Path) -> Result<(H, RawFd), ShmConnectError>
 where
     H: DeserializeOwned,
 {
-    let stream = UnixStream::connect(socket_path).expect("connect to socket");
+    let stream = UnixStream::connect(socket_path)?;
 
     let mut fds: [i32; 1] = [0];
 
-    let size = read_size(&stream);
+    let size = read_size(&stream)?;
 
     // message must be longer than 0:
     assert!(size > 0);
 
     let mut bytes: Vec<u8> = vec![0; size];
 
-    stream
-        .recv_with_fd(bytes.as_mut_slice(), &mut fds)
-        .expect("read initial message with fds");
+    stream.recv_with_fd(bytes.as_mut_slice(), &mut fds)?;
 
-    let payload: H = bincode::deserialize(&bytes[..]).expect("deserialize");
-    (payload, fds[0])
+    let payload: H = bincode::deserialize(&bytes[..])?;
+    Ok((payload, fds[0]))
 }
 
-fn handle_connection(mut stream: UnixStream, fd: RawFd, init_data_serialized: &[u8]) {
+fn handle_connection(
+    mut stream: UnixStream,
+    fd: RawFd,
+    init_data_serialized: &[u8],
+) -> Result<(), ShmConnectError> {
     let fds = [fd];
 
     // message must not be empty:
     assert!(!init_data_serialized.is_empty());
 
-    stream
-        .write_all(&init_data_serialized.len().to_be_bytes())
-        .expect("send shm info size");
-    stream
-        .send_with_fd(init_data_serialized, &fds)
-        .expect("send shm info with fds");
+    stream.write_all(&init_data_serialized.len().to_be_bytes())?;
+    stream.send_with_fd(init_data_serialized, &fds)?;
+
+    Ok(())
 }
 
 /// start a thread that serves shm handles at the given socket path
@@ -95,7 +95,6 @@ where
     let join_handle = std::thread::spawn(move || {
         // Stolen from the example on `UnixListener`:
         // accept connections and process them, spawning a new thread for each one
-
         loop {
             if stop_event.load(Ordering::Relaxed) {
                 debug!("stopping `serve_shm_handle` thread");
@@ -106,15 +105,19 @@ where
                 Ok((stream, _addr)) => {
                     /* connection succeeded */
                     let my_init = init_data_serialized.clone();
-                    std::thread::spawn(move || handle_connection(stream, fd, &my_init));
+                    std::thread::spawn(move || {
+                        handle_connection(stream, fd, &my_init)
+                            .expect("could not let other side connect")
+                    });
                 }
                 Err(err) => {
                     /* EAGAIN / EWOULDBLOCK */
                     if err.kind() == io::ErrorKind::WouldBlock {
                         let flags = PollFlags::POLLIN;
                         let pollfd = PollFd::new(listener.as_fd(), flags);
-                        nix::poll::poll(&mut [pollfd], 100u16)
-                            .expect("poll for socket to be ready");
+                        if let Err(e) = nix::poll::poll(&mut [pollfd], 100u16) {
+                            log::error!("poll failed: {e}");
+                        }
                         continue;
                     }
                     /* connection failed */
@@ -203,7 +206,7 @@ impl MemfdShm {
         I: DeserializeOwned,
     {
         let socket_path = Path::new(handle);
-        let (init_data, fd) = recv_shm_handle::<I>(socket_path);
+        let (init_data, fd) = recv_shm_handle::<I>(socket_path)?;
 
         // safety: we exlusively own the fd, which we just received via
         // the unix domain socket, so it must be open and valid.
