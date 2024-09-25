@@ -1,3 +1,4 @@
+pub mod common;
 pub(crate) mod freestack;
 pub mod slab;
 
