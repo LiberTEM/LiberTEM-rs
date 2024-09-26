@@ -291,7 +291,9 @@ impl<'a, F: K2Frame> FrameHandler<'a, F> {
         let frame_idx_raw: i64 = frame.get_frame_id() as i64 - self.ref_frame_id as i64;
         let upper_limit = match self.params.size {
             AcquisitionSize::Continuous => u32::MAX,
-            AcquisitionSize::NumFrames(n) => n.try_into().expect("too many frames in acqusition size"),
+            AcquisitionSize::NumFrames(n) => {
+                n.try_into().expect("too many frames in acqusition size")
+            }
             AcquisitionSize::Auto => u32::MAX,
         };
         if frame_idx_raw >= 0 && (frame_idx_raw as usize) % PRE_ALLOC_CHUNKS == 0 {

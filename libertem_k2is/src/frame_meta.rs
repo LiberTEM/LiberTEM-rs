@@ -78,8 +78,8 @@ impl K2FrameMeta {
 
 impl FrameMeta for K2FrameMeta {
     fn get_data_length_bytes(&self) -> usize {
-        let shape = self.get_shape();
-        (shape.0 * shape.1) as usize * self.bytes_per_pixel
+        let shape = self.get_raw_frame_shape();
+        (shape.width * shape.height) as usize * self.bytes_per_pixel
     }
 
     fn get_dtype_string(&self) -> String {

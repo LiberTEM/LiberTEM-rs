@@ -1,6 +1,7 @@
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
+use log::info;
 use opentelemetry::global::BoxedTracer;
 use opentelemetry::trace::{
     self, SpanContext, SpanId, TraceContextExt, TraceError, TraceFlags, TraceId, TraceState, Tracer,
@@ -43,6 +44,7 @@ pub fn tracing_from_env(service_name: String) {
     if std::env::var("OTEL_ENABLE") == Ok("1".to_owned()) {
         let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
             .unwrap_or_else(|_| "http://localhost:4317".to_owned());
+        info!("setting up tracing with endpoint {endpoint}");
         spawn_tracing_thread(service_name, endpoint);
     }
 }

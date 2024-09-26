@@ -5,7 +5,10 @@ use std::{
 };
 
 use common::{
-    background_thread::{AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ConcreteAcquisitionSize, ControlMsg, ReceiverMsg},
+    background_thread::{
+        AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ConcreteAcquisitionSize,
+        ControlMsg, ReceiverMsg,
+    },
     frame_stack::FrameStackHandle,
 };
 use crossbeam::channel::{
@@ -18,8 +21,8 @@ use k2o::{
     block_is::K2ISBlock,
     block_summit::K2SummitBlock,
     events::{
-        AcquisitionParams, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
-        Events, MessagePump,
+        AcquisitionParams, AcquisitionSync, ChannelEventBus, EventBus, EventMsg, Events,
+        MessagePump,
     },
     frame::GenericFrame,
     frame_is::K2ISFrame,
@@ -65,7 +68,7 @@ enum PassiveAcquisitionControlFlow {
 fn check_for_control(control_channel: &Receiver<K2ControlMsg>) -> Result<(), AcquisitionError> {
     match control_channel.try_recv() {
         Ok(m @ ControlMsg::StartAcquisitionPassive { .. }) => Err(AcquisitionError::StateError {
-            msg: format!("received {m:?} while an acquisition was already running")
+            msg: format!("received {m:?} while an acquisition was already running"),
         }),
         Ok(ControlMsg::StopThread) => Err(AcquisitionError::ThreadStopped),
         Ok(ControlMsg::SpecializedControlMsg { msg: _ }) => {
@@ -85,6 +88,7 @@ fn passive_acquisition(
     to_thread_r: &Receiver<K2ControlMsg>,
     from_thread_s: &Sender<K2ReceiverMsg>,
     main_events_tx: &CSender<EventMsg>,
+    main_events_rx: &CReceiver<EventMsg>,
     rx_writer_to_consumer: &CReceiver<AcquisitionResult<GenericFrame>>,
 ) -> Result<PassiveAcquisitionControlFlow, AcquisitionError> {
     main_events_tx
@@ -97,6 +101,27 @@ fn passive_acquisition(
             acquisition_id: 1,
         })
         .unwrap();
+
+    // read from `main_events_rx` until we get an `EventMsg::Armed`
+    loop {
+        // FIXME: need to have a different control check here, and need to
+        // keep messages that are not cancellation/abortion. how?
+        // wrapper around the control channel might be a good idea anyways?
+        //check_for_control(to_thread_r)?;
+        match main_events_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(e @ EventMsg::AcquisitionStarted { .. }) => {
+                info!("passive_acquisition: {e:?}");
+                break;
+            }
+            Ok(EventMsg::AcquisitionError { msg }) => todo!(),
+            Ok(EventMsg::Shutdown) => todo!(),
+            Ok(_) => continue,
+            Err(CRecvTimeoutError::Disconnected) => return Err(AcquisitionError::Disconnected),
+            Err(CRecvTimeoutError::Timeout) => continue,
+        }
+    }
+
+    from_thread_s.send(ReceiverMsg::ReceiverArmed).unwrap();
 
     let effective_frame_shape = config.effective_shape();
 
@@ -209,7 +234,13 @@ fn background_thread(
     };
 
     loop {
-        match main_events_rx.recv_timeout(Duration::from_millis(100)) {
+        // FIXME: need to have a different control check here, and need to
+        // keep messages that are not cancellation/abortion. how?
+        // wrapper around the control channel might be a good idea anyways?
+        //check_for_control(to_thread_r)?;
+        // timeout sets the lower limit of the reaction time to
+        // control commands from the main thread.
+        match main_events_rx.recv_timeout(Duration::from_millis(500)) {
             Ok(EventMsg::Init) => {
                 info!("init done");
                 break;
@@ -225,8 +256,6 @@ fn background_thread(
         }
     }
 
-    from_thread_s.send(ReceiverMsg::ReceiverArmed).unwrap();
-
     'outer: loop {
         loop {
             // control: main threads tells us what to do.
@@ -239,6 +268,7 @@ fn background_thread(
                         to_thread_r,
                         from_thread_s,
                         &main_events_tx,
+                        &main_events_rx,
                         &rx_writer_to_consumer,
                     ) {
                         Ok(PassiveAcquisitionControlFlow::Continue) => {
@@ -290,7 +320,7 @@ fn background_thread(
     }
     main_events_tx.send(EventMsg::Shutdown).unwrap();
     inner_bg_thread.unwrap().join().unwrap();
-    debug!("background_thread: is done");
+    info!("background_thread: is done");
     Ok(())
 }
 
@@ -354,7 +384,7 @@ impl K2BackgroundThread {
         let config = config.clone();
         let ctx = Context::current();
 
-        debug!("connection config: {config:?}");
+        info!("connection config: {config:?}");
 
         Ok(Self {
             bg_thread: builder

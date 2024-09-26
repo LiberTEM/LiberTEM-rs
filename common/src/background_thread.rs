@@ -5,7 +5,7 @@ use std::{
 };
 
 use ipc_test::slab::SlabInitError;
-use pyo3::{pyclass, pymethods};
+use pyo3::{exceptions::PyRuntimeError, pyclass, pymethods, PyResult};
 
 use crate::{
     frame_stack::{FrameMeta, FrameStackHandle},
@@ -68,6 +68,15 @@ pub enum AcquisitionSize {
     Continuous,
 }
 
+impl From<ConcreteAcquisitionSize> for AcquisitionSize {
+    fn from(value: ConcreteAcquisitionSize) -> Self {
+        match value {
+            ConcreteAcquisitionSize::NumFrames(n) => Self::NumFrames(n),
+            ConcreteAcquisitionSize::Continuous => Self::Continuous,
+        }
+    }
+}
+
 #[pyclass]
 #[derive(Clone, Debug)]
 pub struct PyAcquisitionSize {
@@ -77,6 +86,10 @@ pub struct PyAcquisitionSize {
 impl PyAcquisitionSize {
     pub fn inner(&self) -> AcquisitionSize {
         self.inner
+    }
+
+    pub fn from_acquisition_size(size: AcquisitionSize) -> Self {
+        Self { inner: size }
     }
 }
 
@@ -102,14 +115,38 @@ impl PyAcquisitionSize {
             inner: AcquisitionSize::Continuous,
         }
     }
+
+    /// Get the number of frames in this acquisition, raising a RuntimeError if there is none
+    /// (i.e. the size is auto or continuous)
+    pub fn get_num_frames(&self) -> PyResult<usize> {
+        match &self.inner {
+            AcquisitionSize::NumFrames(n) => Ok(*n),
+            AcquisitionSize::Continuous | AcquisitionSize::Auto => {
+                Err(PyRuntimeError::new_err(format!(
+                    "PyAcquisitionSize::get_num_frames called on {:?}",
+                    &self.inner
+                )))
+            }
+        }
+    }
+
+    pub fn is_continuous(&self) -> bool {
+        self.inner == AcquisitionSize::Continuous
+    }
+
+    pub fn is_auto(&self) -> bool {
+        self.inner == AcquisitionSize::Auto
+    }
+
+    /// Do we know the number of frames in this acquisition?
+    pub fn num_frames_known(&self) -> bool {
+        matches!(self.inner, AcquisitionSize::NumFrames(_))
+    }
 }
 
 /// Control messages from the foreground code to the background thread
 #[derive(Debug)]
 pub enum ControlMsg<CM: Debug> {
-    /// Stop processing ASAP
-    StopThread,
-
     /// Start listening for any acquisitions starting. Depending on the
     /// detector, the acquisition size needs to be passed in, or it can be
     /// determined automatically.
@@ -119,6 +156,9 @@ pub enum ControlMsg<CM: Debug> {
     /// Afterwards, another acquisition can be started, for example via
     /// `StartAcquisitionPassive`.
     CancelAcquisition,
+
+    /// Stop processing ASAP
+    StopThread,
 
     /// Detector-specific control message
     SpecializedControlMsg { msg: CM },

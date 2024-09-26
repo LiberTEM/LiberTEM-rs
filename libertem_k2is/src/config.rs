@@ -1,4 +1,7 @@
-use common::{background_thread::{AcquisitionSize, ConcreteAcquisitionSize}, generic_connection::{AcquisitionConfig, DetectorConnectionConfig}};
+use common::{
+    background_thread::{ConcreteAcquisitionSize, PyAcquisitionSize},
+    generic_connection::{AcquisitionConfig, DetectorConnectionConfig},
+};
 use pyo3::{pyclass, pymethods};
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +38,14 @@ impl AcquisitionConfig for K2AcquisitionConfig {
 #[pymethods]
 impl K2AcquisitionConfig {
     fn frame_shape(&self) -> (usize, usize) {
-        (self.effective_frame_shape.height, self.effective_frame_shape.width)
+        (
+            self.effective_frame_shape.height,
+            self.effective_frame_shape.width,
+        )
+    }
+
+    fn acquisition_size(&self) -> PyAcquisitionSize {
+        PyAcquisitionSize::from_acquisition_size(self.acquisition_size.into())
     }
 }
 
@@ -56,6 +66,8 @@ impl K2Mode {
         2
     }
 
+    /// There is some "non-image data" in the data stream we receive, which we
+    /// may want to crop off. See also `crate::decoder::try_cast_with_crop`.
     pub fn get_frame_shape(&self, crop: bool) -> Shape {
         match (self, crop) {
             (K2Mode::IS, true) => Shape {
@@ -73,7 +85,7 @@ impl K2Mode {
             (K2Mode::Summit, false) => Shape {
                 height: 3840,
                 width: 4096,
-            }
+            },
         }
     }
 

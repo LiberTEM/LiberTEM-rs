@@ -25,8 +25,7 @@ fn libertem_k2is(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<K2Connection>()?;
     m.add_class::<K2FrameStack>()?;
     m.add_class::<K2Mode>()?;
-    // m.add_class::<CamClient>()?; FIXME
-    m.add_class::<_PyK2CamClient>()?;
+    m.add_class::<K2CamClient>()?;
     m.add_class::<K2AcquisitionConfig>()?;
     m.add_class::<PyAcquisitionSize>()?;
 
@@ -149,7 +148,7 @@ impl K2Connection {
 }
 
 impl_py_cam_client!(
-    _PyK2CamClient,
+    K2CamClient,
     K2Decoder,
     K2FrameStack,
     K2FrameMeta,

@@ -1,8 +1,8 @@
 use std::fmt::Debug;
 
 use common::{
-    decoder::{self, try_cast_if_safe, try_cast_primitive, Decoder, DecoderError},
-    frame_stack::{self, FrameMeta},
+    decoder::{self, try_cast_if_safe, Decoder, DecoderError},
+    frame_stack::{self},
 };
 use ipc_test::SharedSlabAllocator;
 use num::{NumCast, ToPrimitive};
@@ -11,7 +11,8 @@ use zerocopy::FromBytes;
 
 use crate::frame_meta::K2FrameMeta;
 
-/// Same as `common::decoder::try_cast_if_safe`, but crop the frame width
+/// Same as `common::decoder::try_cast_if_safe`, but crop the frame,
+/// removing a stripe at the right side.
 /// (useful for getting rid of non-frame-data on K2{IS,Summit})
 pub fn try_cast_with_crop<I, O>(
     input: &[I],
@@ -26,10 +27,18 @@ where
     let in_rows = input.chunks_exact(frame_width_orig);
     let out_rows = output.chunks_exact_mut(frame_width);
 
+    assert_eq!(
+        in_rows.len(),
+        out_rows.len(),
+        "{} != {}; frame_width_orig={}, frame_width={}",
+        in_rows.len(),
+        out_rows.len(),
+        frame_width_orig,
+        frame_width,
+    );
+
     for (in_row, out_row) in in_rows.zip(out_rows) {
-        for (dest, src) in out_row.iter_mut().zip(in_row[0..frame_width].iter()) {
-            *dest = try_cast_primitive(*src)?;
-        }
+        try_cast_if_safe(&in_row[0..frame_width], out_row)?;
     }
 
     // assert!(in_rows.remainder().len() == 0);

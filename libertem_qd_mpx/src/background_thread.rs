@@ -8,7 +8,9 @@ use std::{
 };
 
 use common::{
-    background_thread::{AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
+    background_thread::{
+        AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg,
+    },
     frame_stack::{FrameMeta, FrameStackForWriting, FrameStackWriteError, WriteGuard},
     tcp::{self, ReadExactError},
     utils::{num_from_byte_slice, NumParseError},
@@ -546,7 +548,8 @@ fn passive_acquisition(
     let host = &config.data_host;
     let port = config.data_port;
 
-    if acquisition_size != AcquisitionSize::Auto && acquisition_size != AcquisitionSize::Continuous {
+    if acquisition_size != AcquisitionSize::Auto && acquisition_size != AcquisitionSize::Continuous
+    {
         return Err(AcquisitionError::ConfigurationError {
             msg: format!(
                 "unsupported parameter: acquisition_size must be Auto or Continuous, is {acquisition_size:?}"
@@ -647,7 +650,13 @@ fn background_thread(
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
                 Ok(ControlMsg::StartAcquisitionPassive { acquisition_size }) => {
-                    match passive_acquisition(acquisition_size, to_thread_r, from_thread_s, config, &mut shm) {
+                    match passive_acquisition(
+                        acquisition_size,
+                        to_thread_r,
+                        from_thread_s,
+                        config,
+                        &mut shm,
+                    ) {
                         Ok(_) => {}
                         Err(AcquisitionError::Cancelled) => {
                             info!("acquisition cancelled by user");
@@ -777,7 +786,10 @@ mod test {
         time::{Duration, Instant},
     };
 
-    use common::{background_thread::AcquisitionSize, generic_connection::{ConnectionError, ConnectionStatus, GenericConnection}};
+    use common::{
+        background_thread::AcquisitionSize,
+        generic_connection::{ConnectionError, ConnectionStatus, GenericConnection},
+    };
     use ipc_test::SharedSlabAllocator;
     use log::info;
     use tempfile::{tempdir, TempDir};

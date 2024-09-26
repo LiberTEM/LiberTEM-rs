@@ -14,7 +14,10 @@ use log::{debug, info, trace, warn};
 use stats::Stats;
 
 use crate::{
-    background_thread::{AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ConcreteAcquisitionSize, ControlMsg, ReceiverMsg},
+    background_thread::{
+        AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ConcreteAcquisitionSize,
+        ControlMsg, ReceiverMsg,
+    },
     frame_stack::{FrameMeta, FrameStackHandle, SplitError},
 };
 
@@ -212,7 +215,7 @@ where
                 trace!("adjust_status: FrameStack {{ .. }}");
             }
             ReceiverMsg::FatalError { error } => {
-                log::warn!("adjust_status: fatal error: {error:?}; going back to idle state");
+                log::error!("adjust_status: fatal error: {error:?}; going back to idle state");
                 self.status = ConnectionStatus::Idle;
             }
             ReceiverMsg::Cancelled => {
@@ -567,7 +570,7 @@ where
     }
 
     pub fn passive_is_running(&self) -> bool {
-        todo!();  // properly track states!
+        todo!(); // properly track states!
     }
 
     pub fn cancel<E>(

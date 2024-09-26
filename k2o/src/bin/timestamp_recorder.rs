@@ -10,10 +10,7 @@ use k2o::{
     block::{BlockRouteInfo, K2Block},
     block_is::K2ISBlock,
     block_summit::K2SummitBlock,
-    events::{
-        AcquisitionParams, AcquisitionSync, ChannelEventBus, EventBus, EventMsg,
-        Events,
-    },
+    events::{AcquisitionParams, AcquisitionSync, ChannelEventBus, EventBus, EventMsg, Events},
     recv::{recv_decode_loop, RecvConfig},
 };
 

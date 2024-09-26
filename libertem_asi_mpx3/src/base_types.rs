@@ -1,5 +1,7 @@
 use common::{
-    background_thread::ConcreteAcquisitionSize, frame_stack::FrameMeta, generic_connection::{AcquisitionConfig, DetectorConnectionConfig}
+    background_thread::ConcreteAcquisitionSize,
+    frame_stack::FrameMeta,
+    generic_connection::{AcquisitionConfig, DetectorConnectionConfig},
 };
 use pyo3::{pyclass, pymethods};
 use serde::{Deserialize, Serialize};

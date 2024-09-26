@@ -8,7 +8,9 @@ use std::{
 };
 
 use common::{
-    background_thread::ConcreteAcquisitionSize, frame_stack::FrameMeta, generic_connection::{AcquisitionConfig, DetectorConnectionConfig}
+    background_thread::ConcreteAcquisitionSize,
+    frame_stack::FrameMeta,
+    generic_connection::{AcquisitionConfig, DetectorConnectionConfig},
 };
 use log::{trace, warn};
 use num::Num;
