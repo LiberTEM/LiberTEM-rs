@@ -6,7 +6,7 @@ use std::{
     io::{self, Read, Write},
     ops::Deref,
     os::{
-        fd::{AsRawFd, FromRawFd, RawFd},
+        fd::{AsFd, AsRawFd, FromRawFd, RawFd},
         unix::net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
@@ -112,10 +112,10 @@ where
                 Err(err) => {
                     /* EAGAIN / EWOULDBLOCK */
                     if err.kind() == io::ErrorKind::WouldBlock {
-                        let fd = listener.as_raw_fd();
                         let flags = PollFlags::POLLIN;
-                        let pollfd = PollFd::new(fd, flags);
-                        nix::poll::poll(&mut [pollfd], 100).expect("poll for socket to be ready");
+                        let pollfd = PollFd::new(listener.as_fd(), flags);
+                        nix::poll::poll(&mut [pollfd], 100u16)
+                            .expect("poll for socket to be ready");
                         continue;
                     }
                     /* connection failed */
