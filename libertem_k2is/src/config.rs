@@ -79,7 +79,7 @@ impl K2Mode {
                 width: 2048,
             },
             (K2Mode::Summit, true) => Shape {
-                height: 3840,
+                height: 3840 - 120,
                 width: 4096 - 256,
             },
             (K2Mode::Summit, false) => Shape {

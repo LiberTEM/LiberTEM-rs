@@ -27,15 +27,16 @@ where
     let in_rows = input.chunks_exact(frame_width_orig);
     let out_rows = output.chunks_exact_mut(frame_width);
 
-    assert_eq!(
-        in_rows.len(),
-        out_rows.len(),
-        "{} != {}; frame_width_orig={}, frame_width={}",
-        in_rows.len(),
-        out_rows.len(),
-        frame_width_orig,
-        frame_width,
-    );
+    // -- this only works without a height difference, for double-checking stuff....
+    // assert_eq!(
+    //     in_rows.len(),
+    //     out_rows.len(),
+    //     "{} != {}; frame_width_orig={}, frame_width={}",
+    //     in_rows.len(),
+    //     out_rows.len(),
+    //     frame_width_orig,
+    //     frame_width,
+    // );
 
     for (in_row, out_row) in in_rows.zip(out_rows) {
         try_cast_if_safe(&in_row[0..frame_width], out_row)?;
