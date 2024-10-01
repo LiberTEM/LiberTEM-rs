@@ -1,5 +1,5 @@
 use bincode::serialize;
-use ipc_test::{SharedSlabAllocator, Slot, SlotForWriting, SlotInfo};
+use ipc_test::{slab::ShmError, SharedSlabAllocator, Slot, SlotForWriting, SlotInfo};
 use log::trace;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -16,6 +16,12 @@ use crate::{
     headers::DType,
     sparse_csr::{CSRSizes, CSRSplitter},
 };
+
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum SplitError {
+    #[error("shm access error: {0}")]
+    ShmAccessError(#[from] ShmError),
+}
 
 /// Information about one array chunk and the layout of the CSR sub-arrays in memory
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Clone)]
@@ -265,7 +271,11 @@ impl ChunkStackHandle {
     ///
     /// The length of the left stack returned is equal to `mid`.
     ///
-    pub fn split_at(self, mid: u32, shm: &mut SharedSlabAllocator) -> (Self, Self) {
+    pub fn split_at(
+        self,
+        mid: u32,
+        shm: &mut SharedSlabAllocator,
+    ) -> Result<(Self, Self), SplitError> {
         // FIXME: this whole thing is falliable, so modify return type to Result<> (or PyResult<>?)
 
         // First, let's plan our operation:
@@ -362,9 +372,9 @@ impl ChunkStackHandle {
         let right = stack_right.writing_done(shm);
 
         // free our own slot
-        shm.free_idx(self.slot.slot_idx);
+        shm.free_idx(self.slot.slot_idx)?;
 
-        (left, right)
+        Ok((left, right))
     }
 
     // FIXME: this doesn't make sense for stacks with different V-type per chunk!
@@ -554,7 +564,7 @@ mod tests {
 
         let _old_layout_len = fs_handle.layout.len();
 
-        let (a, b) = fs_handle.split_at(2, &mut shm);
+        let (a, b) = fs_handle.split_at(2, &mut shm).unwrap();
 
         let slot_a: Slot = shm.get(a.slot.slot_idx);
         let slot_b: Slot = shm.get(b.slot.slot_idx);
@@ -575,13 +585,13 @@ mod tests {
         assert_eq!(view_b.values, &[256, 512, 1024, 2048]);
 
         // when the split is done, there should be one free shm slot:
-        assert_eq!(shm.num_slots_free(), 1);
+        assert_eq!(shm.num_slots_free().unwrap(), 1);
 
         // and we can free them again:
-        shm.free_idx(a.slot.slot_idx);
-        shm.free_idx(b.slot.slot_idx);
+        shm.free_idx(a.slot.slot_idx).unwrap();
+        shm.free_idx(b.slot.slot_idx).unwrap();
 
-        assert_eq!(shm.num_slots_free(), 3);
+        assert_eq!(shm.num_slots_free().unwrap(), 3);
     }
 
     #[test]
@@ -669,16 +679,16 @@ mod tests {
 
         let fs_handle = fs.writing_done(&mut shm);
 
-        let (a, b) = fs_handle.split_at(14, &mut shm);
+        let (a, b) = fs_handle.split_at(14, &mut shm).unwrap();
 
         // when the split is done, there should be one free shm slot:
-        assert_eq!(shm.num_slots_free(), 1);
+        assert_eq!(shm.num_slots_free().unwrap(), 1);
 
         // and we can free them again:
-        shm.free_idx(a.slot.slot_idx);
-        shm.free_idx(b.slot.slot_idx);
+        shm.free_idx(a.slot.slot_idx).unwrap();
+        shm.free_idx(b.slot.slot_idx).unwrap();
 
-        assert_eq!(shm.num_slots_free(), 3);
+        assert_eq!(shm.num_slots_free().unwrap(), 3);
     }
 
     #[test]

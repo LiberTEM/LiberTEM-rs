@@ -1,6 +1,5 @@
 use std::{
     convert::Infallible,
-    fmt::Display,
     mem::replace,
     ops::Deref,
     sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
@@ -75,61 +74,46 @@ fn recv_frame_into(
 
 #[derive(Debug, Clone, thiserror::Error)]
 enum AcquisitionError {
+    #[error("other end has disconnected")]
     Disconnected,
-    SeriesMismatch,
-    FrameIdMismatch { expected_id: u64, got_id: u64 },
-    SerdeError { recvd_msg: String, msg: String },
-    StopThread,
-    Cancelled,
-    ZmqError { err: zmq::Error },
-    BufferFull,
-    StateError { msg: String },
-    ConfigurationError { msg: String },
-}
 
-impl Display for AcquisitionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AcquisitionError::ZmqError { err } => {
-                write!(f, "zmq error {err}")
-            }
-            AcquisitionError::StopThread => {
-                write!(f, "acquisition cancelled")
-            }
-            AcquisitionError::SerdeError { recvd_msg, msg } => {
-                write!(f, "deserialization failed: {msg}; got msg {recvd_msg}")
-            }
-            AcquisitionError::SeriesMismatch => {
-                write!(f, "series mismatch")
-            }
-            AcquisitionError::FrameIdMismatch {
-                expected_id,
-                got_id,
-            } => {
-                write!(f, "frame id mismatch; got {got_id}, expected {expected_id}")
-            }
-            AcquisitionError::Disconnected => {
-                write!(f, "other end has disconnected")
-            }
-            AcquisitionError::BufferFull => {
-                write!(f, "shm buffer is full")
-            }
-            AcquisitionError::StateError { msg } => {
-                write!(f, "state error: {msg}")
-            }
-            AcquisitionError::ConfigurationError { msg } => {
-                write!(f, "configuration error: {msg}")
-            }
-            AcquisitionError::Cancelled => {
-                write!(f, "acquisition cancelled")
-            }
-        }
-    }
+    #[error("series mismatch; expected {expected_id}, got {got_id}")]
+    SeriesMismatch { expected_id: u64, got_id: u64 },
+
+    #[error("frame id mismatch; got {got_id}, expected {expected_id}")]
+    FrameIdMismatch { expected_id: u64, got_id: u64 },
+
+    #[error("deserialization failed: {msg}; got msg {recvd_msg}")]
+    SerdeError { recvd_msg: String, msg: String },
+
+    #[error("acquisition cancelled")]
+    StopThread,
+
+    #[error("acquisition cancelled")]
+    Cancelled,
+
+    #[error("zmq error: {err}")]
+    ZmqError { err: zmq::Error },
+
+    #[error("state error: {msg}")]
+    StateError { msg: String },
+
+    #[error("configuration error: {msg}")]
+    ConfigurationError { msg: String },
+
+    #[error("SHM access error: {err}")]
+    ShmAccessError { err: ShmError },
 }
 
 impl<T> From<SendError<T>> for AcquisitionError {
     fn from(_value: SendError<T>) -> Self {
         AcquisitionError::Disconnected
+    }
+}
+
+impl From<ShmError> for AcquisitionError {
+    fn from(value: ShmError) -> Self {
+        Self::ShmAccessError { err: value }
     }
 }
 
@@ -207,7 +191,7 @@ fn make_frame_stack(
 ) -> Result<FrameStackForWriting<DectrisFrameMeta>, AcquisitionError> {
     loop {
         // keep some slots free for splitting frame stacks
-        if shm.num_slots_free() < 3 && shm.num_slots_total() >= 3 {
+        if shm.num_slots_free()? < 3 && shm.num_slots_total() >= 3 {
             trace!("shm is almost full; waiting and creating backpressure...");
             check_for_control(to_thread_r)?;
             std::thread::sleep(Duration::from_millis(1));
@@ -221,6 +205,9 @@ fn make_frame_stack(
                 check_for_control(to_thread_r)?;
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
+            }
+            Err(e @ ShmError::MutexError(_)) => {
+                return Err(e.into());
             }
         }
     }
@@ -285,7 +272,7 @@ fn passive_acquisition(
                 shm,
             )?;
 
-            let free = shm.num_slots_free();
+            let free = shm.num_slots_free()?;
             let total = shm.num_slots_total();
             info!("passive acquisition done; free slots: {}/{}", free, total);
         } else {
@@ -342,7 +329,10 @@ fn acquisition(
             recv_frame_into(socket, to_thread_r, &mut msg, &mut msg_image)?;
 
         if dimage.series != series {
-            return Err(AcquisitionError::SeriesMismatch);
+            return Err(AcquisitionError::SeriesMismatch {
+                expected_id: series,
+                got_id: dimage.series,
+            });
         }
 
         if dimage.frame != expected_frame_id {
@@ -372,6 +362,9 @@ fn acquisition(
                 }
                 Err(FrameStackWriteError::TooSmall) => {
                     warn!("acquisition: frame stack too small")
+                }
+                Err(FrameStackWriteError::ShmAccessError(e)) => {
+                    return Err(AcquisitionError::ShmAccessError { err: e })
                 }
             }
         }
@@ -418,6 +411,9 @@ fn acquisition(
                 }
                 Err(FrameStackWriteError::TooSmall) => {
                     warn!("acquisition: frame stack too small")
+                }
+                Err(FrameStackWriteError::ShmAccessError(e)) => {
+                    return Err(AcquisitionError::ShmAccessError { err: e })
                 }
             }
 
@@ -620,17 +616,6 @@ fn background_thread(
     }
     debug!("background_thread: is done");
     Ok(())
-}
-
-pub struct ReceiverError {
-    pub msg: String,
-}
-
-impl Display for ReceiverError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let msg = &self.msg;
-        write!(f, "{msg}")
-    }
 }
 
 #[derive(Debug)]

@@ -70,7 +70,7 @@ fn handle_connection(
     }
 
     println!("done sending {} items", send_num_items);
-    while ssa.num_slots_free() < ssa.num_slots_total() {
+    while ssa.num_slots_free().unwrap() < ssa.num_slots_total() {
         thread::sleep(Duration::from_millis(100));
     }
     println!("done!")

@@ -191,7 +191,9 @@ macro_rules! impl_py_connection {
                     let _trace_guard = span_from_py(py, &format!("{}::close", stringify!($name)))?;
 
                     if let Some(mut conn_impl) = self.conn_impl.take() {
-                        conn_impl.log_shm_stats();
+                        conn_impl
+                            .log_shm_stats()
+                            .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
                         conn_impl.reset_stats();
                         conn_impl.close();
                         Ok(())
@@ -261,7 +263,9 @@ macro_rules! impl_py_connection {
 
                 pub fn log_shm_stats(&self) -> PyResult<()> {
                     let conn_impl = self.get_conn()?;
-                    conn_impl.log_shm_stats();
+                    conn_impl
+                        .log_shm_stats()
+                        .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
                     Ok(())
                 }
             }

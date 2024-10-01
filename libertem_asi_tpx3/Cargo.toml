@@ -2,7 +2,7 @@
 name = "libertem-asi-tpx3"
 authors = ["Alexander Clausen <a.clausen@fz-juelich.de>"]
 license = "MIT"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2021"
 readme = "README.md"
 rust-version = "1.71"
@@ -28,9 +28,13 @@ common = { path = "../common" }
 zerocopy = "0.7.35"
 page_size = "0.5.0"
 opentelemetry = "0.25.0"
+thiserror = "1.0.64"
 
 [dev-dependencies]
 tempfile = "3.3.0"
 
 [features]
 extension-module = ["pyo3/extension-module"]
+
+[lints.rust]
+unused_must_use = "deny"

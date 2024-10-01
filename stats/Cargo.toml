@@ -10,3 +10,6 @@ rust-version = "1.71"
 
 [dependencies]
 log = "0.4.22"
+
+[lints.rust]
+unused_must_use = "deny"

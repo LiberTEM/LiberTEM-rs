@@ -7,13 +7,22 @@ use crate::{
     headers::{HeaderTypes, WireFormatError},
 };
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum StreamError {
+    #[error("timeout")]
     Timeout,
+
+    #[error("I/O error: {0}")]
     IoError(std::io::Error),
+
+    #[error("EOF")]
     Eof,
-    FormatError(WireFormatError),
-    ControlError(ControlError),
+
+    #[error("format error: {0}")]
+    FormatError(#[from] WireFormatError),
+
+    #[error("control error: {0}")]
+    ControlError(#[from] ControlError),
 }
 
 impl From<std::io::Error> for StreamError {
@@ -22,18 +31,6 @@ impl From<std::io::Error> for StreamError {
             std::io::ErrorKind::TimedOut => StreamError::Timeout,
             _ => StreamError::IoError(value),
         }
-    }
-}
-
-impl From<WireFormatError> for StreamError {
-    fn from(value: WireFormatError) -> Self {
-        Self::FormatError(value)
-    }
-}
-
-impl From<ControlError> for StreamError {
-    fn from(value: ControlError) -> Self {
-        Self::ControlError(value)
     }
 }
 

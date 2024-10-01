@@ -1,5 +1,4 @@
 use std::{
-    fmt::Display,
     io::ErrorKind,
     net::TcpStream,
     sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
@@ -13,7 +12,7 @@ use common::{
     tcp::{self, ReadExactError},
     utils::{num_from_byte_slice, three_way_shift, NumParseError},
 };
-use ipc_test::SharedSlabAllocator;
+use ipc_test::{slab::ShmError, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
 use opentelemetry::Context;
 use serval_client::{DetectorConfig, ServalClient, ServalError};
@@ -261,6 +260,9 @@ enum AcquisitionError {
 
     #[error("error writing to shm: {0}")]
     WriteError(#[from] FrameStackWriteError),
+
+    #[error("shm access error: {0}")]
+    ShmError(#[from] ShmError),
 }
 
 impl From<ParseError> for AcquisitionError {
@@ -388,7 +390,7 @@ fn passive_acquisition(
             shm,
         )?;
 
-        let free = shm.num_slots_free();
+        let free = shm.num_slots_free()?;
         let total = shm.num_slots_total();
         info!("passive acquisition done; free slots: {}/{}", free, total);
 
@@ -600,17 +602,6 @@ fn background_thread(
     }
     debug!("background_thread: is done");
     Ok(())
-}
-
-pub struct ReceiverError {
-    pub msg: String,
-}
-
-impl Display for ReceiverError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let msg = &self.msg;
-        write!(f, "{msg}")
-    }
 }
 
 pub struct ASIMpxBackgroundThread {

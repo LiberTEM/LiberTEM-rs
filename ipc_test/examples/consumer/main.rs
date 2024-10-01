@@ -75,13 +75,13 @@ fn main() {
         // some additional "work":
         //std::thread::sleep(Duration::from_micros(1));
 
-        ssa.free_idx(slot_info.slot_idx);
+        ssa.free_idx(slot_info.slot_idx).unwrap();
 
         sum += sum_part.0 as f64;
         bytes_processed += SLOT_SIZE_BYTES;
 
         if t0.elapsed() > Duration::from_secs(1) {
-            let slots_free = ssa.num_slots_free();
+            let slots_free = ssa.num_slots_free().unwrap();
             println!(
                 "idx: {idx:5}, sum: {sum_part}, throughput: {:7.2} MiB/s, slots free: {slots_free}",
                 bytes_processed as f32 / 1024.0 / 1024.0

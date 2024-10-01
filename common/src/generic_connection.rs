@@ -6,7 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ipc_test::{slab::SlabInitError, SharedSlabAllocator};
+use ipc_test::{
+    slab::{ShmError, SlabInitError},
+    SharedSlabAllocator,
+};
 use log::{debug, info, trace, warn};
 use stats::Stats;
 
@@ -52,6 +55,9 @@ pub enum ConnectionError {
 
     #[error("could not connect to SHM area: {0}")]
     ShmConnectError(#[from] SlabInitError),
+
+    #[error("could not access SHM")]
+    ShmAccessError(#[from] ShmError),
 
     #[error("background thread is dead")]
     Disconnected,
@@ -117,6 +123,7 @@ where
                 frame_stack = old_frame_stack;
                 continue;
             }
+            Err(SplitError::AccessError(e)) => return Err(e.into()),
         };
     }
 }
@@ -314,13 +321,13 @@ where
                     return Err(ConnectionError::FatalError(error))
                 }
                 ReceiverMsg::FrameStack { frame_stack } => {
-                    frame_stack.free_slot(&mut self.shm);
+                    frame_stack.free_slot(&mut self.shm)?;
                     return Err(ConnectionError::UnexpectedMessage(
                         "ReceiverMsg::FrameStack in wait_for_arm".to_owned(),
                     ));
                 }
                 ReceiverMsg::Finished { frame_stack } => {
-                    frame_stack.free_slot(&mut self.shm);
+                    frame_stack.free_slot(&mut self.shm)?;
                     return Err(ConnectionError::UnexpectedMessage(
                         "ReceiverMsg::Finished in wait_for_arm".to_owned(),
                     ));
@@ -406,11 +413,11 @@ where
             match res {
                 ReceiverMsg::FrameStack { frame_stack } => {
                     trace!("wait_for_status: ignoring received FrameStackHandle");
-                    frame_stack.free_slot(&mut self.shm);
+                    frame_stack.free_slot(&mut self.shm)?;
                 }
                 ReceiverMsg::Finished { frame_stack } => {
                     warn!("wait_for_status: ignoring FrameStackHandle received in ReceiverMsg::Finished message");
-                    frame_stack.free_slot(&mut self.shm);
+                    frame_stack.free_slot(&mut self.shm)?;
                 }
                 ReceiverMsg::FatalError { error } => {
                     return Err(ConnectionError::FatalError(error));
@@ -568,12 +575,13 @@ where
         self.wait_for_status(ConnectionStatus::Idle, *timeout, periodic_callback)
     }
 
-    pub fn log_shm_stats(&self) {
+    pub fn log_shm_stats(&self) -> Result<(), ConnectionError> {
         let shm = &self.shm;
-        let free = shm.num_slots_free();
+        let free = shm.num_slots_free()?;
         let total = shm.num_slots_total();
         self.stats.log_stats();
         info!("shm stats free/total: {}/{}", free, total);
+        Ok(())
     }
 
     pub fn reset_stats(&mut self) {

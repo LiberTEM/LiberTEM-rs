@@ -90,7 +90,9 @@ impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
                         frame_stack.len()
                     );
                     self.stats.count_split();
-                    let (left, right) = frame_stack.split_at(max_size, self.shm);
+                    let (left, right) = frame_stack
+                        .split_at(max_size, self.shm)
+                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
                     self.remainder.push(right);
                     assert!(left.len() <= max_size);
                     return Ok(Some(left));
@@ -192,7 +194,7 @@ impl ASITpx3Connection {
     fn start_passive_impl(&mut self) -> PyResult<()> {
         self.receiver
             .start_passive()
-            .map_err(|err| exceptions::PyRuntimeError::new_err(err.msg))
+            .map_err(|err| exceptions::PyRuntimeError::new_err(err.to_string()))
     }
 
     fn close_impl(&mut self) {
@@ -336,10 +338,14 @@ impl ASITpx3Connection {
         })
     }
 
-    fn log_shm_stats(&self) {
-        let free = self.local_shm.num_slots_free();
+    fn log_shm_stats(&self) -> PyResult<()> {
+        let free = self
+            .local_shm
+            .num_slots_free()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let total = self.local_shm.num_slots_total();
         self.stats.log_stats();
         info!("shm stats free/total: {}/{}", free, total);
+        Ok(())
     }
 }

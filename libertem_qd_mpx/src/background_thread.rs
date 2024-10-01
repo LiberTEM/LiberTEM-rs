@@ -49,8 +49,8 @@ pub enum AcquisitionError {
     #[error("configuration error: {msg}")]
     ConfigurationError { msg: String },
 
-    #[error("shm buffer full")]
-    NoSlotAvailable,
+    #[error("error accessing shm: {0}")]
+    ShmAccessError(#[from] ShmError),
 
     #[error("error writing to shm: {0}")]
     WriteError(#[from] FrameStackWriteError),
@@ -92,14 +92,6 @@ impl From<FrameMetaParseError> for AcquisitionError {
 impl<T> From<SendError<T>> for AcquisitionError {
     fn from(_value: SendError<T>) -> Self {
         AcquisitionError::Disconnected
-    }
-}
-
-impl From<ShmError> for AcquisitionError {
-    fn from(value: ShmError) -> Self {
-        match value {
-            ShmError::NoSlotAvailable => AcquisitionError::NoSlotAvailable,
-        }
     }
 }
 
@@ -370,7 +362,7 @@ fn make_frame_stack<'a>(
 ) -> Result<WriteGuard<'a, QdFrameMeta>, AcquisitionError> {
     loop {
         // keep some slots free for splitting frame stacks
-        if shm.num_slots_free() < 3 && shm.num_slots_total() >= 3 {
+        if shm.num_slots_free()? < 3 && shm.num_slots_total() >= 3 {
             trace!("shm is almost full; waiting and creating backpressure...");
             check_for_control(to_thread_r)?;
             std::thread::sleep(Duration::from_millis(1));
@@ -393,6 +385,9 @@ fn make_frame_stack<'a>(
                 check_for_control(to_thread_r)?;
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
+            }
+            Err(e @ ShmError::MutexError(_)) => {
+                return Err(e.into());
             }
         }
     }
@@ -624,7 +619,7 @@ fn passive_acquisition(
             shm,
         )?;
 
-        let free = shm.num_slots_free();
+        let free = shm.num_slots_free()?;
         let total = shm.num_slots_total();
         info!("passive acquisition done; free slots: {}/{}", free, total);
 
@@ -974,7 +969,7 @@ End
             conn.close();
             server_thread.join().unwrap();
 
-            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free().unwrap());
         });
     }
 
@@ -1051,7 +1046,7 @@ End
             conn.close();
             server_thread.join().unwrap();
 
-            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free().unwrap());
         });
     }
 
@@ -1156,7 +1151,7 @@ End
                     stack.with_slot(&shm, |s| {
                         assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
                     });
-                    stack.free_slot(&mut shm);
+                    stack.free_slot(&mut shm).unwrap();
                     idx += 1;
                 } else {
                     eprintln!("done!");
@@ -1173,7 +1168,7 @@ End
             conn.close();
             server_thread.join().unwrap();
 
-            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free().unwrap());
         });
     }
 
@@ -1257,7 +1252,7 @@ End
                     stack.with_slot(&shm, |s| {
                         assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
                     });
-                    stack.free_slot(&mut shm);
+                    stack.free_slot(&mut shm).unwrap();
                 } else {
                     eprintln!("done!");
                     break;
@@ -1272,7 +1267,7 @@ End
             conn.close();
             server_thread.join().unwrap();
 
-            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free().unwrap());
         });
     }
 
@@ -1365,7 +1360,7 @@ End
                     stack.with_slot(&shm, |s| {
                         assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
                     });
-                    stack.free_slot(&mut shm);
+                    stack.free_slot(&mut shm).unwrap();
                 } else {
                     eprintln!("done!");
                     break;
@@ -1380,7 +1375,7 @@ End
             conn.close();
             server_thread.join().unwrap();
 
-            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free().unwrap());
         });
     }
 
@@ -1478,7 +1473,7 @@ End
                     stack.with_slot(&shm, |s| {
                         assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
                     });
-                    stack.free_slot(&mut shm);
+                    stack.free_slot(&mut shm).unwrap();
                 } else {
                     eprintln!("done!");
                     break;
@@ -1493,7 +1488,7 @@ End
             conn.close();
             server_thread.join().unwrap();
 
-            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free().unwrap());
         });
     }
 
@@ -1586,7 +1581,7 @@ End
                 stack.with_slot(&shm, |s| {
                     assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
                 });
-                stack.free_slot(&mut shm);
+                stack.free_slot(&mut shm).unwrap();
             }
 
             let next = conn.get_next_stack(1, || Ok::<_, std::io::Error>(()));
@@ -1601,7 +1596,7 @@ End
             server_thread.join().unwrap();
 
             // we don't leak any slots, yay!
-            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free().unwrap());
         });
     }
 
@@ -1690,7 +1685,7 @@ End
                 stack.with_slot(&shm, |s| {
                     assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
                 });
-                stack.free_slot(&mut shm);
+                stack.free_slot(&mut shm).unwrap();
                 idx += 1;
 
                 if Instant::now() > deadline {
@@ -1820,7 +1815,7 @@ End
             first.with_slot(&shm, |s| {
                 assert_eq!(s.as_slice(), vec![0u8; 256 * 256],);
             });
-            first.free_slot(&mut shm);
+            first.free_slot(&mut shm).unwrap();
 
             info!("got the first one");
 
@@ -1848,7 +1843,7 @@ End
                 stack.with_slot(&shm, |s| {
                     assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
                 });
-                stack.free_slot(&mut shm);
+                stack.free_slot(&mut shm).unwrap();
             }
 
             // allow the server thread to end:
@@ -1859,7 +1854,7 @@ End
             server_thread.join().unwrap();
 
             // we don't leak any slots, yay!
-            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free().unwrap());
         });
     }
 
@@ -1970,7 +1965,7 @@ End
                 stack.with_slot(&shm, |s| {
                     assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
                 });
-                stack.free_slot(&mut shm);
+                stack.free_slot(&mut shm).unwrap();
             }
 
             // next stack is an error:
@@ -2001,7 +1996,7 @@ End
                 stack.with_slot(&shm, |s| {
                     assert_eq!(s.as_slice(), vec![idx as u8; 256 * 256],);
                 });
-                stack.free_slot(&mut shm);
+                stack.free_slot(&mut shm).unwrap();
             }
 
             // that was the last stack:
@@ -2022,7 +2017,7 @@ End
                 .expect("server should be able to send everything");
 
             // we don't leak any slots, yay!
-            assert_eq!(shm.num_slots_total(), shm.num_slots_free());
+            assert_eq!(shm.num_slots_total(), shm.num_slots_free().unwrap());
         });
     }
 }
