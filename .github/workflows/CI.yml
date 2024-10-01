@@ -23,7 +23,6 @@ jobs:
     strategy:
       matrix:
         crate: [libertem_dectris, libertem_asi_tpx3, libertem_qd_mpx]
-        toolchain: ["stable", "1.66"]
     steps:
     - uses: actions/checkout@v4
       with:
@@ -33,7 +32,6 @@ jobs:
         working-directory: ${{ matrix.crate }}
         manylinux: auto
         command: build
-        rust-toolchain: ${{ matrix.toolchain }}
         container: ghcr.io/libertem/manylinux2014_x86_64:latest
         args: --release --sdist -o target/dist --find-interpreter
         sccache: 'true'
