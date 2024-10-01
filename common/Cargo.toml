@@ -2,7 +2,7 @@
 name = "common"
 authors = ["Alexander Clausen <a.clausen@fz-juelich.de>"]
 license = "MIT"
-version = "0.2.12"
+version = "0.2.13"
 edition = "2021"
 rust-version = "1.71"
 

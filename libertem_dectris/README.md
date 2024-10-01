@@ -84,6 +84,10 @@ finally:
 
 ## Changelog
 
+### v0.2.13
+
+- Updated dependencies and improved error handling
+
 ### v0.2.12
 
 - Refactored and unified interface - allows for more code sharing between crates

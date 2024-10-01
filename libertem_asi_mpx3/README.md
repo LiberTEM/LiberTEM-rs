@@ -15,4 +15,4 @@ also be used stand-alone.
 
 ### v0.2.XXX
 
-- Initial release of LiberTEM-qd-mpx
+- Initial release of LiberTEM-asi-mpx
