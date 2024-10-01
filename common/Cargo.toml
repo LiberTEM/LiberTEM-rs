@@ -13,10 +13,10 @@ ipc-test = { path = "../ipc_test" }
 stats = { path = "../stats" }
 pyo3 = { version = "0.21.2", features = ["abi3-py37"] }
 numpy = "0.21"
-serde = "1.0.199"
+serde = "1.0.210"
 tempfile = "3.10.1"
-thiserror = "1.0.59"
-log = "0.4.21"
+thiserror = "1.0.64"
+log = "0.4.22"
 ndarray = { version = "0.15.6" }
 zerocopy = "0.7.35"
 num = "0.4.3"
