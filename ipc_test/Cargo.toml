@@ -29,3 +29,6 @@ sendfd = "0.4.3"
 
 [target.'cfg(not(windows))'.dependencies]
 nix = { version = "0.29.0", features = ["poll"] }
+
+[lints.rust]
+unused_must_use = "deny"

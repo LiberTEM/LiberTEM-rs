@@ -1,12 +1,15 @@
-use std::fmt::Display;
-
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use url::Url;
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum ServalError {
+    #[error("request failed: {msg}")]
     RequestFailed { msg: String },
+
+    #[error("serialization error: {msg}")]
     SerializationError { msg: String },
+
+    #[error("URL error: {msg}")]
     URLError { msg: String },
 }
 
@@ -30,16 +33,6 @@ impl From<reqwest::Error> for ServalError {
     fn from(value: reqwest::Error) -> Self {
         Self::RequestFailed {
             msg: value.to_string(),
-        }
-    }
-}
-
-impl Display for ServalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ServalError::RequestFailed { msg } => write!(f, "request failed: {msg}"),
-            ServalError::SerializationError { msg } => write!(f, "serialization error: {msg}"),
-            ServalError::URLError { msg } => write!(f, "URL error: {msg}"),
         }
     }
 }

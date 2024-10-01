@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bincode",
  "criterion",
@@ -2304,7 +2304,7 @@ checksum = "561d97a539a36e26a9a5fad1ea11a3039a67714694aaa379433e580854bc3dc5"
 
 [[package]]
 name = "libertem-asi-mpx3"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bincode",
  "common",
@@ -2325,7 +2325,7 @@ dependencies = [
 
 [[package]]
 name = "libertem-asi-tpx3"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bincode",
  "common",
@@ -2341,13 +2341,14 @@ dependencies = [
  "serde",
  "stats",
  "tempfile",
+ "thiserror",
  "uuid",
  "zerocopy",
 ]
 
 [[package]]
 name = "libertem-dectris"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bincode",
  "bs_sys",
@@ -2377,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "libertem_qd_mpx"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bincode",
  "common",
@@ -3900,6 +3901,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "thiserror",
  "url",
 ]
 

@@ -13,10 +13,15 @@ pub enum HeaderTypes {
     AcquisitionEnd { header: AcquisitionEnd },
 }
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum WireFormatError {
+    #[error("unknown header: {id}")]
     UnknownHeader { id: u8 },
+
+    #[error("unknown version")]
     UnknownVersion,
+
+    #[error("serde error: {err}")]
     SerdeError { err: Box<ErrorKind> },
 }
 

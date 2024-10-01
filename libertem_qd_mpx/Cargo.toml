@@ -2,7 +2,7 @@
 name = "libertem_qd_mpx"
 authors = ["Alexander Clausen <a.clausen@fz-juelich.de>"]
 license = "MIT"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2021"
 readme = "README.md"
 rust-version = "1.71"
@@ -41,3 +41,6 @@ tokio = { version = "1", features = ["rt", "net", "time", "sync", "io-util", "rt
 [[bench]]
 name = "decoders"
 harness = false
+
+[lints.rust]
+unused_must_use = "deny"

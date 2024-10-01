@@ -69,10 +69,13 @@ pub struct SHMHandle {
 
 impl SHMHandle {}
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ShmError {
     #[error("no slot available")]
     NoSlotAvailable,
+
+    #[error("mutex error: {0}")]
+    MutexError(String),
 }
 
 /// Additional information needed to re-crate a `SharedSlabAllocator` in a
@@ -103,6 +106,9 @@ pub struct SharedSlabAllocator {
 pub enum SlabInitError {
     #[error("connection failed: {0}")]
     ConnectError(#[from] ShmConnectError),
+
+    #[error("mutex error: {0}")]
+    MutexError(String),
 }
 
 ///
@@ -185,7 +191,8 @@ impl SharedSlabAllocator {
         let free_list_ptr = unsafe { ptr.offset(Self::MUTEX_SIZE.try_into().unwrap()) };
 
         let (_lock, bg_thread) = if init_structures {
-            let (lock, used_size) = unsafe { Mutex::new(ptr, free_list_ptr).unwrap() };
+            let (lock, used_size) = unsafe { Mutex::new(ptr, free_list_ptr) }
+                .map_err(|e| SlabInitError::MutexError(e.to_string()))?;
 
             if used_size > Self::MUTEX_SIZE {
                 panic!("Mutex size larger than expected!");
@@ -231,7 +238,8 @@ impl SharedSlabAllocator {
 
             (lock, Some((j, cleanup_chan_s)))
         } else {
-            let (lock, used_size) = unsafe { Mutex::from_existing(ptr, free_list_ptr).unwrap() };
+            let (lock, used_size) = unsafe { Mutex::from_existing(ptr, free_list_ptr) }
+                .map_err(|e| SlabInitError::MutexError(e.to_string()))?;
 
             if used_size > Self::MUTEX_SIZE {
                 panic!("Mutex size larger than expected!");
@@ -259,11 +267,12 @@ impl SharedSlabAllocator {
         Self::connect(&handle.os_handle)
     }
 
-    fn get_mutex(&self) -> Box<dyn LockImpl> {
+    fn get_mutex(&self) -> Result<Box<dyn LockImpl>, ShmError> {
         let ptr = self.shm.as_mut_ptr();
         let free_list_ptr = unsafe { ptr.offset(Self::MUTEX_SIZE.try_into().unwrap()) };
-        let (lock, _) = unsafe { Mutex::from_existing(ptr, free_list_ptr).unwrap() };
-        lock
+        let (lock, _) = unsafe { Mutex::from_existing(ptr, free_list_ptr) }
+            .map_err(|e| ShmError::MutexError(e.to_string()))?;
+        Ok(lock)
     }
 
     pub fn get_slab_info(&self) -> SlabInfo {
@@ -290,17 +299,25 @@ impl SharedSlabAllocator {
     /// `SlotInfo` struct using `writing_done`, which can then be sent to
     /// a consumer.
     pub fn get_mut(&mut self) -> Option<SlotForWriting> {
-        let slot_idx: usize = self.pop_free_slot_idx()?;
+        match self.try_get_mut() {
+            Ok(slot) => Some(slot),
+            Err(_) => None,
+        }
+    }
 
-        Some(SlotForWriting {
+    pub fn try_get_mut(&mut self) -> Result<SlotForWriting, ShmError> {
+        let slot_idx: usize = match self.pop_free_slot_idx()? {
+            Some(idx) => idx,
+            None => {
+                return Err(ShmError::NoSlotAvailable);
+            }
+        };
+
+        Ok(SlotForWriting {
             ptr: self.get_mut_ptr_for_slot(slot_idx),
             slot_idx,
             size: self.slot_size,
         })
-    }
-
-    pub fn try_get_mut(&mut self) -> Result<SlotForWriting, ShmError> {
-        self.get_mut().ok_or(ShmError::NoSlotAvailable)
     }
 
     /// Exchange the `SlotForWriting` token into
@@ -314,11 +331,11 @@ impl SharedSlabAllocator {
         }
     }
 
-    pub fn num_slots_free(&self) -> usize {
-        let mutex = self.get_mutex();
+    pub fn num_slots_free(&self) -> Result<usize, ShmError> {
+        let mutex = self.get_mutex()?;
         let guard = mutex.lock().unwrap();
         let stack = Self::get_free_list(*guard, self.num_slots);
-        stack.get_stack_idx()
+        Ok(stack.get_stack_idx())
     }
 
     pub fn num_slots_total(&self) -> usize {
@@ -338,11 +355,12 @@ impl SharedSlabAllocator {
         }
     }
 
-    pub fn free_idx(&mut self, slot_idx: usize) {
-        let mutex = self.get_mutex();
+    pub fn free_idx(&mut self, slot_idx: usize) -> Result<(), ShmError> {
+        let mutex = self.get_mutex()?;
         let guard = mutex.lock().unwrap();
         let mut stack = Self::get_free_list(*guard, self.num_slots);
         stack.push(slot_idx);
+        Ok(())
     }
 
     ///
@@ -416,11 +434,11 @@ impl SharedSlabAllocator {
         FreeStack::new(stack_ptr, free_list_size)
     }
 
-    fn pop_free_slot_idx(&mut self) -> Option<usize> {
-        let mutex = self.get_mutex();
+    fn pop_free_slot_idx(&mut self) -> Result<Option<usize>, ShmError> {
+        let mutex = self.get_mutex()?;
         let guard = mutex.lock().unwrap();
         let mut stack = Self::get_free_list(*guard, self.num_slots);
-        stack.pop()
+        Ok(stack.pop())
     }
 }
 
@@ -477,7 +495,7 @@ mod test {
         for i in 0..255u8 {
             assert_eq!(slotr.as_slice()[i as usize], i);
         }
-        ssa.free_idx(slotw.slot_idx);
+        ssa.free_idx(slotw.slot_idx).unwrap();
     }
 
     #[test]
@@ -505,7 +523,7 @@ mod test {
         for i in 0..255u8 {
             assert_eq!(slotr.as_slice()[i as usize], i);
         }
-        ssa2.free_idx(slotw.slot_idx);
+        ssa2.free_idx(slotw.slot_idx).unwrap();
     }
 
     #[test]
@@ -534,7 +552,7 @@ mod test {
         for i in 0..255u8 {
             assert_eq!(slotr.as_slice()[i as usize], i);
         }
-        ssa2.free_idx(slotw.slot_idx);
+        ssa2.free_idx(slotw.slot_idx).unwrap();
     }
 
     #[test]
@@ -575,7 +593,7 @@ mod test {
 
                 // We are done with the data in the slot, make it available
                 // to the producer:
-                ssa2.free_idx(idx);
+                ssa2.free_idx(idx).unwrap();
 
                 // for keeping the test robust: signal main thread we are done
                 done_s.send(()).unwrap();

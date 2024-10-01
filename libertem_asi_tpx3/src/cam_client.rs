@@ -90,7 +90,8 @@ impl CamClient {
     fn done(mut slf: PyRefMut<Self>, handle: &ChunkStackHandle) -> PyResult<()> {
         let slot_idx = handle.slot.slot_idx;
         if let Some(shm) = &mut slf.shm {
-            shm.free_idx(slot_idx);
+            shm.free_idx(slot_idx)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok(())
         } else {
             Err(PyRuntimeError::new_err(

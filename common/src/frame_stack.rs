@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use ipc_test::{SharedSlabAllocator, SlotForWriting};
+use ipc_test::{slab::ShmError, SharedSlabAllocator, SlotForWriting};
 use log::{error, warn};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -45,6 +45,9 @@ pub enum FrameStackWriteError {
 
     #[error("too small")]
     TooSmall,
+
+    #[error("SHM access error: {0}")]
+    ShmAccessError(#[from] ShmError),
 }
 
 impl From<FrameStackWriteError> for PyErr {
@@ -56,6 +59,7 @@ impl From<FrameStackWriteError> for PyErr {
             FrameStackWriteError::TooSmall => {
                 PyValueError::new_err("frame stack too small to handle single frame")
             }
+            FrameStackWriteError::ShmAccessError(e) => PyValueError::new_err(e.to_string()),
         }
     }
 }
@@ -64,6 +68,9 @@ impl From<FrameStackWriteError> for PyErr {
 pub enum SplitError<M: FrameMeta> {
     #[error("shm full")]
     ShmFull(FrameStackHandle<M>),
+
+    #[error("shm access error: {0}")]
+    AccessError(#[from] ShmError),
 }
 
 pub struct FrameStackForWriting<M>
@@ -160,7 +167,7 @@ where
     ) -> Result<FrameStackHandle<M>, FrameStackWriteError> {
         if self.is_empty() {
             let slot_info = shm.writing_done(self.slot);
-            shm.free_idx(slot_info.slot_idx);
+            shm.free_idx(slot_info.slot_idx)?;
             return Err(FrameStackWriteError::Empty);
         }
 
@@ -180,7 +187,7 @@ where
     ) -> Result<(), FrameStackWriteError> {
         if self.is_empty() {
             let slot_info = shm.writing_done(self.slot);
-            shm.free_idx(slot_info.slot_idx);
+            shm.free_idx(slot_info.slot_idx)?;
             Ok(())
         } else {
             Err(FrameStackWriteError::NonEmpty)
@@ -296,15 +303,17 @@ mod inner {
                 let mut slot_left = match shm.try_get_mut() {
                     Ok(s) => s,
                     Err(ShmError::NoSlotAvailable) => return Err(SplitError::ShmFull(self)),
+                    Err(e @ ShmError::MutexError(_)) => return Err(e.into()),
                 };
                 let mut slot_right = match shm.try_get_mut() {
                     Ok(s) => s,
                     Err(ShmError::NoSlotAvailable) => {
                         // don't leak the left slot!
                         let l = shm.writing_done(slot_left);
-                        shm.free_idx(l.slot_idx);
+                        shm.free_idx(l.slot_idx)?;
                         return Err(SplitError::ShmFull(self));
                     }
+                    Err(e @ ShmError::MutexError(_)) => return Err(e.into()),
                 };
 
                 let slice_left = slot_left.as_slice_mut();
@@ -316,7 +325,7 @@ mod inner {
                 let left = shm.writing_done(slot_left);
                 let right = shm.writing_done(slot_right);
 
-                shm.free_idx(self.slot.slot_idx);
+                shm.free_idx(self.slot.slot_idx)?;
 
                 (left, right)
             };
@@ -351,8 +360,8 @@ mod inner {
             f(&slot_r)
         }
 
-        pub fn free_slot(self, shm: &mut SharedSlabAllocator) {
-            shm.free_idx(self.slot.slot_idx);
+        pub fn free_slot(self, shm: &mut SharedSlabAllocator) -> Result<(), ShmError> {
+            shm.free_idx(self.slot.slot_idx)
         }
     }
 
@@ -493,7 +502,7 @@ impl<'b, M: FrameMeta> Drop for WriteGuard<'b, M> {
                 match frame_stack.writing_done(self.shm) {
                     Ok(frame_stack) => {
                         warn!("discarding non-empty frame stack as result of previous errors");
-                        frame_stack.free_slot(self.shm);
+                        let _ = frame_stack.free_slot(self.shm);
                     }
                     Err(e) => error!("WriteGuard::drop failed: {e:?}"),
                 }
@@ -616,12 +625,12 @@ mod tests {
         assert_eq!(a.offsets.len() + b.offsets.len(), 2);
 
         // when the split is done, there should be one free shm slot:
-        assert_eq!(shm.num_slots_free(), 1);
+        assert_eq!(shm.num_slots_free().unwrap(), 1);
 
         // and we can free them again:
-        shm.free_idx(a.slot.slot_idx);
-        shm.free_idx(b.slot.slot_idx);
+        shm.free_idx(a.slot.slot_idx).unwrap();
+        shm.free_idx(b.slot.slot_idx).unwrap();
 
-        assert_eq!(shm.num_slots_free(), 3);
+        assert_eq!(shm.num_slots_free().unwrap(), 3);
     }
 }

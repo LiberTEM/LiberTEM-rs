@@ -1,5 +1,4 @@
 use std::{
-    fmt::Display,
     mem::replace,
     net::TcpStream,
     thread::JoinHandle,
@@ -7,7 +6,7 @@ use std::{
 };
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
-use ipc_test::{SHMHandle, SharedSlabAllocator};
+use ipc_test::{slab::ShmError, SHMHandle, SharedSlabAllocator};
 use log::{debug, error, info, trace, warn};
 use opentelemetry::Context;
 
@@ -66,25 +65,31 @@ pub enum ReceiverStatus {
     Closed,
 }
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 enum AcquisitionError {
+    #[error("other end has disconnected")]
     Disconnected,
+
+    #[error("acquisition cancelled")]
     Cancelled,
+
+    #[error("shm buffer is full")]
     BufferFull,
-    SlotSizeTooSmall {
-        slot_size: usize,
-        chunk_size: usize,
-    },
 
-    /// Example: an unexpected header was received
-    StateError {
-        msg: String,
-    },
+    #[error("slot size {slot_size} too small for chunk {chunk_size}")]
+    SlotSizeTooSmall { slot_size: usize, chunk_size: usize },
 
-    /// An error occurred while reading the socket
-    StreamError {
-        err: StreamError,
-    },
+    // Example: an unexpected header was received
+    #[error("state error: {msg}")]
+    StateError { msg: String },
+
+    // An error occurred while reading the socket
+    #[error("stream error: {err}")]
+    StreamError { err: StreamError },
+
+    // An error occured while trying to access the SHM
+    #[error("SHM error: {err}")]
+    ShmAccessError { err: ShmError },
 }
 
 impl From<StreamError> for AcquisitionError {
@@ -99,37 +104,18 @@ impl<T> From<SendError<T>> for AcquisitionError {
     }
 }
 
-impl Display for AcquisitionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AcquisitionError::Cancelled => {
-                write!(f, "acquisition cancelled")
-            }
-            AcquisitionError::SlotSizeTooSmall {
-                slot_size,
-                chunk_size,
-            } => {
-                write!(f, "slot size {slot_size} too small for chunk {chunk_size}")
-            }
-            AcquisitionError::Disconnected => {
-                write!(f, "other end has disconnected")
-            }
-            AcquisitionError::BufferFull => {
-                write!(f, "shm buffer is full")
-            }
-            AcquisitionError::StateError { msg } => {
-                write!(f, "state error: {msg}")
-            }
-            AcquisitionError::StreamError { err } => {
-                write!(f, "stream error: {err:?}")
-            }
-        }
+impl From<ShmError> for AcquisitionError {
+    fn from(value: ShmError) -> Self {
+        AcquisitionError::ShmAccessError { err: value }
     }
 }
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum ControlError {
+    #[error("cancelled")]
     Cancelled,
+
+    #[error("state error: {msg}")]
     StateError { msg: String },
 }
 
@@ -199,7 +185,7 @@ fn wait_for_acquisition(
                     }
                 }
 
-                let free = shm.num_slots_free();
+                let free = shm.num_slots_free()?;
                 let total = shm.num_slots_total();
                 info!("passive acquisition done; free slots: {}/{}", free, total);
             }
@@ -255,7 +241,7 @@ fn wait_for_scan(
                     Err(e) => return Err(e),
                 };
 
-                let free = shm.num_slots_free();
+                let free = shm.num_slots_free()?;
                 let total = shm.num_slots_total();
                 info!("passive scan done; free slots: {}/{}", free, total);
             }
@@ -547,15 +533,10 @@ fn background_thread(
     Ok(())
 }
 
-pub struct ReceiverError {
-    pub msg: String,
-}
-
-impl Display for ReceiverError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let msg = &self.msg;
-        write!(f, "{msg}")
-    }
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum ReceiverError {
+    #[error("receiver is closed")]
+    Closed,
 }
 
 /// Start a background thread that received data from the zeromq socket and
@@ -643,9 +624,7 @@ impl TPXReceiver {
 
     pub fn start_passive(&mut self) -> Result<(), ReceiverError> {
         if self.status == ReceiverStatus::Closed {
-            return Err(ReceiverError {
-                msg: "receiver is closed".to_string(),
-            });
+            return Err(ReceiverError::Closed);
         }
         self.to_thread
             .send(ControlMsg::StartAcquisitionPassive)

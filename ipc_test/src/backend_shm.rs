@@ -111,7 +111,7 @@ impl SharedMemory {
 impl Drop for SharedMemory {
     fn drop(&mut self) {
         if self.is_owner {
-            remove_file(&self.handle_path).unwrap();
+            let _ = remove_file(&self.handle_path);
         }
     }
 }

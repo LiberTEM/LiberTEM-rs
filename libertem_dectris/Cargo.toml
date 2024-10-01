@@ -2,7 +2,7 @@
 name = "libertem-dectris"
 authors = ["Alexander Clausen <a.clausen@fz-juelich.de>"]
 license = "MIT"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2021"
 readme = "README.md"
 rust-version = "1.71"
@@ -46,3 +46,6 @@ extension-module = ["pyo3/extension-module"]
 
 [dev-dependencies]
 tempfile = "3.3.0"
+
+[lints.rust]
+unused_must_use = "deny"

@@ -41,7 +41,9 @@ def main(width: int, height: int):
                 break
 
             tq.update(len(stack_handle))
-            continue
+            if False:
+                cam_client.done(stack_handle)
+                continue
 
             # the expected shape and data type:
             frame_shape = tuple(reversed(stack_handle.get_shape()))

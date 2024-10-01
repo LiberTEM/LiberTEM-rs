@@ -1,6 +1,9 @@
 use std::fmt::Debug;
 
-use ipc_test::{slab::SlabInitError, SharedSlabAllocator};
+use ipc_test::{
+    slab::{ShmError, SlabInitError},
+    SharedSlabAllocator,
+};
 use multiversion::multiversion;
 use ndarray::ArrayViewMut3;
 use num::cast::AsPrimitive;
@@ -17,6 +20,9 @@ pub enum CamClientError {
         handle_path: String,
         error: SlabInitError,
     },
+
+    #[error("failed to access SHM: {0}")]
+    ShmError(#[from] ShmError),
 
     #[error("operation on closed client")]
     Closed,
@@ -166,7 +172,7 @@ where
         M: FrameMeta,
     {
         let shm = self.get_shm_mut()?;
-        handle.free_slot(shm);
+        handle.free_slot(shm)?;
         Ok(())
     }
 
