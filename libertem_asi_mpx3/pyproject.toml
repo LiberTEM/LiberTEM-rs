@@ -13,6 +13,7 @@ classifiers = [
 dependencies = [
     "opentelemetry-api",
 ]
+dynamic = ["version"]
 
 [project.urls]
 repository = "https://github.com/LiberTEM/LiberTEM-rs/"
