@@ -46,7 +46,7 @@ jobs:
     strategy:
       matrix:
         crate: [libertem_dectris, libertem_asi_tpx3, libertem_asi_mpx3, libertem_qd_mpx, ipc_test, common]
-        toolchain: ["stable", "1.71"]
+        toolchain: ["stable", "1.72"]
     steps:
     - uses: actions/checkout@v4
       with:

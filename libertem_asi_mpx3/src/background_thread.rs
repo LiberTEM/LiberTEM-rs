@@ -1,7 +1,10 @@
 use std::{
     io::ErrorKind,
     net::TcpStream,
-    sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
+    sync::{
+        mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
+        Mutex,
+    },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -607,7 +610,7 @@ fn background_thread(
 pub struct ASIMpxBackgroundThread {
     bg_thread: JoinHandle<()>,
     to_thread: Sender<ControlMsg<()>>,
-    from_thread: Receiver<ReceiverMsg<ASIMpxFrameMeta, PendingAcquisition>>,
+    from_thread: Mutex<Receiver<ReceiverMsg<ASIMpxFrameMeta, PendingAcquisition>>>,
 }
 
 impl BackgroundThread for ASIMpxBackgroundThread {
@@ -621,8 +624,9 @@ impl BackgroundThread for ASIMpxBackgroundThread {
 
     fn channel_from_thread(
         &mut self,
-    ) -> &mut std::sync::mpsc::Receiver<ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>>
-    {
+    ) -> &mut Mutex<
+        std::sync::mpsc::Receiver<ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>>,
+    > {
         &mut self.from_thread
     }
 
@@ -664,7 +668,7 @@ impl ASIMpxBackgroundThread {
                     )
                 })
                 .map_err(BackgroundThreadSpawnError::SpawnFailed)?,
-            from_thread: from_thread_r,
+            from_thread: Mutex::new(from_thread_r),
             to_thread: to_thread_s,
         })
     }

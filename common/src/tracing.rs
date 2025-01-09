@@ -74,7 +74,7 @@ pub fn spawn_tracing_thread(service_name: String, otlp_endpoint: String) {
 }
 
 pub fn get_py_span_context(py: Python) -> PyResult<SpanContext> {
-    let span_context_py = PyModule::import_bound(py, "opentelemetry.trace")?
+    let span_context_py = PyModule::import(py, "opentelemetry.trace")?
         .getattr("get_current_span")?
         .call0()?
         .getattr("get_span_context")?

@@ -26,8 +26,8 @@ macro_rules! impl_py_connection {
             use ipc_test::SharedSlabAllocator;
             use num::NumCast;
             use numpy::{
-                dtype_bound, Element, PyArray3, PyArrayDescrMethods, PyArrayMethods,
-                PyUntypedArray, PyUntypedArrayMethods,
+                dtype, Element, PyArray3, PyArrayDescrMethods, PyArrayMethods, PyUntypedArray,
+                PyUntypedArrayMethods,
             };
             use pyo3::{
                 create_exception,
@@ -161,6 +161,7 @@ macro_rules! impl_py_connection {
                     }
                 }
 
+                #[pyo3(signature=(timeout=None))]
                 pub fn wait_for_arm(
                     &mut self,
                     timeout: Option<f32>,
@@ -207,6 +208,7 @@ macro_rules! impl_py_connection {
                     Ok(conn_impl.is_running())
                 }
 
+                #[pyo3(signature=(timeout=None))]
                 pub fn cancel(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
                     let _trace_guard = span_from_py(py, &format!("{}::cancel", stringify!($name)))?;
                     let conn_impl = self.get_conn_mut()?;
@@ -226,6 +228,7 @@ macro_rules! impl_py_connection {
                     })
                 }
 
+                #[pyo3(signature=(timeout=None))]
                 pub fn start_passive(
                     &mut self,
                     timeout: Option<f32>,
@@ -323,10 +326,8 @@ macro_rules! impl_py_connection {
                 }
 
                 pub fn serialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-                    let bytes: Bound<'py, PyBytes> = PyBytes::new_bound(
-                        py,
-                        serialize(self.try_get_inner()?).unwrap().as_slice(),
-                    );
+                    let bytes: Bound<'py, PyBytes> =
+                        PyBytes::new(py, serialize(self.try_get_inner()?).unwrap().as_slice());
                     Ok(bytes.into())
                 }
 
