@@ -40,7 +40,7 @@ fn libertem_asi_tpx3(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AcquisitionEnd>()?;
     m.add_class::<CamClient>()?;
     m.add_function(wrap_pyfunction!(make_sim_data, &m)?)?;
-    m.add("TimeoutError", py.get_type_bound::<TimeoutError>())?;
+    m.add("TimeoutError", py.get_type::<TimeoutError>())?;
 
     // register_header_module(py, m)?;
 
@@ -205,6 +205,7 @@ impl ASITpx3Connection {
 #[pymethods]
 impl ASITpx3Connection {
     #[new]
+    #[pyo3(signature=(uri,chunks_per_stack,handle_path,num_slots=None,bytes_per_chunk=None,huge=None))]
     fn new(
         uri: &str,
         chunks_per_stack: usize,

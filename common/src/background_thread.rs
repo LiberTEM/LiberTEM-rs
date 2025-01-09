@@ -1,7 +1,10 @@
 use std::{
     fmt::Debug,
     io,
-    sync::mpsc::{Receiver, Sender},
+    sync::{
+        mpsc::{Receiver, Sender},
+        Mutex,
+    },
 };
 
 use ipc_test::slab::SlabInitError;
@@ -75,7 +78,7 @@ pub trait BackgroundThread {
 
     fn channel_from_thread(
         &mut self,
-    ) -> &mut Receiver<ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>>;
+    ) -> &mut Mutex<Receiver<ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>>>;
 
     fn join(self);
 }

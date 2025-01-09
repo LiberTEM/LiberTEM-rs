@@ -3,6 +3,7 @@ use std::{str::FromStr, time::Duration};
 use common::generic_connection::GenericConnection;
 use common::tracing::{span_from_py, tracing_from_env};
 use numpy::PyUntypedArray;
+use pyo3::types::PyModuleMethods;
 use pyo3::{
     exceptions::PyValueError, pyclass, pymethods, pymodule, types::PyModule, Bound, PyResult,
     Python,
@@ -52,6 +53,10 @@ struct QdConnection {
 impl QdConnection {
     #[new]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(
+        data_host,data_port,frame_stack_size,shm_handle_path,drain=None,
+        num_slots=None,bytes_per_frame=None,huge=None,recovery_strategy=None,
+    ))]
     fn new(
         data_host: &str,
         data_port: usize,
@@ -111,6 +116,7 @@ impl QdConnection {
         Ok(QdConnection { conn })
     }
 
+    #[pyo3(signature=(timeout=None))]
     fn wait_for_arm(
         &mut self,
         timeout: Option<f32>,
@@ -127,6 +133,7 @@ impl QdConnection {
         self.conn.is_running()
     }
 
+    #[pyo3(signature=(timeout=None))]
     fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
         self.conn.start_passive(timeout, py)
     }

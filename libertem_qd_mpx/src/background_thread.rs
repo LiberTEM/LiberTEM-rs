@@ -2,7 +2,10 @@ use std::{
     io::{self, ErrorKind, Read},
     net::TcpStream,
     ops::{Deref, DerefMut},
-    sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
+    sync::{
+        mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
+        Mutex,
+    },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -116,7 +119,7 @@ impl From<ReadExactError<AcquisitionError>> for AcquisitionError {
 pub struct QdBackgroundThread {
     bg_thread: JoinHandle<()>,
     to_thread: Sender<QdControlMsg>,
-    from_thread: Receiver<QdReceiverMsg>,
+    from_thread: Mutex<Receiver<QdReceiverMsg>>,
 }
 
 /// With a running acquisition, check for control messages;
@@ -726,7 +729,7 @@ impl QdBackgroundThread {
                     background_thread_wrap(&config, &to_thread_r, &from_thread_s, shm)
                 })
                 .map_err(BackgroundThreadSpawnError::SpawnFailed)?,
-            from_thread: from_thread_r,
+            from_thread: Mutex::new(from_thread_r),
             to_thread: to_thread_s,
         })
     }
@@ -746,8 +749,13 @@ impl BackgroundThread for QdBackgroundThread {
 
     fn channel_from_thread(
         &mut self,
-    ) -> &mut std::sync::mpsc::Receiver<
-        common::background_thread::ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>,
+    ) -> &mut Mutex<
+        std::sync::mpsc::Receiver<
+            common::background_thread::ReceiverMsg<
+                Self::FrameMetaImpl,
+                Self::AcquisitionConfigImpl,
+            >,
+        >,
     > {
         &mut self.from_thread
     }

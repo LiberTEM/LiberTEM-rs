@@ -89,7 +89,7 @@ impl HeaderTypes {
 
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
 #[repr(u8)]
-#[pyclass]
+#[pyclass(eq, eq_int)]
 pub enum DType {
     U1,
     U4,
@@ -138,7 +138,7 @@ impl DType {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u8)]
-#[pyclass]
+#[pyclass(eq, eq_int)]
 pub enum FormatType {
     /// Sorted CSR
     CSR,
