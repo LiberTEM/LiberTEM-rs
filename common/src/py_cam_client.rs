@@ -12,7 +12,7 @@ macro_rules! decode_for_dtype {
         $end_idx: ident,
         $py: ident
     ) => {
-        if $out.dtype().is_equiv_to(&dtype_bound::<$dtype>($py)) {
+        if $out.dtype().is_equiv_to(&dtype::<$dtype>($py)) {
             let out_downcast = $out.downcast::<PyArray3<$dtype>>()?;
             $self.decode_impl($input, out_downcast, $start_idx, $end_idx, $py)?;
             return Ok(());
@@ -46,8 +46,8 @@ macro_rules! impl_py_cam_client {
                 NumCast,
             };
             use numpy::{
-                dtype_bound, Element, PyArray3, PyArrayDescrMethods, PyArrayMethods,
-                PyUntypedArray, PyUntypedArrayMethods,
+                dtype, Element, PyArray3, PyArrayDescrMethods, PyArrayMethods, PyUntypedArray,
+                PyUntypedArrayMethods,
             };
             use pyo3::{create_exception, exceptions::PyException, prelude::*};
             use zerocopy::{AsBytes, FromBytes};

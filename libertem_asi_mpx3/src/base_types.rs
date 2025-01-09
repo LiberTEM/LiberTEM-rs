@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serval_client::DetectorConfig;
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Debug)]
-#[pyclass]
+#[pyclass(eq, eq_int)]
 pub enum DType {
     U8,
     U16,

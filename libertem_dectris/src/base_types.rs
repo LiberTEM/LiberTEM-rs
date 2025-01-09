@@ -69,7 +69,7 @@ impl DHeader {
 
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[pyclass]
+#[pyclass(eq, eq_int)]
 pub enum TriggerMode {
     #[serde(rename = "exte")]
     EXTE,
@@ -186,7 +186,7 @@ impl DImage {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[pyclass]
+#[pyclass(eq, eq_int)]
 pub enum PixelType {
     #[serde(rename = "uint8")]
     Uint8,

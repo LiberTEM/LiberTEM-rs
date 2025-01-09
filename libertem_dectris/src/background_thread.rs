@@ -2,7 +2,10 @@ use std::{
     convert::Infallible,
     mem::replace,
     ops::Deref,
-    sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
+    sync::{
+        mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
+        Mutex,
+    },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -626,7 +629,7 @@ pub enum DectrisExtraControl {
 pub struct DectrisBackgroundThread {
     bg_thread: JoinHandle<()>,
     to_thread: Sender<ControlMsg<DectrisExtraControl>>,
-    from_thread: Receiver<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
+    from_thread: Mutex<Receiver<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>>,
 }
 
 impl BackgroundThread for DectrisBackgroundThread {
@@ -642,8 +645,8 @@ impl BackgroundThread for DectrisBackgroundThread {
 
     fn channel_from_thread(
         &mut self,
-    ) -> &mut Receiver<
-        background_thread::ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>,
+    ) -> &mut Mutex<
+        Receiver<background_thread::ReceiverMsg<Self::FrameMetaImpl, Self::AcquisitionConfigImpl>>,
     > {
         &mut self.from_thread
     }
@@ -688,7 +691,7 @@ impl DectrisBackgroundThread {
                 })
                 .expect("failed to start background thread"),
             to_thread: to_thread_s,
-            from_thread: from_thread_r,
+            from_thread: Mutex::new(from_thread_r),
         })
     }
 }

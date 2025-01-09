@@ -25,10 +25,6 @@ use serval_client::{DetectorInfo, DetectorLayout, ServalClient};
 use crate::background_thread::ASIMpxBackgroundThread;
 use crate::decoder::ASIMpxDecoder;
 
-use std::ffi::c_int;
-
-use pyo3::ffi::PyMemoryView_FromMemory;
-
 #[pymodule]
 fn libertem_asi_mpx3(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // FIXME: logging integration deadlocks on close(), when trying to acquire
@@ -42,7 +38,7 @@ fn libertem_asi_mpx3(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDetectorInfo>()?;
     m.add_class::<PyServalClient>()?;
     m.add_class::<CamClient>()?;
-    m.add("TimeoutError", py.get_type_bound::<TimeoutError>())?;
+    m.add("TimeoutError", py.get_type::<TimeoutError>())?;
 
     register_header_module(py, m)?;
 
@@ -59,7 +55,7 @@ fn libertem_asi_mpx3(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 fn register_header_module(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let headers_module = PyModule::new_bound(py, "headers")?;
+    let headers_module = PyModule::new(py, "headers")?;
     parent_module.add_submodule(&headers_module)?;
     Ok(())
 }
@@ -138,6 +134,7 @@ struct ServalConnection {
 impl ServalConnection {
     #[new]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(data_uri,api_uri,frame_stack_size,handle_path,num_slots=None,bytes_per_frame=None,huge=None))]
     fn new(
         data_uri: &str,
         api_uri: &str,
@@ -180,6 +177,7 @@ impl ServalConnection {
         Ok(Self { conn })
     }
 
+    #[pyo3(signature=(timeout=None))]
     fn wait_for_arm(
         &mut self,
         timeout: Option<f32>,
@@ -196,6 +194,7 @@ impl ServalConnection {
         self.conn.is_running()
     }
 
+    #[pyo3(signature=(timeout=None))]
     fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
         self.conn.start_passive(timeout, py)
     }
@@ -279,30 +278,9 @@ impl PyFrameStackHandle {
     }
 }
 
-#[allow(non_upper_case_globals)]
-const PyBUF_READ: c_int = 0x100;
-
 #[pyclass]
 pub struct CamClient {
     inner: _PyASIMpxCamClient,
-}
-
-impl CamClient {
-    fn get_memoryview(&self, py: Python, raw_data: &[u8]) -> PyObject {
-        let ptr = raw_data.as_ptr();
-        let length = raw_data.len();
-
-        let mv = unsafe {
-            PyMemoryView_FromMemory(ptr as *mut i8, length.try_into().unwrap(), PyBUF_READ)
-        };
-
-        let from_ptr: Bound<PyAny> = unsafe {
-            //FromPyPointer::from_owned_ptr(py, mv)
-
-            Bound::from_owned_ptr(py, mv)
-        };
-        from_ptr.into_py(py)
-    }
 }
 
 #[pymethods]
@@ -312,34 +290,6 @@ impl CamClient {
         Ok(Self {
             inner: _PyASIMpxCamClient::new(py, handle_path)?,
         })
-    }
-
-    // FIXME: add safe replacement for this function
-    // (probably needs Python 3.11+)
-    #[deprecated]
-    fn get_frames(
-        &self,
-        handle: &PyFrameStackHandle,
-        py: Python,
-    ) -> PyResult<Vec<(PyObject, DType)>> {
-        let shm = self.inner.get_shm()?;
-
-        // safety: Python code must not use memoryviews after calling `done`.
-        let slot = unsafe { shm.get(handle.get_inner().try_get_inner()?.get_slot().slot_idx) };
-
-        let meta = handle.get_inner().get_meta()?;
-        let inner = handle.get_inner().try_get_inner()?;
-
-        Ok(meta
-            .iter()
-            .zip(0..)
-            .map(|(meta, frame_idx)| {
-                let image_data = inner.get_slice_for_frame(frame_idx, &slot);
-                let memory_view = self.get_memoryview(py, image_data);
-
-                (memory_view, meta.dtype.clone())
-            })
-            .collect())
     }
 
     fn decode_range_into_buffer<'py>(
