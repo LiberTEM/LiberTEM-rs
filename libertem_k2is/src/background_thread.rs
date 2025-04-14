@@ -20,10 +20,7 @@ use k2o::{
     block::K2Block,
     block_is::K2ISBlock,
     block_summit::K2SummitBlock,
-    events::{
-        AcquisitionParams, AcquisitionSync, ChannelEventBus, EventBus, EventMsg, Events,
-        MessagePump,
-    },
+    events::{AcquisitionParams, AcquisitionSync, ChannelEventBus, EventMsg, Events, MessagePump},
     frame::GenericFrame,
     frame_is::K2ISFrame,
     frame_summit::K2SummitFrame,
@@ -113,7 +110,7 @@ fn passive_acquisition(
                 info!("passive_acquisition: {e:?}");
                 break;
             }
-            Ok(EventMsg::AcquisitionError { msg }) => todo!(),
+            Ok(EventMsg::AcquisitionError { msg }) => todo!("acquisition error {msg}"),
             Ok(EventMsg::Shutdown) => todo!(),
             Ok(_) => continue,
             Err(CRecvTimeoutError::Disconnected) => return Err(AcquisitionError::Disconnected),
@@ -170,7 +167,7 @@ fn passive_acquisition(
                 dropped,
                 acquisition_id,
             }) => {
-                warn!("aborted acquisition {acquisition_id}");
+                warn!("aborted acquisition {acquisition_id}, with {dropped} dropped frames");
                 from_thread_s.send(ReceiverMsg::Cancelled).unwrap();
                 break 'acquisition;
             }
@@ -182,7 +179,7 @@ fn passive_acquisition(
             Ok(result) => {
                 info!("some result received: {result:?}");
             }
-            Err(e) => {
+            Err(_e) => {
                 continue 'acquisition;
             }
         }
@@ -195,7 +192,7 @@ fn background_thread(
     config: &K2DetectorConnectionConfig,
     to_thread_r: &Receiver<K2ControlMsg>,
     from_thread_s: &Sender<K2ReceiverMsg>,
-    mut shm: SharedSlabAllocator,
+    shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     let events: Events = ChannelEventBus::new();
     let pump = MessagePump::new(&events);

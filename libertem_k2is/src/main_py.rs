@@ -1,6 +1,7 @@
 use common::background_thread::PyAcquisitionSize;
 use common::generic_connection::GenericConnection;
 use common::tracing::{span_from_py, tracing_from_env};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::{pyclass, pymethods, Python};
 use pyo3::{pymodule, types::PyModule, Bound, PyResult};
 
@@ -44,6 +45,7 @@ impl_py_connection!(
 #[pyclass]
 struct K2Connection {
     conn: _PyK2Connection,
+    config: K2DetectorConnectionConfig,
 }
 
 #[pymethods]
@@ -68,6 +70,12 @@ impl K2Connection {
             K2Mode::IS => 1600,    // about 2 seconds of buffering
             K2Mode::Summit => 100, // TODO: update with realistic value here
         };
+
+        if frame_stack_size != 1 {
+            return Err(PyRuntimeError::new_err(
+                "frame_stack_size != 1 is not yet supported",
+            ));
+        }
 
         let crop_to_image_data = crop_to_image_data.unwrap_or(true);
 
@@ -96,7 +104,15 @@ impl K2Connection {
                 .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
 
         let conn = _PyK2Connection::new(shm, generic_conn);
-        Ok(Self { conn })
+        Ok(Self { conn, config })
+    }
+
+    fn get_frame_shape(&self) -> (usize, usize) {
+        let shape = self
+            .config
+            .mode
+            .get_frame_shape(self.config.crop_to_image_data);
+        (shape.height, shape.width)
     }
 
     fn wait_for_arm(
