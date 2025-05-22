@@ -1,6 +1,8 @@
 use common::background_thread::PyAcquisitionSize;
 use common::generic_connection::GenericConnection;
 use common::tracing::{span_from_py, tracing_from_env};
+use log::trace;
+use numpy::PyUntypedArray;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::{pyclass, pymethods, Python};
 use pyo3::{pymodule, types::PyModule, Bound, PyResult};
@@ -164,9 +166,50 @@ impl K2Connection {
 }
 
 impl_py_cam_client!(
-    K2CamClient,
+    _PyK2CamClient,
     K2Decoder,
     K2FrameStack,
     K2FrameMeta,
     libertem_k2is
 );
+
+#[pyclass]
+pub struct K2CamClient {
+    inner: _PyK2CamClient,
+}
+
+#[pymethods]
+impl K2CamClient {
+    #[new]
+    fn new(py: Python, handle_path: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: _PyK2CamClient::new(py, handle_path)?,
+        })
+    }
+
+    fn decode_range_into_buffer<'py>(
+        &self,
+        input: &K2FrameStack,
+        out: &Bound<'py, PyUntypedArray>,
+        start_idx: usize,
+        end_idx: usize,
+        py: Python<'py>,
+    ) -> PyResult<()> {
+        self.inner
+            .decode_range_into_buffer(input, out, start_idx, end_idx, py)
+    }
+
+    fn done(&mut self, handle: &mut K2FrameStack) -> PyResult<()> {
+        self.inner.frame_stack_done(handle)
+    }
+
+    fn close(&mut self) -> PyResult<()> {
+        self.inner.close()
+    }
+}
+
+impl Drop for K2CamClient {
+    fn drop(&mut self) {
+        trace!("CamClient::drop");
+    }
+}

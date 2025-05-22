@@ -50,6 +50,9 @@ pub enum AcquisitionError {
     #[error("thread stopped")]
     ThreadStopped,
 
+    #[error("error while initializing: {msg}")]
+    InitError { msg: String },
+
     #[error("receiver state error: {msg}")]
     StateError { msg: String },
 }
@@ -244,7 +247,7 @@ fn background_thread(
             }
             Ok(EventMsg::AcquisitionError { msg }) => {
                 error!("error while initializing: {msg}");
-                return Err(AcquisitionError::Disconnected);
+                return Err(AcquisitionError::InitError { msg });
             }
             Ok(e) => {
                 info!("unexpected event: {e:?}");

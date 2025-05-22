@@ -3,8 +3,7 @@ import os
 import logging
 import time
 from typing import (
-    Iterable, Optional,
-    Tuple, Type, Dict, Any,
+    Optional, Tuple, Type, Dict, Any,
 )
 
 import numpy as np
@@ -12,9 +11,8 @@ from opentelemetry import trace
 
 from libertem.common import Shape, Slice
 from libertem.common.math import prod
-from libertem.common.executor import (
-    WorkerContext, TaskProtocol, WorkerQueue, TaskCommHandler
-)
+from libertem.common.executor import WorkerContext
+
 from libertem.io.dataset.base import (
     DataTile, DataSetMeta, BasePartition, Partition, DataSet, TilingScheme,
 )
@@ -23,17 +21,17 @@ from libertem_live.detectors.base.controller import (
     AcquisitionController,
 )
 from libertem_live.detectors.base.acquisition import (
-    AcquisitionMixin, AcquisitionProtocol,
+    AcquisitionMixin, AcquisitionProtocol, GetFrames, GenericCommHandler,
 )
 from libertem_live.detectors.base.connection import (
     PendingAcquisition, DetectorConnection,
 )
 from libertem_live.hooks import Hooks
 
-from k2opy import (
-    Cam, Sync, AcquisitionParams, Acquisition, CamClient, Writer, Mode,
+from libertem_k2is import (
+    K2Connection, K2AcquisitionConfig, K2CamClient, K2Mode, PyAcquisitionSize,
+    K2FrameStack,
 )
-
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
@@ -50,13 +48,18 @@ class K2ISPendingAcquisition(PendingAcquisition):
         raise NotImplementedError("how should we know this?")
 
 
+class K2GetFrames(GetFrames):
+    CAM_CLIENT_CLS = K2CamClient
+    FRAME_STACK_CLS = K2FrameStack
+
+
 class K2ISDetectorConnection(DetectorConnection):
     def __init__(
         self,
         local_addr_top: str,
         local_addr_bottom: str,
-        sync_mode=Sync.WaitForSync,  # or `Sync.Immediately`
-        camera_mode=Mode.IS,
+        sync_mode=None,  # FIXME: immediate or sync to stem?
+        camera_mode=K2Mode.IS,
         file_pattern: Optional[str] = None,
         shm_path: Optional[str] = None,
     ):
@@ -72,16 +75,20 @@ class K2ISDetectorConnection(DetectorConnection):
         self._connect()
 
     def _connect(self):
-        cam = Cam(
+        cam = K2Connection(
             local_addr_top=self._local_addr_top,
             local_addr_bottom=self._local_addr_bottom,
+            shm_handle_path=self._shm_path,
+            frame_stack_size=1,
             mode=self._cam_mode,
-            enable_frame_iterator=True,
-            shm_path=self._shm_path,
+            crop_to_image_data=True,
         )
         self._conn = cam
 
-    def wait_for_acquisition(self, timeout: Optional[float] = None) -> Optional[PendingAcquisition]:
+    def wait_for_acquisition(
+        self,
+        timeout: Optional[float] = None,
+    ) -> Optional[PendingAcquisition]:
         # XXX: we don't know how many frames there will be in the acquisition
         # (see `K2ISPendingAcquisition` comment above)
         raise NotImplementedError()
@@ -115,7 +122,7 @@ class K2ISConnectionBuilder:
         self,
         local_addr_top: str,
         local_addr_bottom: str,
-        camera_mode: Mode = Mode.IS,
+        camera_mode: K2Mode = K2Mode.IS,
         shm_path: Optional[str] = None,
         file_pattern: Optional[str] = None,
     ):
@@ -128,102 +135,12 @@ class K2ISConnectionBuilder:
         )
 
 
-FramesIter = Iterable[Tuple[np.ndarray, int]]
+class K2CommHandler(GenericCommHandler):
+    def __init__(self, conn: K2ISDetectorConnection):
+        super().__init__(conn=conn)
 
-
-def get_frames(request_queue, socket_path: str) -> FramesIter:
-    """
-    Consume all FRAMES messages from the request queue until we get an
-    END_PARTITION message (which we also consume)
-    """
-    while True:
-        cam_client = CamClient(socket_path)
-        zeros_frame = np.zeros((1860, 2048), dtype=np.uint16)
-
-        try:
-            with request_queue.get() as msg:
-                header, payload_empty = msg
-                header_type = header["type"]
-                if header_type == "FRAMES":
-                    idx = header['idx']
-                    dropped = header['dropped']
-                    span = trace.get_current_span()
-                    span.add_event("frame", {"slot": header['slot'], "idx": header["idx"]})
-                    frame_ref = cam_client.get_frame_ref(header['slot'])
-                    mv = frame_ref.get_memoryview()
-                    if dropped:
-                        payload = zeros_frame
-                    else:
-                        payload = np.frombuffer(mv, dtype=np.uint16).reshape(
-                            # TODO: cam.get_frame_shape
-                            (1860, 2048)
-                        )
-                    yield (payload, idx)
-                    del payload
-                    del mv
-                    del frame_ref
-                    cam_client.done(header['slot'])
-                elif header_type == "END_PARTITION":
-                    return
-                else:
-                    raise RuntimeError(
-                        f"invalid header type {header['type']}; FRAME or END_PARTITION expected"
-                    )
-        finally:
-            cam_client.stop()
-
-
-class K2CommHandler(TaskCommHandler):
-    def __init__(self, aq: Acquisition, conn: K2ISDetectorConnection):
-        self._aq = aq
-        self._conn = conn
-
-    def handle_task(self, task: TaskProtocol, queue: WorkerQueue):
-        cam = self._conn.get_conn_impl()
-
-        with tracer.start_as_current_span("K2CommHandler.handle_task") as span:
-            put_time = 0.0
-            recv_time = 0.0
-            # send the data for this task to the given worker
-            partition = task.get_partition()
-            slice_ = partition.slice
-            start_idx = slice_.origin[0]
-            end_idx = slice_.origin[0] + slice_.shape[0]
-            span.set_attributes({
-                "libertem.partition.start_idx": start_idx,
-                "libertem.partition.end_idx": end_idx,
-            })
-            current_idx = start_idx
-            while current_idx < end_idx:
-                t0 = time.perf_counter()
-                frame = cam.get_next_frame()
-                t1 = time.perf_counter()
-                recv_time += t1 - t0
-                if frame is None:
-                    if current_idx != end_idx:
-                        raise RuntimeError("premature end of frame iterator")
-                    break
-
-                if frame.is_dropped():
-                    span.add_event("dropped frame", {"frame_index": frame.get_idx()})
-
-                assert frame.get_idx() == current_idx, f"{frame.get_idx()} != {current_idx}"
-
-                t0 = time.perf_counter()
-                queue.put({
-                    "type": "FRAMES",
-                    "idx": frame.get_idx(),
-                    "dropped": frame.is_dropped(),
-                    "slot": cam.get_frame_slot(frame),
-                })
-                t1 = time.perf_counter()
-                put_time += t1 - t0
-
-                current_idx += 1
-            span.set_attributes({
-                "total_put_time": put_time,
-                "total_recv_time": recv_time,
-            })
+    def get_conn_impl(self):
+        return self._conn.get_conn_impl()
 
     def start(self):
         pass
@@ -232,7 +149,7 @@ class K2CommHandler(TaskCommHandler):
         # continue pumping events for a bit:
         cam = self._conn.get_conn_impl()
         while True:
-            frame = cam.get_next_frame()
+            frame = cam.get_next_stack(1)
             if frame is None:
                 break
 
@@ -279,7 +196,6 @@ class K2Acquisition(AcquisitionMixin, DataSet):
             hooks=hooks,
         )
         self._sig_shape: Tuple[int, ...] = ()
-        self._acq_state: Optional[AcquisitionParams] = None
         self._frames_per_partition = min(frames_per_partition, prod(nav_shape))
 
     def initialize(self, executor) -> "DataSet":
@@ -324,11 +240,9 @@ class K2Acquisition(AcquisitionMixin, DataSet):
             path = pattern % all_values
         return path
 
-    @contextmanager
-    def acquire(self):
-        with tracer.start_as_current_span('acquire') as span:
-            nimages = prod(self.shape.nav)
-
+    def start_acquisition(self):
+        nimages = prod(self.shape.nav)
+        if False:
             file_pattern = self._conn._file_pattern
             if file_pattern is None:
                 writer = None
@@ -342,29 +256,12 @@ class K2Acquisition(AcquisitionMixin, DataSet):
                     method="direct",
                     filename=filename,
                 )
-            aqp = AcquisitionParams(
-                sync=self._conn._sync_mode,
-                size=nimages,
-                writer=writer,
-            )
-            cam = self._conn.get_conn_impl()
-            aq = cam.make_acquisition(aqp)
-            try:
-                self._acq_state = aq
-                span.add_event("K2Acquisition.acquire:arm")
+        conn = self._conn.get_conn_impl()
+        conn.start_passive(acquisition_size=PyAcquisitionSize.from_num_frames(nimages))
+        conn.wait_for_arm()  # here?
 
-                try:
-                    cam.wait_for_start()
-                    t0 = time.time()
-                    yield
-                finally:
-                    try:
-                        print(f"acquisition took {time.time() - t0}s")
-                    except NameError:
-                        pass
-                    self._acq_state = None
-            finally:
-                pass
+    def end_acquisition(self):
+        pass
 
     def check_valid(self):
         pass
@@ -403,9 +300,7 @@ class K2Acquisition(AcquisitionMixin, DataSet):
             )
 
     def get_task_comm_handler(self) -> "K2CommHandler":
-        assert self._acq_state is not None
         return K2CommHandler(
-            aq=self._acq_state,
             conn=self._conn,
         )
 
@@ -415,7 +310,12 @@ class K2LivePartition(Partition):
         self, start_idx, end_idx, partition_slice,
         meta, shm_path,
     ):
-        super().__init__(meta=meta, partition_slice=partition_slice, io_backend=None, decoder=None)
+        super().__init__(
+            meta=meta,
+            partition_slice=partition_slice,
+            io_backend=None,
+            decoder=None,
+        )
         self._start_idx = start_idx
         self._end_idx = end_idx
         self._shm_path = shm_path
@@ -442,63 +342,44 @@ class K2LivePartition(Partition):
             return
         self._corrections.apply(tile_data, tile_slice)
 
-    def _get_tiles_fullframe(self, tiling_scheme: TilingScheme, dest_dtype="float32", roi=None):
+    def _get_tiles_fullframe(
+        self,
+        tiling_scheme: TilingScheme,
+        dest_dtype="float32",
+        roi=None,
+        array_backend=None,
+    ):
         assert len(tiling_scheme) == 1
         logger.debug("reading up to frame idx %d for this partition", self._end_idx)
         to_read = self._end_idx - self._start_idx
-        depth = tiling_scheme.depth + 4
-        buf = np.zeros((depth,) + tiling_scheme[0].shape, dtype=dest_dtype)
-        buf_idx = 0
-        tile_start = self._start_idx
-        frames = get_frames(self._worker_context.get_worker_queue(), self._shm_path)
-        while to_read > 0:
-            # 1) put frame into tile buffer (including dtype conversion if needed)
-            assert buf_idx < depth,\
-                    f"buf_idx should be in bounds of buf! ({buf_idx} < ({depth} == {buf.shape[0]}))"
-            try:
-                frame, abs_idx = next(frames)
-                assert frame is not None
-                buf[buf_idx] = frame
-                # FIXME: "free" the `frame` here
-                buf_idx += 1
-                to_read -= 1
 
-                # if buf is full, or the partition is done, yield the tile
-                tile_done = buf_idx == depth
-                partition_done = to_read == 0
-            except StopIteration:
-                assert to_read == 0, f"we were still expecting to read {to_read} frames more!"
-                tile_done = True
-                partition_done = True
+        with K2GetFrames(
+            request_queue=self._worker_context.get_worker_queue(),
+            dtype=dest_dtype,
+            sig_shape=tuple(tiling_scheme[0].shape),
+        ) as frames:
+            yield from frames.get_tiles(
+                to_read=to_read,
+                start_idx=self._start_idx,
+                tiling_scheme=tiling_scheme,
+                corrections=self._corrections,
+                roi=roi,
+                array_backend=array_backend,
+            )
 
-            if tile_done or partition_done:
-                frames_in_tile = buf_idx
-                tile_buf = buf[:frames_in_tile]
-                if tile_buf.shape[0] == 0:
-                    assert to_read == 0
-                    continue  # we are done and the buffer is empty
-
-                tile_shape = Shape(
-                    (frames_in_tile,) + tuple(tiling_scheme[0].shape),
-                    sig_dims=2
-                )
-                tile_slice = Slice(
-                    origin=(tile_start,) + (0, 0),
-                    shape=tile_shape,
-                )
-                # print(f"yielding tile for {tile_slice}")
-                self._preprocess(tile_buf, tile_slice)
-                yield DataTile(
-                    tile_buf,
-                    tile_slice=tile_slice,
-                    scheme_idx=0,
-                )
-                tile_start += frames_in_tile
-                buf_idx = 0
-        logger.debug("LivePartition.get_tiles: end of method")
-
-    def get_tiles(self, tiling_scheme, dest_dtype="float32", roi=None, array_backend=None):
-        yield from self._get_tiles_fullframe(tiling_scheme, dest_dtype, roi)
+    def get_tiles(
+        self,
+        tiling_scheme,
+        dest_dtype="float32",
+        roi=None,
+        array_backend=None,
+    ):
+        yield from self._get_tiles_fullframe(
+            tiling_scheme,
+            dest_dtype,
+            roi,
+            array_backend=array_backend,
+        )
 
     def __repr__(self):
         return f"<K2LivePartition {self._start_idx}:{self._end_idx}>"
