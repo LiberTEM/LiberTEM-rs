@@ -11,7 +11,7 @@ use crate::{
     block::{BlockRouteInfo, K2Block},
     events::{AcquisitionSync, EventBus, EventMsg, EventReceiver, Events},
     helpers::{make_realtime, set_cpu_affinity, CPU_AFF_DECODE_START},
-    net::create_mcast_socket,
+    net::{create_mcast_socket, K2oConnectionError},
 };
 
 #[derive(Debug, Clone)]
@@ -77,10 +77,7 @@ fn block_for_bytes<B: K2Block>(
     block
 }
 
-/// receive and decode a block from the specified sector, and send it to the
-/// central assembly thread
-#[allow(clippy::too_many_arguments)]
-pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
+fn recv_decode_impl<B: K2Block, const PACKET_SIZE: usize>(
     sector_id: u8,
     port: u32,
     assembly_channel: &Sender<(B, BlockRouteInfo)>,
@@ -91,8 +88,8 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
     local_addr: String,
     first_block_counter: Option<Arc<(Mutex<u8>, Condvar)>>,
     config: &RecvConfig,
-) {
-    let socket = create_mcast_socket(port, "225.1.1.1", &local_addr);
+) -> Result<(), K2oConnectionError> {
+    let socket = create_mcast_socket(port, "225.1.1.1", &local_addr)?;
     let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
 
     if config.realtime {
@@ -104,7 +101,7 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
 
     socket
         .set_read_timeout(Some(Duration::from_millis(10)))
-        .unwrap();
+        .map_err(|err| K2oConnectionError::IoError { err: err })?;
 
     let mut state = RecvState::Initializing;
 
@@ -143,7 +140,7 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => continue,
             Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(_) => panic!("recv_from failed"),
+            Err(error) => return Err(K2oConnectionError::IoError { err: error }),
         }
 
         if state == RecvState::Initializing {
@@ -226,6 +223,9 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
                 if l > 10000 {
                     // make sure we don't consume all available memory:
                     error!("too many blocks in assembly_channel, bailing out");
+                    events.send(&EventMsg::AcquisitionError {
+                        msg: format!("too many blocks in assembly_channel for sector {sector_id}"),
+                    });
                     break;
                 }
                 if assembly_channel.send((block, route_info)).is_err() {
@@ -239,5 +239,40 @@ pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
                 // handled before the match
             }
         }
+    }
+
+    Ok(())
+}
+
+/// receive and decode a block from the specified sector, and send it to the
+/// central assembly thread
+#[allow(clippy::too_many_arguments)]
+pub fn recv_decode_loop<B: K2Block, const PACKET_SIZE: usize>(
+    sector_id: u8,
+    port: u32,
+    assembly_channel: &Sender<(B, BlockRouteInfo)>,
+    recycle_blocks_rx: &Receiver<B>,
+    recycle_blocks_tx: &Sender<B>,
+    events_rx: &EventReceiver,
+    events: &Events,
+    local_addr: String,
+    first_block_counter: Option<Arc<(Mutex<u8>, Condvar)>>,
+    config: &RecvConfig,
+) {
+    if let Err(error) = recv_decode_impl::<B, PACKET_SIZE>(
+        sector_id,
+        port,
+        assembly_channel,
+        recycle_blocks_rx,
+        recycle_blocks_tx,
+        events_rx,
+        events,
+        local_addr,
+        first_block_counter,
+        config,
+    ) {
+        let msg = format!("receiving thread for sector {sector_id} shutting down: {error}");
+        error!("{msg}");
+        events.send(&EventMsg::AcquisitionError { msg });
     }
 }

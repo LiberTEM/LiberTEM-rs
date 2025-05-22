@@ -28,6 +28,7 @@ env_logger = "0.10.0"
 partialdebug = "0.2.0"
 multiversion = "0.7.3"
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
+thiserror = "2.0.12"
 
 [dev-dependencies]
 criterion = "0.3.4"

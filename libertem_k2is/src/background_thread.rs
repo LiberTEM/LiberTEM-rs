@@ -242,6 +242,10 @@ fn background_thread(
                 info!("init done");
                 break;
             }
+            Ok(EventMsg::AcquisitionError { msg }) => {
+                error!("error while initializing: {msg}");
+                return Err(AcquisitionError::Disconnected);
+            }
             Ok(e) => {
                 info!("unexpected event: {e:?}");
                 continue;

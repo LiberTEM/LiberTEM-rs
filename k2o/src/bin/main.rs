@@ -203,7 +203,7 @@ pub fn main() {
     let mode = match args.mode {
         None => {
             info!("auto-initializing mode...");
-            let packet_size = recv_and_get_init() as usize;
+            let packet_size = recv_and_get_init().unwrap() as usize;
             match packet_size {
                 K2ISBlock::PACKET_SIZE => Mode::IS,
                 K2SummitBlock::PACKET_SIZE => Mode::Summit,

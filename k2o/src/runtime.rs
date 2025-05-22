@@ -188,12 +188,25 @@ fn k2_bg_thread<
 
             info!("waiting for first blocks...");
 
-            drop(
-                cvar.wait_while(lock.lock().unwrap(), |counter| {
-                    (*counter as usize) < ids.len()
-                })
-                .unwrap(),
-            );
+            // if an error happens while waiting for the first block, we need to
+            // propagate it, which is why we alternate between pumping events
+            // and waiting for the condition:
+            loop {
+                pump.do_pump_timeout(events, Duration::from_millis(10))
+                    .unwrap();
+                if let Ok(result) = cvar.wait_timeout_while(
+                    lock.lock().unwrap(),
+                    Duration::from_millis(1),
+                    |counter| (*counter as usize) < ids.len(),
+                ) {
+                    if result.1.timed_out() {
+                        continue;
+                    } else {
+                        drop(result);
+                        break;
+                    }
+                }
+            }
 
             info!("sending Init event");
 
