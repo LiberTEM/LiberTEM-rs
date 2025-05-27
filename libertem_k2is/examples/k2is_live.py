@@ -81,7 +81,7 @@ class K2ISDetectorConnection(DetectorConnection):
             shm_handle_path=self._shm_path,
             frame_stack_size=1,
             mode=self._cam_mode,
-            crop_to_image_data=True,
+            crop_to_image_data=False,
         )
         self._conn = cam
 
@@ -200,7 +200,7 @@ class K2Acquisition(AcquisitionMixin, DataSet):
 
     def initialize(self, executor) -> "DataSet":
         dtype = np.uint16
-        self._sig_shape = (1860, 2048)
+        self._sig_shape = (3840, 4096)
         self._meta = DataSetMeta(
             shape=Shape(self._nav_shape + self._sig_shape, sig_dims=2),
             raw_dtype=dtype,
