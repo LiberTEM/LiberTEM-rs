@@ -200,7 +200,9 @@ class K2Acquisition(AcquisitionMixin, DataSet):
 
     def initialize(self, executor) -> "DataSet":
         dtype = np.uint16
-        self._sig_shape = (3840, 4096)
+        conn = self._conn.get_conn_impl()
+        shape = conn.get_frame_shape()
+        self._sig_shape = shape
         self._meta = DataSetMeta(
             shape=Shape(self._nav_shape + self._sig_shape, sig_dims=2),
             raw_dtype=dtype,
