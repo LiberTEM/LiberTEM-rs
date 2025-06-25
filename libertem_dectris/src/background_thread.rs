@@ -366,7 +366,7 @@ fn acquisition(
             });
         }
 
-        if !frame_stack.can_fit(msg_image.len()) {
+        if !frame_stack.can_fit(msg_image.len()) || frame_stack.len() >= frame_stack_size {
             // send to our queue:
             let handle = {
                 let new_frame_stack =
