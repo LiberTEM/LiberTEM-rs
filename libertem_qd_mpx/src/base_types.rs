@@ -8,6 +8,7 @@ use std::{
 };
 
 use common::{
+    background_thread::ConcreteAcquisitionSize,
     frame_stack::FrameMeta,
     generic_connection::{AcquisitionConfig, DetectorConnectionConfig},
 };
@@ -759,8 +760,8 @@ impl QdAcquisitionConfig {
 }
 
 impl AcquisitionConfig for QdAcquisitionConfig {
-    fn num_frames(&self) -> usize {
-        self.acq_header.frames_in_acquisition
+    fn acquisition_size(&self) -> common::background_thread::ConcreteAcquisitionSize {
+        ConcreteAcquisitionSize::NumFrames(self.acq_header.frames_in_acquisition)
     }
 }
 

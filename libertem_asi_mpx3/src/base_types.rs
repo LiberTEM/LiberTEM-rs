@@ -1,4 +1,5 @@
 use common::{
+    background_thread::ConcreteAcquisitionSize,
     frame_stack::FrameMeta,
     generic_connection::{AcquisitionConfig, DetectorConnectionConfig},
 };
@@ -135,8 +136,8 @@ impl PendingAcquisition {
 }
 
 impl AcquisitionConfig for PendingAcquisition {
-    fn num_frames(&self) -> usize {
-        self.config.n_triggers as usize
+    fn acquisition_size(&self) -> common::background_thread::ConcreteAcquisitionSize {
+        ConcreteAcquisitionSize::NumFrames(self.config.n_triggers as usize)
     }
 }
 

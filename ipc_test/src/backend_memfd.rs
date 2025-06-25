@@ -92,41 +92,44 @@ where
         .set_nonblocking(true)
         .expect("set to nonblocking accept");
 
-    let join_handle = std::thread::spawn(move || {
-        // Stolen from the example on `UnixListener`:
-        // accept connections and process them, spawning a new thread for each one
-        loop {
-            if stop_event.load(Ordering::Relaxed) {
-                debug!("stopping `serve_shm_handle` thread");
-                break;
-            }
-            let stream = listener.accept();
-            match stream {
-                Ok((stream, _addr)) => {
-                    /* connection succeeded */
-                    let my_init = init_data_serialized.clone();
-                    std::thread::spawn(move || {
-                        handle_connection(stream, fd, &my_init)
-                            .expect("could not let other side connect")
-                    });
-                }
-                Err(err) => {
-                    /* EAGAIN / EWOULDBLOCK */
-                    if err.kind() == io::ErrorKind::WouldBlock {
-                        let flags = PollFlags::POLLIN;
-                        let pollfd = PollFd::new(listener.as_fd(), flags);
-                        if let Err(e) = nix::poll::poll(&mut [pollfd], 100u16) {
-                            log::error!("poll failed: {e}");
-                        }
-                        continue;
-                    }
-                    /* connection failed */
-                    log::error!("connection failed: {err}");
+    let join_handle = std::thread::Builder::new()
+        .name("MemfdShmThread".to_string())
+        .spawn(move || {
+            // Stolen from the example on `UnixListener`:
+            // accept connections and process them, spawning a new thread for each one
+            loop {
+                if stop_event.load(Ordering::Relaxed) {
+                    debug!("stopping `serve_shm_handle` thread");
                     break;
                 }
+                let stream = listener.accept();
+                match stream {
+                    Ok((stream, _addr)) => {
+                        /* connection succeeded */
+                        let my_init = init_data_serialized.clone();
+                        std::thread::spawn(move || {
+                            handle_connection(stream, fd, &my_init)
+                                .expect("could not let other side connect")
+                        });
+                    }
+                    Err(err) => {
+                        /* EAGAIN / EWOULDBLOCK */
+                        if err.kind() == io::ErrorKind::WouldBlock {
+                            let flags = PollFlags::POLLIN;
+                            let pollfd = PollFd::new(listener.as_fd(), flags);
+                            if let Err(e) = nix::poll::poll(&mut [pollfd], 100u16) {
+                                log::error!("poll failed: {e}");
+                            }
+                            continue;
+                        }
+                        /* connection failed */
+                        log::error!("connection failed: {err}");
+                        break;
+                    }
+                }
             }
-        }
-    });
+        })
+        .unwrap();
 
     Ok((outer_stop, join_handle))
 }
