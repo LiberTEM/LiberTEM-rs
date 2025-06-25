@@ -81,7 +81,7 @@ class K2ISDetectorConnection(DetectorConnection):
             shm_handle_path=self._shm_path,
             frame_stack_size=1,
             mode=self._cam_mode,
-            crop_to_image_data=False,
+            crop_to_image_data=True,
         )
         self._conn = cam
 
