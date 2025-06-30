@@ -54,7 +54,7 @@ jobs:
     - name: rustup ${{ matrix.toolchain }}
       run: rustup default ${{ matrix.toolchain }}
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2.7.8
+      uses: Swatinem/rust-cache@v2.8.0
     - uses: actions/setup-python@v5
       with:
         python-version: '3.10' 
@@ -115,7 +115,7 @@ jobs:
     - name: rustup stable
       run: rustup default stable
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2.7.8
+      uses: Swatinem/rust-cache@v2.8.0
     - uses: actions/setup-python@v5
       with:
         python-version: '3.10' 
@@ -140,7 +140,7 @@ jobs:
     - name: rustup stable
       run: rustup default stable
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2.7.8
+      uses: Swatinem/rust-cache@v2.8.0
     - uses: actions/setup-python@v5
       with:
         python-version: '3.10' 
