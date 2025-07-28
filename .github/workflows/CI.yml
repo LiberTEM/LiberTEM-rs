@@ -51,7 +51,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: recursive
-    - nane: Install required libraries
+    - name: Install required libraries
       run: sudo apt-get -y install libdbus-1-dev pkg-config
     - name: rustup ${{ matrix.toolchain }}
       run: rustup default ${{ matrix.toolchain }}
