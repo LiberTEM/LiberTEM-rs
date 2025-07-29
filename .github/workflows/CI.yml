@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [libertem_dectris, libertem_asi_tpx3, libertem_qd_mpx]
+        crate: [libertem_dectris, libertem_asi_tpx3, libertem_qd_mpx, libertem_k2is]
     steps:
     - uses: actions/checkout@v4
       with:
@@ -51,8 +51,6 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: recursive
-    - name: Install required libraries
-      run: sudo apt-get -y install libdbus-1-dev pkg-config
     - name: rustup ${{ matrix.toolchain }}
       run: rustup default ${{ matrix.toolchain }}
     - name: Rust Cache
