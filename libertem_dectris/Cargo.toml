@@ -25,7 +25,7 @@ env_logger = "0.11.5"
 log = "0.4.22"
 memmap2 = "0.5.6"
 numpy = "0.21"
-pyo3 = { version = "0.21", features = ["abi3-py37"] }
+pyo3 = { version = "0.21", features = ["abi3-py39"] }
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
 spin_sleep = "1.1.1"

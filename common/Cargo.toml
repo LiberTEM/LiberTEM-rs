@@ -12,7 +12,7 @@ rust-version = "1.74"
 bincode = "1.3.3"
 ipc-test = { path = "../ipc_test" }
 stats = { path = "../stats" }
-pyo3 = { version = "0.21.2", features = ["abi3-py37"] }
+pyo3 = { version = "0.21.2", features = ["abi3-py39"] }
 numpy = "0.21"
 serde = "1.0.210"
 tempfile = "3.10.1"

@@ -16,7 +16,7 @@ rust-version = "1.74"
 bincode = "1.3.3"
 env_logger = "0.11.5"
 log = "0.4.22"
-pyo3 = { version = "0.21.0", features = ["abi3-py37"] }
+pyo3 = { version = "0.21.0", features = ["abi3-py39"] }
 serde = { version = "1.0.210", features = ["derive"] }
 ipc-test = { path = "../ipc_test" }
 stats = { path = "../stats" }
