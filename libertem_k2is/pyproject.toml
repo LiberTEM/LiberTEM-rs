@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2"]
 build-backend = "maturin"
 
 [project]
-name = "libertem-k2is"
+name = "libertem_k2is"
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Rust",
