@@ -45,8 +45,8 @@ fn libertem_dectris(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DetectorConfig>()?;
     m.add_class::<TriggerMode>()?;
     m.add_class::<CamClient>()?;
-    m.add("TimeoutError", py.get_type_bound::<TimeoutError>())?;
-    m.add("DecompressError", py.get_type_bound::<DecompressError>())?;
+    m.add("TimeoutError", py.get_type::<TimeoutError>())?;
+    m.add("DecompressError", py.get_type::<DecompressError>())?;
 
     register_header_module(py, &m)?;
 
@@ -61,7 +61,7 @@ fn libertem_dectris(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 fn register_header_module(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let headers_module = PyModule::new_bound(py, "headers")?;
+    let headers_module = PyModule::new(py, "headers")?;
     headers_module.add_class::<DHeader>()?;
     headers_module.add_class::<DImage>()?;
     headers_module.add_class::<DImageD>()?;
@@ -88,6 +88,7 @@ struct DectrisConnection {
 #[pymethods]
 impl DectrisConnection {
     #[new]
+    #[pyo3(signature=(uri,frame_stack_size,handle_path,num_slots=None,bytes_per_frame=None,huge=None))]
     fn new(
         uri: &str,
         frame_stack_size: usize,
@@ -129,6 +130,7 @@ impl DectrisConnection {
     /// Wait until the detector is armed, or until the timeout expires (in seconds)
     /// Returns `None` in case of timeout, the detector config otherwise.
     /// This method drops the GIL to allow concurrent Python threads.
+    #[pyo3(signature=(timeout=None))]
     fn wait_for_arm(
         &mut self,
         timeout: Option<f32>,
@@ -146,6 +148,7 @@ impl DectrisConnection {
         self.conn.is_running()
     }
 
+    #[pyo3(signature=(series,timeout=None))]
     fn start(&mut self, series: u64, timeout: Option<f32>) -> PyResult<()> {
         let timeout = timeout.map_or(Duration::from_millis(100), Duration::from_secs_f32);
 
@@ -157,6 +160,7 @@ impl DectrisConnection {
     }
 
     /// Start listening for global acquisition headers on the zeromq socket.
+    #[pyo3(signature=(timeout=None))]
     fn start_passive(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
         self.conn.start_passive(timeout, py)
     }
@@ -212,10 +216,10 @@ impl DectrisFrameStack {
     #[deprecated]
     fn get_pixel_type(&self, py: Python<'_>) -> PyResult<String> {
         let meta = self.inner.try_get_inner()?.first_meta();
-        PyErr::warn_bound(
+        PyErr::warn(
             py,
-            &py.get_type_bound::<PyDeprecationWarning>(),
-            "FrameStackHandle.get_pixel_type is deprecated, use get_dtype_string instead.",
+            &py.get_type::<PyDeprecationWarning>(),
+            c"FrameStackHandle.get_pixel_type is deprecated, use get_dtype_string instead.",
             0,
         )?;
 
@@ -230,10 +234,10 @@ impl DectrisFrameStack {
     /// use `get_dtype_string` instead, that includes endianess
     #[deprecated]
     fn get_endianess(&self, py: Python<'_>) -> PyResult<String> {
-        PyErr::warn_bound(
+        PyErr::warn(
             py,
-            &py.get_type_bound::<PyDeprecationWarning>(),
-            "FrameStackHandle.get_endianess is deprecated, use get_dtype_string instead.",
+            &py.get_type::<PyDeprecationWarning>(),
+            c"FrameStackHandle.get_endianess is deprecated, use get_dtype_string instead.",
             0,
         )?;
         Ok(self
@@ -247,10 +251,10 @@ impl DectrisFrameStack {
     /// implementation detail that Python shouldn't care about
     #[deprecated]
     fn get_encoding(&self, py: Python<'_>) -> PyResult<String> {
-        PyErr::warn_bound(
+        PyErr::warn(
             py,
-            &py.get_type_bound::<PyDeprecationWarning>(),
-            "FrameStackHandle.get_encoding is deprecated and will be removed in the future.",
+            &py.get_type::<PyDeprecationWarning>(),
+            c"FrameStackHandle.get_encoding is deprecated and will be removed in the future.",
             0,
         )?;
         Ok(self
@@ -322,10 +326,10 @@ impl CamClient {
         out: &Bound<'py, PyUntypedArray>,
         py: Python<'py>,
     ) -> PyResult<()> {
-        PyErr::warn_bound(
+        PyErr::warn(
             py,
-            &py.get_type_bound::<PyDeprecationWarning>(),
-            "CamClient.decompress_frame_stack is deprecated, use decode_range_into_buffer instead.",
+            &py.get_type::<PyDeprecationWarning>(),
+            c"CamClient.decompress_frame_stack is deprecated, use decode_range_into_buffer instead.",
             0,
         )?;
         self.inner.decode_into_buffer(handle.get_inner(), out, py)
@@ -456,9 +460,7 @@ mod tests {
             let client = CamClient::new(py, socket_as_path.to_str().unwrap()).unwrap();
 
             let flat: Vec<u16> = (0..256).collect();
-            let out = PyArray::from_vec_bound(py, flat)
-                .reshape((1, 16, 16))
-                .unwrap();
+            let out = PyArray::from_vec(py, flat).reshape((1, 16, 16)).unwrap();
 
             let out_untyped = out.as_untyped();
             let dfsh = DectrisFrameStack::new(_PyDectrisFrameStack::new(fs_handle));
@@ -566,9 +568,7 @@ mod tests {
             let client = CamClient::new(py, socket_as_path.to_str().unwrap()).unwrap();
 
             let flat: Vec<u16> = (0..256).collect();
-            let out = PyArray::from_vec_bound(py, flat)
-                .reshape((1, 16, 16))
-                .unwrap();
+            let out = PyArray::from_vec(py, flat).reshape((1, 16, 16)).unwrap();
             let out_untyped = out.as_untyped();
             let dfsh = DectrisFrameStack::new(_PyDectrisFrameStack::new(fs_handle));
             client

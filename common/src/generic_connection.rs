@@ -238,7 +238,12 @@ where
         &mut self,
         timeout: Duration,
     ) -> Result<ReceiverMsg<B::FrameMetaImpl, B::AcquisitionConfigImpl>, NextTimeoutError> {
-        let msg = self.bg_thread.channel_from_thread().recv_timeout(timeout)?;
+        let msg = self
+            .bg_thread
+            .channel_from_thread()
+            .get_mut()
+            .unwrap()
+            .recv_timeout(timeout)?;
         self.adjust_status(&msg);
         Ok(msg)
     }

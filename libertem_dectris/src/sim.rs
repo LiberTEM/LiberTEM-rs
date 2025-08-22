@@ -1,5 +1,5 @@
 use std::{
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -31,7 +31,7 @@ impl From<zmq::Error> for SendError {
 }
 
 pub struct FrameSender {
-    socket: Socket,
+    socket: Mutex<Socket>,
     cursor: RecordCursor,
     detector_config: DetectorConfig,
     detector_config_raw: String,
@@ -97,7 +97,7 @@ impl FrameSender {
         let detector_config_raw = cursor.read_raw_msg().to_owned();
 
         FrameSender {
-            socket,
+            socket: Mutex::new(socket),
             cursor: file.get_cursor(),
             series,
             nimages,
@@ -136,6 +136,8 @@ impl FrameSender {
         // So I think it is warranted to go into an error state if the
         // consumer can't keep up.
 
+        let socket = socket.lock().unwrap();
+
         // milliseconds
         socket.set_sndtimeo(30000)?;
 
@@ -163,6 +165,7 @@ impl FrameSender {
     /// position and a retry can be attempted
     fn send_msg_at_cursor(&mut self) -> Result<(), SendError> {
         let socket = &self.socket;
+        let socket = socket.lock().unwrap();
         let cursor = &mut self.cursor;
 
         let old_pos = cursor.get_pos();
@@ -203,8 +206,11 @@ impl FrameSender {
     where
         CB: Fn() -> Option<()>,
     {
-        // milliseconds
-        self.socket.set_sndtimeo(30000)?;
+        {
+            let socket = self.socket.lock().unwrap();
+            // milliseconds
+            socket.set_sndtimeo(30000)?;
+        }
 
         let cursor = &mut self.cursor;
         cursor.seek_to_first_header_of_type("dheader-1.0");
@@ -215,7 +221,10 @@ impl FrameSender {
         // detector config
         self.send_msg_at_cursor_retry(&idle_callback)?;
 
-        self.socket.set_sndtimeo(-1)?;
+        {
+            let socket = self.socket.lock().unwrap();
+            socket.set_sndtimeo(-1)?;
+        }
 
         Ok(())
     }
@@ -226,7 +235,8 @@ impl FrameSender {
             "htype": "dseries_end-1.0",
             "series": self.series,
         });
-        self.socket.send(&footer_json.to_string(), 0).unwrap();
+        let socket = self.socket.lock().unwrap();
+        socket.send(&footer_json.to_string(), 0).unwrap();
         info!("sent footer");
     }
 
@@ -244,6 +254,7 @@ pub struct DectrisSim {
 #[pymethods]
 impl DectrisSim {
     #[new]
+    #[pyo3(signature=(uri,filename,dwelltime=None,random_port=None))]
     fn new(uri: &str, filename: &str, dwelltime: Option<u64>, random_port: Option<bool>) -> Self {
         let random_port = random_port.unwrap_or(false);
         DectrisSim {
@@ -253,6 +264,7 @@ impl DectrisSim {
     }
 
     #[classmethod]
+    #[pyo3(signature=(uri,num_frames,dwelltime=None,random_port=None))]
     fn new_mocked(
         _cls: Bound<'_, PyType>,
         uri: &str,
@@ -308,6 +320,7 @@ impl DectrisSim {
 
     /// send `nframes`, if given, or all frames in the acquisition, from the
     /// current position in the file
+    #[pyo3(signature=(nframes=None))]
     fn send_frames(mut slf: PyRefMut<Self>, py: Python, nframes: Option<u64>) -> PyResult<()> {
         let mut t0 = Instant::now();
         let start_time = Instant::now();
