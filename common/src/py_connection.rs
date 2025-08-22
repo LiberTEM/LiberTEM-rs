@@ -16,7 +16,7 @@ macro_rules! impl_py_connection {
         mod impl_connection {
             use bincode::serialize;
             use common::{
-                background_thread::BackgroundThread,
+                background_thread::{BackgroundThread, PyAcquisitionSize},
                 decoder::Decoder,
                 frame_stack::{FrameMeta, FrameStackHandle},
                 generic_cam_client::GenericCamClient,
@@ -207,6 +207,11 @@ macro_rules! impl_py_connection {
                     Ok(conn_impl.is_running())
                 }
 
+                pub fn passive_is_running(&self) -> PyResult<bool> {
+                    let conn_impl = self.get_conn()?;
+                    Ok(conn_impl.passive_is_running())
+                }
+
                 pub fn cancel(&mut self, timeout: Option<f32>, py: Python<'_>) -> PyResult<()> {
                     let _trace_guard = span_from_py(py, &format!("{}::cancel", stringify!($name)))?;
                     let conn_impl = self.get_conn_mut()?;
@@ -229,11 +234,13 @@ macro_rules! impl_py_connection {
                 pub fn start_passive(
                     &mut self,
                     timeout: Option<f32>,
+                    acquisition_size: Option<PyAcquisitionSize>,
                     py: Python<'_>,
                 ) -> PyResult<()> {
                     let _trace_guard =
                         span_from_py(py, &format!("{}::start_passive", stringify!($name)))?;
                     let timeout = timeout.map(Duration::from_secs_f32);
+                    let acquisition_size = acquisition_size.unwrap_or(PyAcquisitionSize::auto());
 
                     py.allow_threads(|| {
                         let conn_impl = self.get_conn_mut()?;
@@ -244,6 +251,7 @@ macro_rules! impl_py_connection {
                                     Ok::<_, PyErr>(())
                                 },
                                 &timeout,
+                                acquisition_size.inner(),
                             )
                             .map_err(|e| {
                                 PyConnectionError::new_err(format!("start_passive failed: {e}"))

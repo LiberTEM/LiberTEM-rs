@@ -8,7 +8,9 @@ use std::{
 };
 
 use common::{
-    background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
+    background_thread::{
+        AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg,
+    },
     frame_stack::{FrameMeta, FrameStackForWriting, FrameStackWriteError, WriteGuard},
     tcp::{self, ReadExactError},
     utils::{num_from_byte_slice, NumParseError},
@@ -123,9 +125,8 @@ pub struct QdBackgroundThread {
 /// especially convert `ControlMsg::StopThread` to `AcquisitionError::Cancelled`.
 fn check_for_control(control_channel: &Receiver<QdControlMsg>) -> Result<(), AcquisitionError> {
     match control_channel.try_recv() {
-        Ok(ControlMsg::StartAcquisitionPassive) => Err(AcquisitionError::StateError {
-            msg: "received StartAcquisitionPassive while an acquisition was already running"
-                .to_string(),
+        Ok(m @ ControlMsg::StartAcquisitionPassive { .. }) => Err(AcquisitionError::StateError {
+            msg: format!("received {m:?} while an acquisition was already running"),
         }),
         Ok(ControlMsg::StopThread) => Err(AcquisitionError::ThreadStopped),
         Ok(ControlMsg::SpecializedControlMsg { msg: _ }) => {
@@ -472,7 +473,7 @@ fn acquisition(
             info!("done in {elapsed:?}");
             let handle = frame_stack.writing_done()?;
             from_thread_s.send(ReceiverMsg::Finished {
-                frame_stack: handle,
+                frame_stack: Some(handle),
             })?;
 
             return Ok(());
@@ -538,6 +539,7 @@ impl DerefMut for TcpStreamGuard {
 }
 
 fn passive_acquisition(
+    acquisition_size: AcquisitionSize,
     to_thread_r: &Receiver<QdControlMsg>,
     from_thread_s: &Sender<QdReceiverMsg>,
     config: &QdDetectorConnConfig,
@@ -545,6 +547,15 @@ fn passive_acquisition(
 ) -> Result<(), AcquisitionError> {
     let host = &config.data_host;
     let port = config.data_port;
+
+    if acquisition_size != AcquisitionSize::Auto && acquisition_size != AcquisitionSize::Continuous
+    {
+        return Err(AcquisitionError::ConfigurationError {
+            msg: format!(
+                "unsupported parameter: acquisition_size must be Auto or Continuous, is {acquisition_size:?}"
+            ),
+        });
+    }
 
     let data_uri = format!("{host}:{port}");
     info!("connecting to {}...", &data_uri);
@@ -635,11 +646,17 @@ fn background_thread(
 ) -> Result<(), AcquisitionError> {
     'outer: loop {
         loop {
-            // control: main threads tells us to quit
+            // control: main threads tells us what to do
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
-                Ok(ControlMsg::StartAcquisitionPassive) => {
-                    match passive_acquisition(to_thread_r, from_thread_s, config, &mut shm) {
+                Ok(ControlMsg::StartAcquisitionPassive { acquisition_size }) => {
+                    match passive_acquisition(
+                        acquisition_size,
+                        to_thread_r,
+                        from_thread_s,
+                        config,
+                        &mut shm,
+                    ) {
                         Ok(_) => {}
                         Err(AcquisitionError::Cancelled) => {
                             info!("acquisition cancelled by user");
@@ -769,7 +786,10 @@ mod test {
         time::{Duration, Instant},
     };
 
-    use common::generic_connection::{ConnectionError, ConnectionStatus, GenericConnection};
+    use common::{
+        background_thread::AcquisitionSize,
+        generic_connection::{ConnectionError, ConnectionStatus, GenericConnection},
+    };
     use ipc_test::SharedSlabAllocator;
     use log::info;
     use tempfile::{tempdir, TempDir};
@@ -959,6 +979,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1031,6 +1052,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1118,6 +1140,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1132,6 +1155,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1233,6 +1257,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1338,6 +1363,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1448,6 +1474,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(500)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1560,6 +1587,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1664,6 +1692,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1799,6 +1828,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1831,6 +1861,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(1000)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1946,6 +1977,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 
@@ -1978,6 +2010,7 @@ End
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
                 &Some(Duration::from_millis(100)),
+                AcquisitionSize::Auto,
             )
             .unwrap();
 

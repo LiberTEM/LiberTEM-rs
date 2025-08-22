@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [libertem_dectris, libertem_asi_tpx3, libertem_qd_mpx]
+        crate: [libertem_dectris, libertem_asi_tpx3, libertem_qd_mpx, libertem_k2is]
     steps:
     - uses: actions/checkout@v5
       with:
@@ -45,8 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [libertem_dectris, libertem_asi_tpx3, libertem_asi_mpx3, libertem_qd_mpx, ipc_test, common]
-        toolchain: ["stable", "1.71"]
+        crate: [libertem_dectris, libertem_asi_tpx3, libertem_asi_mpx3, libertem_qd_mpx, libertem_k2is, ipc_test, common]
+        toolchain: ["stable", "1.74"]
     steps:
     - uses: actions/checkout@v5
       with:
@@ -178,7 +178,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    if: "startsWith(github.ref, 'refs/tags/')"
+    if: startsWith(github.ref, 'refs/tags/')
     needs: [ macos, windows, linux, linux-test, windows-test, macos-test ]
     steps:
       - uses: actions/download-artifact@v5

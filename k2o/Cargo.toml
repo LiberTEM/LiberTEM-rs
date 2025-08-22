@@ -1,0 +1,44 @@
+[package]
+name = "k2o"
+version = "0.2.9"
+edition = "2021"
+
+[dependencies]
+nix = { version = "0.29.0", features = ["fs", "sched", "process"] }
+num = "0.4.0"
+itertools = "0.10.1"
+tokio = { version = "1", features = ["full"] }
+# futures = "0.3.15"
+memmap2 = "0.5.2"
+ndarray = { version="0.15.4", features = ["approx"]}
+ndarray-npy = "0.8.1"
+jemallocator = "0.5.0"
+human_bytes = { version="0.3.1", features=["bibytes"] }
+clap = { version="4.5.18", features=["derive"]}
+opentelemetry = { version="0.25.0" }
+ipc-test = { path = "../ipc_test" }
+common = { path = "../common" }
+shared_memory = "0.12.4"
+bytemuck = "1.12.3"
+tempfile = "3.5.0"
+log = "0.4.18"
+dbus = { version = "0.9.7", features=["vendored"] }
+libc = "0.2.147"
+env_logger = "0.10.0"
+partialdebug = "0.2.0"
+multiversion = "0.7.3"
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
+thiserror = "2.0.12"
+
+[dev-dependencies]
+criterion = "0.3.4"
+criterion-linux-perf = "0.1.0"
+tempfile = "3.5.0"
+
+[[bench]]
+name = "decode_benchmarks"
+harness = false
+
+[[bench]]
+name = "assemble_benchmarks"
+harness = false
