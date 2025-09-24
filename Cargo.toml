@@ -4,6 +4,8 @@ members = [
     "libertem_asi_tpx3",
     "libertem_asi_mpx3",
     "libertem_qd_mpx",
+    "libertem_k2is",
+    "k2o",
     "ipc_test",
     "playegui",
     "bs-sys",

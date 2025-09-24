@@ -212,6 +212,8 @@ mod inner {
         pub(crate) slot: SlotInfo,
         meta: Vec<M>,
         pub(crate) offsets: Vec<usize>,
+
+        #[deprecated]
         pub(crate) bytes_per_frame: usize,
     }
 

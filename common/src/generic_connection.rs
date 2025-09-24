@@ -14,7 +14,10 @@ use log::{debug, info, trace, warn};
 use stats::Stats;
 
 use crate::{
-    background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
+    background_thread::{
+        AcquisitionSize, BackgroundThread, BackgroundThreadSpawnError, ConcreteAcquisitionSize,
+        ControlMsg, ReceiverMsg,
+    },
     frame_stack::{FrameMeta, FrameStackHandle, SplitError},
 };
 
@@ -22,7 +25,7 @@ pub trait DetectorConnectionConfig: Clone {
     /// calculate number of SHM slots
     fn get_shm_num_slots(&self) -> usize;
 
-    /// calculate SHM slot size
+    /// calculate SHM slot size in bytes
     fn get_shm_slot_size(&self) -> usize;
 
     /// should huge pages be enabled, if available?
@@ -33,8 +36,8 @@ pub trait DetectorConnectionConfig: Clone {
 }
 
 pub trait AcquisitionConfig: Debug {
-    /// total number of frames in the acquisition
-    fn num_frames(&self) -> usize;
+    /// Total number of frames in the acquisition, or Continuous
+    fn acquisition_size(&self) -> ConcreteAcquisitionSize;
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -212,7 +215,7 @@ where
                 trace!("adjust_status: FrameStack {{ .. }}");
             }
             ReceiverMsg::FatalError { error } => {
-                log::warn!("adjust_status: fatal error: {error:?}; going back to idle state");
+                log::error!("adjust_status: fatal error: {error:?}; going back to idle state");
                 self.status = ConnectionStatus::Idle;
             }
             ReceiverMsg::Cancelled => {
@@ -327,7 +330,9 @@ where
                     ));
                 }
                 ReceiverMsg::Finished { frame_stack } => {
-                    frame_stack.free_slot(&mut self.shm)?;
+                    if let Some(frame_stack) = frame_stack {
+                        frame_stack.free_slot(&mut self.shm)?;
+                    }
                     return Err(ConnectionError::UnexpectedMessage(
                         "ReceiverMsg::Finished in wait_for_arm".to_owned(),
                     ));
@@ -417,7 +422,9 @@ where
                 }
                 ReceiverMsg::Finished { frame_stack } => {
                     warn!("wait_for_status: ignoring FrameStackHandle received in ReceiverMsg::Finished message");
-                    frame_stack.free_slot(&mut self.shm)?;
+                    if let Some(frame_stack) = frame_stack {
+                        frame_stack.free_slot(&mut self.shm)?;
+                    }
                 }
                 ReceiverMsg::FatalError { error } => {
                     return Err(ConnectionError::FatalError(error));
@@ -446,6 +453,7 @@ where
         &mut self,
         periodic_callback: impl Fn() -> Result<(), E>,
         timeout: &Option<Duration>,
+        acquisition_size: AcquisitionSize,
     ) -> Result<(), ConnectionError>
     where
         E: std::error::Error + 'static + Send + Sync,
@@ -458,7 +466,7 @@ where
 
         self.bg_thread
             .channel_to_thread()
-            .send(ControlMsg::StartAcquisitionPassive)
+            .send(ControlMsg::StartAcquisitionPassive { acquisition_size })
             .map_err(|_e| ConnectionError::Disconnected)?;
 
         self.wait_for_status(ConnectionStatus::Armed, *timeout, periodic_callback)
@@ -509,11 +517,13 @@ where
                     // it does _not_ mean that the data consumer has processed them all.
 
                     // do stats update here to make sure we count the last frame stack!
-                    self.stats.count_stats_item(&frame_stack);
+                    if let Some(frame_stack) = &frame_stack {
+                        self.stats.count_stats_item(frame_stack);
+                    }
                     self.stats.log_stats();
                     self.stats.reset();
 
-                    return Ok(Some(frame_stack));
+                    return Ok(frame_stack);
                 }
                 ReceiverMsg::FrameStack { frame_stack } => {
                     self.stats.count_stats_item(&frame_stack);
@@ -557,6 +567,10 @@ where
 
     pub fn is_running(&self) -> bool {
         self.get_status() == ConnectionStatus::Running
+    }
+
+    pub fn passive_is_running(&self) -> bool {
+        todo!(); // properly track states!
     }
 
     pub fn cancel<E>(
