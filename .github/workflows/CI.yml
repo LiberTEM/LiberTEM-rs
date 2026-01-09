@@ -24,7 +24,7 @@ jobs:
       matrix:
         crate: [libertem_dectris, libertem_asi_tpx3, libertem_qd_mpx]
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         submodules: recursive
     - uses: messense/maturin-action@v1
@@ -48,7 +48,7 @@ jobs:
         crate: [libertem_dectris, libertem_asi_tpx3, libertem_asi_mpx3, libertem_qd_mpx, ipc_test, common]
         toolchain: ["stable", "1.72"]
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         submodules: recursive
     - name: rustup ${{ matrix.toolchain }}
@@ -78,7 +78,7 @@ jobs:
     - name: Set LIBCLANG_PATH
       run: echo "LIBCLANG_PATH=$((gcm clang).source -replace "clang.exe")" >> $env:GITHUB_ENV
       # if: matrix.config.os == 'windows-latest'
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         submodules: recursive
     - uses: messense/maturin-action@v1
@@ -109,7 +109,7 @@ jobs:
     - name: Set LIBCLANG_PATH
       run: echo "LIBCLANG_PATH=$((gcm clang).source -replace "clang.exe")" >> $env:GITHUB_ENV
       # if: matrix.config.os == 'windows-latest'
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         submodules: recursive
     - name: rustup stable
@@ -134,7 +134,7 @@ jobs:
     steps:
     - name: Set LIBCLANG_PATH
       run: echo "LIBCLANG_PATH=$(brew --prefix llvm@15)/lib" >> $env:GITHUB_ENV
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         submodules: recursive
     - name: rustup stable
@@ -159,7 +159,7 @@ jobs:
     steps:
     - name: Set LIBCLANG_PATH
       run: echo "LIBCLANG_PATH=$(brew --prefix llvm@15)/lib" >> $env:GITHUB_ENV
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         submodules: recursive
     - uses: messense/maturin-action@v1
