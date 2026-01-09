@@ -109,6 +109,9 @@ pub enum SlabInitError {
 
     #[error("mutex error: {0}")]
     MutexError(String),
+
+    #[error("mutex initialization timeout")]
+    Timeout,
 }
 
 ///
@@ -224,17 +227,17 @@ impl SharedSlabAllocator {
             };
             let j = std::thread::spawn(move || {
                 let b = b.clone();
-                let _mtx = unsafe { Mutex::from_existing(b.mutex_ptr, b.data_ptr) };
+                let _mtx = unsafe { Mutex::from_existing(b.mutex_ptr, b.data_ptr).unwrap() };
                 // we are done initializing...
                 init_chan_s.send(()).unwrap();
-                // so we just keep the mutex open and wait until we are cleaned up:
+                // so we just keep the mutex alive (not unlocked) and wait until we are cleaned up:
                 cleanup_chan_r.recv().unwrap();
             });
 
             // wait for initialization of the thread:
             init_chan_r
-                .recv_timeout(Duration::from_millis(100))
-                .expect("background thread did not initialize");
+                .recv_timeout(Duration::from_millis(1000))
+                .map_err(|_| SlabInitError::Timeout)?;
 
             (lock, Some((j, cleanup_chan_s)))
         } else {
@@ -299,10 +302,7 @@ impl SharedSlabAllocator {
     /// `SlotInfo` struct using `writing_done`, which can then be sent to
     /// a consumer.
     pub fn get_mut(&mut self) -> Option<SlotForWriting> {
-        match self.try_get_mut() {
-            Ok(slot) => Some(slot),
-            Err(_) => None,
-        }
+        self.try_get_mut().ok()
     }
 
     pub fn try_get_mut(&mut self) -> Result<SlotForWriting, ShmError> {
