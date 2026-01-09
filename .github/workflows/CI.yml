@@ -33,7 +33,7 @@ jobs:
         manylinux: auto
         command: build
         container: ghcr.io/libertem/manylinux2014_x86_64:latest
-        args: --release --sdist -o target/dist --find-interpreter
+        args: --release --sdist -o target/dist
         sccache: 'true'
     - name: Upload wheels
       uses: actions/upload-artifact@v5
@@ -85,7 +85,7 @@ jobs:
       with:
         working-directory: ${{ matrix.crate }}
         command: build
-        args: --release -o dist --find-interpreter
+        args: --release -o dist
         sccache: 'true'
     - name: Upload wheels
       uses: actions/upload-artifact@v5
