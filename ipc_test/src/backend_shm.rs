@@ -120,5 +120,67 @@ impl Drop for SharedMemory {
 // on each shm call
 // FIXME: verify that stuff is sufficiently safe!
 unsafe impl Send for SharedMemory {}
+unsafe impl Sync for SharedMemory {}
 
 pub type Shm = SharedMemory;
+
+#[cfg(test)]
+mod tests {
+    use crate::{shm::SharedMemory, test_utils::TempDir, SlabInfo};
+
+    #[test]
+    fn test_debug_send() {
+        fn need_send<S>(_x: S)
+        where
+            S: Send,
+        {
+            // nothing in here, just should give us a compilation error
+        }
+
+        let handle_path = TempDir::new("handle_path");
+
+        let slab_info: SlabInfo = SlabInfo {
+            num_slots: 7,
+            slot_size: 1,
+            total_size: 7,
+        };
+
+        let s: SharedMemory = SharedMemory::new(
+            false,
+            &handle_path.join("handle.sock"),
+            1024 * 1024,
+            slab_info,
+        )
+        .unwrap();
+
+        need_send(s);
+    }
+
+    #[test]
+    fn test_debug_sync() {
+        fn need_sync<S>(_x: S)
+        where
+            S: Sync,
+        {
+            // nothing in here, just should give us a compilation error
+        }
+
+        let handle_path = TempDir::new("handle_path");
+
+        let slab_info: SlabInfo = SlabInfo {
+            num_slots: 7,
+            slot_size: 1,
+            total_size: 7,
+        };
+
+        let s: SharedMemory = SharedMemory::new(
+            false,
+            &handle_path.join("handle.sock"),
+            1024 * 1024,
+            slab_info,
+        )
+        .unwrap();
+
+        need_sync(s);
+    }
+}

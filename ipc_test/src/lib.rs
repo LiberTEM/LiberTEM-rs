@@ -1,12 +1,13 @@
 pub mod common;
 pub(crate) mod freestack;
 pub mod slab;
+mod test_utils;
 
 pub use slab::{SHMHandle, SharedSlabAllocator, SlabInfo, Slot, SlotForWriting, SlotInfo};
 
 // for testing:
 // #[cfg_attr(target_os = "linux", path = "backend_memfd.rs")]
-// #[cfg_attr(target_os = "linux", path = "backend_shm.rs")]
+//#[cfg_attr(target_os = "linux", path = "backend_shm.rs")]
 
 #[cfg_attr(target_os = "linux", path = "backend_memfd.rs")]
 #[cfg_attr(not(target_os = "linux"), path = "backend_shm.rs")]
