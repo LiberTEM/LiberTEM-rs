@@ -129,7 +129,7 @@ jobs:
     strategy:
       matrix:
         crate: [libertem_dectris, libertem_asi_tpx3, libertem_asi_mpx3, libertem_qd_mpx]
-        os: [macos-13, macos-14]
+        os: [macos-14, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
     - name: Set LIBCLANG_PATH
