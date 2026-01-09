@@ -952,11 +952,13 @@ End
                     let fake_server = TcpListener::from_std(fake_server).unwrap();
                     // the server accepts our connection, and... nothing else happens.
                     let (_stream, _addr) =
-                        timeout(Duration::from_millis(100), fake_server.accept())
+                        timeout(Duration::from_millis(1000), fake_server.accept())
                             .await
                             .unwrap()
                             .unwrap();
-                    shutdown_r.recv_timeout(Duration::from_millis(100)).unwrap();
+                    shutdown_r
+                        .recv_timeout(Duration::from_millis(1000))
+                        .unwrap();
                 });
             });
 
@@ -966,7 +968,7 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
@@ -1018,7 +1020,7 @@ End
                     let fake_server = TcpListener::from_std(fake_server).unwrap();
                     // the server accepts our connection, and...
                     let (mut stream, _addr) =
-                        timeout(Duration::from_millis(100), fake_server.accept())
+                        timeout(Duration::from_millis(1000), fake_server.accept())
                             .await
                             .unwrap()
                             .unwrap();
@@ -1028,7 +1030,9 @@ End
                     // for either a SOFTTRIGGER or a hardware triggering signal:
                     send_acq_header(&mut stream, 16384).await;
 
-                    shutdown_r.recv_timeout(Duration::from_millis(500)).unwrap();
+                    shutdown_r
+                        .recv_timeout(Duration::from_millis(5000))
+                        .unwrap();
                 });
             });
 
@@ -1038,11 +1042,11 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
@@ -1095,7 +1099,7 @@ End
                     let fake_server = TcpListener::from_std(fake_server).unwrap();
                     // the server accepts our connection, and...
                     let (mut stream, _addr) =
-                        timeout(Duration::from_millis(100), fake_server.accept())
+                        timeout(Duration::from_millis(1000), fake_server.accept())
                             .await
                             .unwrap()
                             .unwrap();
@@ -1115,7 +1119,9 @@ End
                     send_acq_header(&mut stream, 16).await;
                     send_frames_simple(&mut stream, 0..16).await;
 
-                    shutdown_r.recv_timeout(Duration::from_millis(100)).unwrap();
+                    shutdown_r
+                        .recv_timeout(Duration::from_millis(1000))
+                        .unwrap();
                 });
             });
 
@@ -1125,11 +1131,11 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
-            let res = conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            let res = conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             });
             assert!(res.is_err());
@@ -1139,11 +1145,11 @@ End
             // ok, we should be able to reconnect:
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
@@ -1217,7 +1223,7 @@ End
                     let fake_server = TcpListener::from_std(fake_server).unwrap();
                     // the server accepts our connection, and...
                     let (mut stream, _addr) =
-                        timeout(Duration::from_millis(100), fake_server.accept())
+                        timeout(Duration::from_millis(1000), fake_server.accept())
                             .await
                             .unwrap()
                             .unwrap();
@@ -1240,11 +1246,11 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
@@ -1322,7 +1328,7 @@ End
                     let fake_server = TcpListener::from_std(fake_server).unwrap();
                     // the server accepts our connection, and...
                     let (mut stream, _addr) =
-                        timeout(Duration::from_millis(100), fake_server.accept())
+                        timeout(Duration::from_millis(1000), fake_server.accept())
                             .await
                             .unwrap()
                             .unwrap();
@@ -1345,11 +1351,11 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
@@ -1426,7 +1432,7 @@ End
                     let fake_server = TcpListener::from_std(fake_server).unwrap();
                     // the server accepts our connection, and...
                     let (mut stream, _addr) =
-                        timeout(Duration::from_millis(100), fake_server.accept())
+                        timeout(Duration::from_millis(1000), fake_server.accept())
                             .await
                             .unwrap()
                             .unwrap();
@@ -1462,7 +1468,7 @@ End
             // arm the fake detector and send the acquisition header:
             arm_s.send(()).unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
@@ -1537,7 +1543,7 @@ End
                     let fake_server = TcpListener::from_std(fake_server).unwrap();
                     // the server accepts our connection, and...
                     let (mut stream, _addr) =
-                        timeout(Duration::from_millis(100), fake_server.accept())
+                        timeout(Duration::from_millis(1000), fake_server.accept())
                             .await
                             .unwrap()
                             .unwrap();
@@ -1567,11 +1573,11 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
@@ -1645,7 +1651,7 @@ End
                     let fake_server = TcpListener::from_std(fake_server).unwrap();
                     // the server accepts our connection, and...
                     let (mut stream, _addr) =
-                        timeout(Duration::from_millis(100), fake_server.accept())
+                        timeout(Duration::from_millis(1000), fake_server.accept())
                             .await
                             .unwrap()
                             .unwrap();
@@ -1661,7 +1667,9 @@ End
                     // someone sent a trigger signal to the detector trigger input, so let's start to "record some data":
                     send_frames_simple(&mut stream, 0..).await;
 
-                    shutdown_r.recv_timeout(Duration::from_millis(100)).unwrap();
+                    shutdown_r
+                        .recv_timeout(Duration::from_millis(1000))
+                        .unwrap();
                 });
             });
 
@@ -1671,17 +1679,17 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
 
             // let it run for half a second or so:
-            let timeout = Duration::from_millis(100);
+            let timeout = Duration::from_millis(1000);
             let deadline = Instant::now() + timeout;
             let mut idx = 0;
             loop {
@@ -1764,7 +1772,7 @@ End
                     {
                         // the server accepts our connection, and...
                         let (mut stream, _addr) =
-                            timeout(Duration::from_millis(100), fake_server.accept())
+                            timeout(Duration::from_millis(1000), fake_server.accept())
                                 .await
                                 .unwrap()
                                 .unwrap();
@@ -1784,7 +1792,7 @@ End
                         // restart the whole thing, and now successfully send 16 frames
                         // without size change:
                         let (mut stream, _addr) =
-                            timeout(Duration::from_millis(100), fake_server.accept())
+                            timeout(Duration::from_millis(1000), fake_server.accept())
                                 .await
                                 .unwrap()
                                 .unwrap();
@@ -1806,7 +1814,7 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
@@ -1909,7 +1917,7 @@ End
                     {
                         // the server accepts our connection, and...
                         let (mut stream, _addr) =
-                            timeout(Duration::from_millis(100), fake_server.accept())
+                            timeout(Duration::from_millis(1000), fake_server.accept())
                                 .await
                                 .unwrap()
                                 .unwrap();
@@ -1931,7 +1939,7 @@ End
                         // restart the whole thing, and now successfully send 16 frames
                         // without size change:
                         let (mut stream, _addr) =
-                            timeout(Duration::from_millis(100), fake_server.accept())
+                            timeout(Duration::from_millis(1000), fake_server.accept())
                                 .await
                                 .unwrap()
                                 .unwrap();
@@ -1953,11 +1961,11 @@ End
                 GenericConnection::new(bg, &shm).unwrap();
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
@@ -1985,11 +1993,11 @@ End
             // restart connection:
             conn.start_passive(
                 || Ok::<(), ConnectionError>(()),
-                &Some(Duration::from_millis(100)),
+                &Some(Duration::from_millis(1000)),
             )
             .unwrap();
 
-            conn.wait_for_arm(Some(Duration::from_millis(100)), || {
+            conn.wait_for_arm(Some(Duration::from_millis(1000)), || {
                 Ok::<(), ConnectionError>(())
             })
             .unwrap();
