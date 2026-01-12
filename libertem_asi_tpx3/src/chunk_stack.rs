@@ -540,7 +540,7 @@ mod tests {
         let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes(slice, &SIZES);
 
         // generate some predictable pattern:
-        let values: Vec<u32> = (0..12).map(|i| 1 << (i % 16) ).collect();
+        let values: Vec<u32> = (0..12).map(|i| 1 << (i % 16)).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);
@@ -624,7 +624,7 @@ mod tests {
         let mut view_mut: CSRViewMut<u32, u32, u32> =
             CSRViewMut::from_bytes_with_layout(slice, &layout);
         // generate some predictable pattern:
-        let values: Vec<u32> = (0..12).map(|i| 1 << (i % 16) ).collect();
+        let values: Vec<u32> = (0..12).map(|i| 1 << (i % 16)).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);
@@ -643,7 +643,7 @@ mod tests {
         let mut view_mut: CSRViewMut<u32, u32, u32> =
             CSRViewMut::from_bytes_with_layout(slice, &layout);
         // generate some predictable pattern:
-        let values: Vec<u32> = (12..24).map(|i| 1 << (i % 16) ).collect();
+        let values: Vec<u32> = (12..24).map(|i| 1 << (i % 16)).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);
@@ -662,7 +662,7 @@ mod tests {
         let mut view_mut: CSRViewMut<u32, u32, u32> =
             CSRViewMut::from_bytes_with_layout(slice, &layout);
         // generate some predictable pattern:
-        let values: Vec<u32> = (24..36).map(|i| 1 << (i % 16) ).collect();
+        let values: Vec<u32> = (24..36).map(|i| 1 << (i % 16)).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);
