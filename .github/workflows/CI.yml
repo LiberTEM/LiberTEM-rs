@@ -36,7 +36,7 @@ jobs:
         args: --release --sdist -o target/dist
         sccache: 'true'
     - name: Upload wheels
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: wheels-linux-${{ matrix.crate }}
         path: ${{ matrix.crate }}/target/dist
@@ -88,7 +88,7 @@ jobs:
         args: --release -o dist
         sccache: 'true'
     - name: Upload wheels
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: wheels-windows-${{ matrix.crate }}
         path: ${{ matrix.crate }}/dist
@@ -170,7 +170,7 @@ jobs:
         args: --release -o dist
         sccache: 'true'
     - name: Upload wheels
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: wheels-macos-${{ matrix.crate }}-${{ matrix.target }}
         path: ${{ matrix.crate }}/dist
