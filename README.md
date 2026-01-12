@@ -6,13 +6,14 @@ come with Python bindings using PyO3, and can be built using [maturin](https://g
 The repository is structured as a cargo workspace, and some of the crates are just used internally,
 like `bs-sys`.
 
-Minimum supported rust version (MSRV) is 1.74 (November 2023)
+Minimum supported rust version (MSRV) is 1.74 (November 2023).
+Minimum Python version supported is 3.9.
 
 ## Development
 
 Please clone using `git clone --recurse-submodules ...` to include vendored
-code in submodules. After cloning, remember to enable pre-commit hooks using
-`pre-commit install --install-hooks`.
+code in submodules. After cloning, remember to enable pre-commit hooks, for example
+using `uvx pre-commit install --install-hooks`.
 
 ## Contents
 
