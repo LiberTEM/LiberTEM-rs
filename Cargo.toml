@@ -14,3 +14,7 @@ resolver = "2"
 
 [profile.release]
 debug = true
+
+[workspace.dependencies]
+pyo3 = { version = "0.27", features = ["abi3-py37"] }
+numpy = "0.27.1"
