@@ -118,7 +118,7 @@ mod tests {
     use tempfile::tempdir;
 
     use ipc_test::SharedSlabAllocator;
-    use pyo3::{Python};
+    use pyo3::Python;
 
     use crate::{
         cam_client::CamClient,
@@ -162,7 +162,7 @@ mod tests {
         meta.validate();
         let slice = fs.slice_for_writing(SIZES.total(), meta.clone());
         let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes(slice, &SIZES);
-        let values: Vec<u32> = (0..12).map(|i| 1 << (i % 16) ).collect();
+        let values: Vec<u32> = (0..12).map(|i| 1 << (i % 16)).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);

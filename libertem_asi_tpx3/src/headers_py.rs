@@ -1,5 +1,5 @@
 use log::debug;
-use pyo3::{pyfunction, pymethods};
+use pyo3::{pyfunction, pymethods, types::PyByteArray, Bound, Python};
 
 use crate::{
     chunk_stack::ChunkCSRLayout,
@@ -101,12 +101,13 @@ impl AcquisitionEnd {
 }
 
 #[pyfunction]
-pub fn make_sim_data(
+pub fn make_sim_data<'py>(
     nav_shape: (u16, u16),
     indptr: Vec<u32>,
     indices: Vec<u32>,
     values: Vec<u32>,
-) -> Vec<u8> {
+    py: Python<'py>,
+) -> Bound<'py, PyByteArray> {
     let mut out: Vec<u8> = Vec::new();
     let nframes = nav_shape.0 as u32 * nav_shape.1 as u32;
     let acquisition_start_header = HeaderTypes::AcquisitionStart {
@@ -180,5 +181,5 @@ pub fn make_sim_data(
     };
     out.extend_from_slice(&acquisition_end_header.to_bytes());
 
-    out
+    PyByteArray::new(py, &out)
 }
