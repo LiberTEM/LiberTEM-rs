@@ -8,3 +8,7 @@ pub mod py_connection;
 pub mod tcp;
 pub mod tracing;
 pub mod utils;
+
+// re-export bincode so we can use it in the macros without having a dependency
+// at every use site:
+pub use bincode;

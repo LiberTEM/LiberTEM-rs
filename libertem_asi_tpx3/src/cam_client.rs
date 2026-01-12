@@ -17,7 +17,7 @@ pub struct CamClient {
 }
 
 impl CamClient {
-    fn get_memoryview(&self, py: Python, raw_data: &[u8]) -> PyObject {
+    fn get_memoryview(&self, py: Python, raw_data: &[u8]) -> Py<PyAny> {
         let ptr = raw_data.as_ptr();
         let length = raw_data.len();
 
@@ -32,7 +32,7 @@ impl CamClient {
         &'a self,
         slot_r: &'a ipc_test::Slot,
         handle: &'a ChunkStackHandle,
-    ) -> Vec<(&[IP], &[I], &[V])>
+    ) -> Vec<(&'a [IP], &'a [I], &'a [V])>
     where
         I: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
         IP: numpy::Element + FromBytes + AsBytes + std::marker::Copy,
@@ -48,6 +48,8 @@ impl CamClient {
 
 #[allow(non_upper_case_globals)]
 const PyBUF_READ: c_int = 0x100;
+
+pub type MemoryView = Py<PyAny>;
 
 #[pymethods]
 impl CamClient {
@@ -66,7 +68,7 @@ impl CamClient {
         &self,
         handle: &ChunkStackHandle,
         py: Python,
-    ) -> PyResult<Vec<(ChunkCSRLayout, PyObject, PyObject, PyObject)>> {
+    ) -> PyResult<Vec<(ChunkCSRLayout, MemoryView, MemoryView, MemoryView)>> {
         if let Some(shm) = &self.shm {
             let slot_r = shm.get(handle.slot.slot_idx);
 
@@ -116,7 +118,7 @@ mod tests {
     use tempfile::tempdir;
 
     use ipc_test::SharedSlabAllocator;
-    use pyo3::{prepare_freethreaded_python, Python};
+    use pyo3::{Python};
 
     use crate::{
         cam_client::CamClient,
@@ -160,7 +162,7 @@ mod tests {
         meta.validate();
         let slice = fs.slice_for_writing(SIZES.total(), meta.clone());
         let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes(slice, &SIZES);
-        let values: Vec<u32> = (0..12).map(|i| (1 << (i % 16))).collect();
+        let values: Vec<u32> = (0..12).map(|i| 1 << (i % 16) ).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);
@@ -181,10 +183,10 @@ mod tests {
         assert_eq!(fs_handle.len(), NROWS);
 
         // initialize a Python interpreter so we are able to construct a PyBytes instance:
-        prepare_freethreaded_python();
+        Python::initialize();
 
         // roundtrip serialize/deserialize:
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let bytes = fs_handle.serialize(py).unwrap();
             let new_handle = ChunkStackHandle::deserialize_impl(&bytes).unwrap();
             assert_eq!(fs_handle, new_handle);

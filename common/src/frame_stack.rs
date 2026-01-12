@@ -280,7 +280,7 @@ mod inner {
             &'a self,
             frame_idx: usize,
             slot: &'a ipc_test::Slot,
-        ) -> &[u8] {
+        ) -> &'a [u8] {
             let slice = slot.as_slice();
             let in_offset = self.offsets[frame_idx];
             let size = self.meta[frame_idx].get_data_length_bytes();

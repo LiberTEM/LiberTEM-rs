@@ -194,7 +194,6 @@ impl TemplateApp {
 
 impl TemplateApp {
     /// Applies one or more messages.
-
     fn apply_acq_message(&mut self, msg: AcqMessage) -> Option<ProcessingStats> {
         match msg {
             AcqMessage::AcquisitionStarted(_started) => {}

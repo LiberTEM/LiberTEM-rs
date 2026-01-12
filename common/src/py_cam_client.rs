@@ -13,7 +13,7 @@ macro_rules! decode_for_dtype {
         $py: ident
     ) => {
         if $out.dtype().is_equiv_to(&dtype::<$dtype>($py)) {
-            let out_downcast = $out.downcast::<PyArray3<$dtype>>()?;
+            let out_downcast = $out.cast::<PyArray3<$dtype>>()?;
             $self.decode_impl($input, out_downcast, $start_idx, $end_idx, $py)?;
             return Ok(());
         }

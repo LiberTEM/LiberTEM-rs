@@ -300,9 +300,9 @@ impl DectrisSim {
 
     fn send_headers(mut slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
         let sender = &mut slf.frame_sender;
-        py.allow_threads(|| {
+        py.detach(|| {
             if let Err(e) = sender.send_headers(|| {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     if let Err(e) = py.check_signals() {
                         eprintln!("got python error {e:?}, breaking");
                         None
@@ -335,7 +335,7 @@ impl DectrisSim {
         let sender = &mut slf.frame_sender;
 
         for frame_idx in 0..effective_nframes {
-            py.allow_threads(|| match sender.send_frame() {
+            py.detach(|| match sender.send_frame() {
                 Err(SendError::Timeout) => Err(TimeoutError::new_err(
                     "timeout while sending frames".to_string(),
                 )),
@@ -366,7 +366,7 @@ impl DectrisSim {
                 trace!("send_frames: progress: frame_idx={frame_idx}");
 
                 // also drop GIL once in a while
-                py.allow_threads(|| {
+                py.detach(|| {
                     spin_sleep::sleep(Duration::from_micros(5));
                 });
             }

@@ -379,7 +379,7 @@ impl ChunkStackHandle {
 
     // FIXME: this doesn't make sense for stacks with different V-type per chunk!
     // (which is something that could happen...)
-    pub fn get_chunk_views<'a, I, IP, V>(&'a self, slot_r: &'a Slot) -> Vec<CSRView<I, IP, V>>
+    pub fn get_chunk_views<'a, I, IP, V>(&'a self, slot_r: &'a Slot) -> Vec<CSRView<'a, I, IP, V>>
     where
         I: numpy::Element + FromBytes + AsBytes,
         IP: numpy::Element + FromBytes + AsBytes,
@@ -402,7 +402,7 @@ impl ChunkStackHandle {
     pub fn get_chunk_views_raw<'a>(
         &'a self,
         slot_r: &'a Slot,
-    ) -> Vec<(CSRViewRaw, ChunkCSRLayout)> {
+    ) -> Vec<(CSRViewRaw<'a>, ChunkCSRLayout)> {
         let raw_data = slot_r.as_slice();
 
         self.get_layout()
@@ -540,7 +540,7 @@ mod tests {
         let mut view_mut: CSRViewMut<u32, u32, u32> = CSRViewMut::from_bytes(slice, &SIZES);
 
         // generate some predictable pattern:
-        let values: Vec<u32> = (0..12).map(|i| (1 << (i % 16))).collect();
+        let values: Vec<u32> = (0..12).map(|i| 1 << (i % 16) ).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);
@@ -624,7 +624,7 @@ mod tests {
         let mut view_mut: CSRViewMut<u32, u32, u32> =
             CSRViewMut::from_bytes_with_layout(slice, &layout);
         // generate some predictable pattern:
-        let values: Vec<u32> = (0..12).map(|i| (1 << (i % 16))).collect();
+        let values: Vec<u32> = (0..12).map(|i| 1 << (i % 16) ).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);
@@ -643,7 +643,7 @@ mod tests {
         let mut view_mut: CSRViewMut<u32, u32, u32> =
             CSRViewMut::from_bytes_with_layout(slice, &layout);
         // generate some predictable pattern:
-        let values: Vec<u32> = (12..24).map(|i| (1 << (i % 16))).collect();
+        let values: Vec<u32> = (12..24).map(|i| 1 << (i % 16) ).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);
@@ -662,7 +662,7 @@ mod tests {
         let mut view_mut: CSRViewMut<u32, u32, u32> =
             CSRViewMut::from_bytes_with_layout(slice, &layout);
         // generate some predictable pattern:
-        let values: Vec<u32> = (24..36).map(|i| (1 << (i % 16))).collect();
+        let values: Vec<u32> = (24..36).map(|i| 1 << (i % 16) ).collect();
         let indices: Vec<u32> = (0..12).collect();
         let indptr: Vec<u32> = vec![0, 4, 8, 12, 12, 12, 12, 12];
         view_mut.copy_from_slices(&indptr, &indices, &values);

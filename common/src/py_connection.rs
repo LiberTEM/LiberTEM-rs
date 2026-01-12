@@ -14,7 +14,7 @@ macro_rules! impl_py_connection {
         $mod: ident
     ) => {
         mod impl_connection {
-            use bincode::serialize;
+            use common::bincode::serialize;
             use common::{
                 background_thread::BackgroundThread,
                 decoder::Decoder,
@@ -130,7 +130,7 @@ macro_rules! impl_py_connection {
                     let mut conn = self.get_conn_mut()?;
                     conn.wait_for_status(desired_status, timeout, || {
                         // re-acquire GIL to check if we need to break
-                        Python::with_gil(|py| py.check_signals())?;
+                        Python::attach(|py| py.check_signals())?;
                         Ok::<_, PyErr>(())
                     })
                     .map_err(|e| PyConnectionError::new_err(e.to_string()))
@@ -148,10 +148,10 @@ macro_rules! impl_py_connection {
                         span_from_py(py, &format!("{}::get_next_stack", stringify!($name)))?;
                     let conn_impl = self.get_conn_mut()?;
 
-                    match py.allow_threads(|| {
+                    match py.detach(|| {
                         conn_impl.get_next_stack(max_size, || {
                             // re-acquire GIL to check if we need to break
-                            Python::with_gil(|py| py.check_signals())?;
+                            Python::attach(|py| py.check_signals())?;
                             Ok::<_, PyErr>(())
                         })
                     }) {
@@ -171,12 +171,12 @@ macro_rules! impl_py_connection {
                         span_from_py(py, &format!("{}::wait_for_arm", stringify!($name)))?;
                     let timeout = timeout.map(Duration::from_secs_f32);
 
-                    py.allow_threads(|| {
+                    py.detach(|| {
                         let conn_impl = self.get_conn_mut()?;
                         conn_impl
                             .wait_for_arm(timeout, || {
                                 // re-acquire GIL to check if we need to break
-                                Python::with_gil(|py| py.check_signals())?;
+                                Python::attach(|py| py.check_signals())?;
                                 Ok::<_, PyErr>(())
                             })
                             .map_err(|e| PyConnectionError::new_err(e.to_string()))
@@ -214,12 +214,12 @@ macro_rules! impl_py_connection {
                     let conn_impl = self.get_conn_mut()?;
 
                     let timeout = timeout.map(Duration::from_secs_f32);
-                    py.allow_threads(|| {
+                    py.detach(|| {
                         let conn_impl = self.get_conn_mut()?;
                         conn_impl
                             .cancel(&timeout, || {
                                 // re-acquire GIL to check if we need to break
-                                Python::with_gil(|py| py.check_signals())?;
+                                Python::attach(|py| py.check_signals())?;
                                 Ok::<_, PyErr>(())
                             })
                             .map_err(|e| {
@@ -238,12 +238,12 @@ macro_rules! impl_py_connection {
                         span_from_py(py, &format!("{}::start_passive", stringify!($name)))?;
                     let timeout = timeout.map(Duration::from_secs_f32);
 
-                    py.allow_threads(|| {
+                    py.detach(|| {
                         let conn_impl = self.get_conn_mut()?;
                         conn_impl
                             .start_passive(
                                 || {
-                                    Python::with_gil(|py| py.check_signals())?;
+                                    Python::attach(|py| py.check_signals())?;
                                     Ok::<_, PyErr>(())
                                 },
                                 &timeout,
@@ -255,7 +255,7 @@ macro_rules! impl_py_connection {
                         conn_impl
                             .wait_for_status(ConnectionStatus::Armed, timeout, || {
                                 // re-acquire GIL to check if we need to break
-                                Python::with_gil(|py| py.check_signals())?;
+                                Python::attach(|py| py.check_signals())?;
                                 Ok::<_, PyErr>(())
                             })
                             .map_err(|e| PyConnectionError::new_err(e.to_string()))?;
@@ -302,7 +302,7 @@ macro_rules! impl_py_connection {
                 pub fn deserialize_impl<'py>(serialized: Bound<'py, PyBytes>) -> PyResult<Self> {
                     let data = serialized.as_bytes();
                     let inner: FrameStackHandle<super::$frame_meta_type> =
-                        bincode::deserialize(data).map_err(|e| {
+                        common::bincode::deserialize(data).map_err(|e| {
                             let msg = format!("could not deserialize FrameStackHandle: {e:?}");
                             PyConnectionError::new_err(msg)
                         })?;

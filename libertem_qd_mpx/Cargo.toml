@@ -13,23 +13,22 @@ rust-version = "1.72"
 # crate-type = ["cdylib"]
 
 [dependencies]
-bincode = "1.3.3"
-env_logger = "0.11.5"
-log = "0.4.22"
+env_logger = { workspace = true }
+log = { workspace = true }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 serde = { version = "1.0.210", features = ["derive"] }
 ipc-test = { path = "../ipc_test" }
 stats = { path = "../stats" }
 common = { path = "../common" }
-zerocopy = "0.7.35"
+zerocopy = { workspace = true }
 num = "0.4.3"
-thiserror = "1.0.64"
+thiserror = { workspace = true }
 encoding_rs = { version = "0.8.34", features = [] }
 itertools = "0.13.0"
 rand = "0.8.5"
 criterion = "0.5.1"
-opentelemetry = "0.25.0"
+opentelemetry = { workspace = true }
 
 [features]
 extension-module = ["pyo3/extension-module"]

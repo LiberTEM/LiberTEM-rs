@@ -144,10 +144,7 @@ fn inspect_print_summary(filename: &str) {
 
 fn try_parse(raw_msg: &[u8]) -> Option<serde_json::Value> {
     let value_result: Result<serde_json::Value, _> = serde_json::from_slice(raw_msg);
-    match value_result {
-        Ok(value) => Some(value),
-        Err(_) => None,
-    }
+    value_result.ok()
 }
 
 fn action_inspect(cli: &Cli, head: Option<usize>, summary: bool) {

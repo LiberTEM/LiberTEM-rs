@@ -14,15 +14,15 @@ ipc-test = { path = "../ipc_test" }
 stats = { path = "../stats" }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
-serde = "1.0.210"
-tempfile = "3.10.1"
-thiserror = "1.0.64"
-log = "0.4.22"
-ndarray = { version = "0.15.6" }
-zerocopy = "0.7.35"
+serde = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+ndarray = { workspace = true }
+zerocopy = { workspace = true }
 num = "0.4.3"
 multiversion = "0.7.4"
-opentelemetry = "0.25.0"
+opentelemetry = { workspace = true }
 opentelemetry-otlp = "0.25.0"
 opentelemetry-semantic-conventions = "0.25.0"
 opentelemetry_sdk = { version = "0.25.0", features = ["rt-tokio"] }
