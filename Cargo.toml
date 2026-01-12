@@ -19,7 +19,7 @@ rust-version = "1.74"
 debug = true
 
 [workspace.dependencies]
-pyo3 = { version = "0.27", features = ["abi3-py37"] }
+pyo3 = { version = "0.27.2", features = ["abi3-py39"] }
 numpy = "0.27.1"
 thiserror = "2.0.17"
 tempfile = "3.10.1"
