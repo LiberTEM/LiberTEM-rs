@@ -219,7 +219,7 @@ dependencies = [
  "objc-foundation",
  "objc_id",
  "parking_lot",
- "thiserror",
+ "thiserror 1.0.69",
  "winapi",
  "x11rb",
 ]
@@ -731,7 +731,7 @@ dependencies = [
  "log",
  "nix 0.25.1",
  "slotmap",
- "thiserror",
+ "thiserror 1.0.69",
  "vec_map",
 ]
 
@@ -1009,7 +1009,7 @@ dependencies = [
  "serde",
  "stats",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.17",
  "tokio",
  "zerocopy",
 ]
@@ -1271,7 +1271,7 @@ dependencies = [
  "objc",
  "percent-encoding",
  "raw-window-handle",
- "thiserror",
+ "thiserror 1.0.69",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -2172,7 +2172,6 @@ dependencies = [
 name = "ipc-test"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bincode",
  "bytemuck",
  "clap 4.4.18",
@@ -2188,7 +2187,7 @@ dependencies = [
  "serde",
  "shared_memory",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -2243,7 +2242,7 @@ dependencies = [
  "combine",
  "jni-sys",
  "log",
- "thiserror",
+ "thiserror 1.0.69",
  "walkdir",
  "windows-sys 0.45.0",
 ]
@@ -2325,7 +2324,6 @@ checksum = "561d97a539a36e26a9a5fad1ea11a3039a67714694aaa379433e580854bc3dc5"
 name = "libertem-asi-mpx3"
 version = "0.2.14"
 dependencies = [
- "bincode",
  "common",
  "env_logger",
  "ipc-test",
@@ -2338,7 +2336,7 @@ dependencies = [
  "serval-client",
  "stats",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.17",
  "zerocopy",
 ]
 
@@ -2360,7 +2358,7 @@ dependencies = [
  "serde",
  "stats",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.17",
  "uuid",
  "zerocopy",
 ]
@@ -2369,7 +2367,6 @@ dependencies = [
 name = "libertem-dectris"
 version = "0.2.14"
 dependencies = [
- "bincode",
  "bs_sys",
  "clap 3.2.25",
  "common",
@@ -2389,7 +2386,7 @@ dependencies = [
  "spin_sleep",
  "stats",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.17",
  "uuid",
  "zerocopy",
  "zmq",
@@ -2399,7 +2396,6 @@ dependencies = [
 name = "libertem_qd_mpx"
 version = "0.2.14"
 dependencies = [
- "bincode",
  "common",
  "criterion",
  "encoding_rs",
@@ -2415,7 +2411,7 @@ dependencies = [
  "serde",
  "stats",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.17",
  "tokio",
  "zerocopy",
 ]
@@ -2695,7 +2691,7 @@ dependencies = [
  "ndk-sys",
  "num_enum 0.5.11",
  "raw-window-handle",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3082,7 +3078,7 @@ dependencies = [
  "js-sys",
  "once_cell",
  "pin-project-lite",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3098,7 +3094,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
  "tonic",
 ]
@@ -3137,7 +3133,7 @@ dependencies = [
  "percent-encoding",
  "rand 0.8.5",
  "serde_json",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
 ]
@@ -3533,9 +3529,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.35"
+version = "1.0.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "291ec9ab5efd934aaf503a6466c5d5251535d108ee747472c3977cc5acc868ef"
+checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
 dependencies = [
  "proc-macro2",
 ]
@@ -3949,7 +3945,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.17",
  "url",
 ]
 
@@ -4244,18 +4240,38 @@ checksum = "222a222a5bfe1bba4a77b45ec488a741b3cb8872e5e499451fd7d0129c9c7c3d"
 
 [[package]]
 name = "thiserror"
-version = "1.0.64"
+version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d50af8abc119fb8bb6dbabcfa89656f46f84aa0ac7688088608076ad2b459a84"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f63587ca0f12b72a0600bcba1d40081f830876000bb46dd2337a3051618f4fc8"
+dependencies = [
+ "thiserror-impl 2.0.17",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "1.0.64"
+version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08904e7672f5eb876eaaf87e0ce17857500934f4981c4a0ab2b4aa98baac7fc3"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.95",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ff15c8ecd7de3849db632e14d18d2571fa09dfc5ed93479bc4485c7a517c913"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4598,7 +4614,7 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "sha1",
- "thiserror",
+ "thiserror 1.0.69",
  "url",
  "utf-8",
 ]

@@ -237,3 +237,64 @@ impl Drop for MemfdShm {
 }
 
 pub type Shm = MemfdShm;
+
+#[cfg(test)]
+mod tests {
+    use crate::{shm::Shm, test_utils::TempDir, SlabInfo};
+
+    #[test]
+    fn test_debug_send() {
+        fn need_send<S>(_x: S)
+        where
+            S: Send,
+        {
+            // nothing in here, just should give us a compilation error
+        }
+
+        let handle_path = TempDir::new("handle_path");
+
+        let slab_info: SlabInfo = SlabInfo {
+            num_slots: 7,
+            slot_size: 1,
+            total_size: 7,
+        };
+
+        let s: Shm = Shm::new(
+            false,
+            &handle_path.join("handle.sock"),
+            1024 * 1024,
+            slab_info,
+        )
+        .unwrap();
+
+        need_send(s);
+    }
+
+    #[test]
+    fn test_debug_sync() {
+        fn need_sync<S>(_x: S)
+        where
+            S: Sync,
+        {
+            // nothing in here, just should give us a compilation error
+        }
+
+        let handle_path = TempDir::new("handle_path");
+
+        let slab_info: SlabInfo = SlabInfo {
+            num_slots: 7,
+            slot_size: 1,
+            total_size: 7,
+        };
+
+        let s: Shm = Shm::new(
+            false,
+            &handle_path.join("handle.sock"),
+            1024 * 1024,
+            slab_info,
+        )
+        .unwrap();
+
+        need_sync(s);
+    }
+}

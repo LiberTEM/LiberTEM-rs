@@ -149,7 +149,7 @@ impl BackgroundState {
     /// the parts into the full results. Returns a `ProcessResults`
     /// that contains acquisition data and a list of acquisitions
     /// that have ended.
-    fn process_pending(&mut self) -> Result<ProcessResults, ParseError> {
+    fn process_pending(&mut self) -> Result<ProcessResults<'_>, ParseError> {
         let mut ids: Vec<String> = Vec::new();
         let mut ended_ids: Vec<String> = Vec::new();
         let start_time = Instant::now();

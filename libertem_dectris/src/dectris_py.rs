@@ -100,14 +100,14 @@ impl DectrisConnection {
     ) -> PyResult<Self> {
         let _trace_guard = span_from_py(py, "DectrisConnection::new")?;
 
-        let num_slots = num_slots.map_or_else(|| 2000, |x| x);
-        let bytes_per_frame = bytes_per_frame.map_or_else(|| 512 * 512 * 2, |x| x);
+        let num_slots = num_slots.unwrap_or(2000);
+        let bytes_per_frame = bytes_per_frame.unwrap_or(512 * 512 * 2);
         let config = DectrisDetectorConnConfig::new(
             uri,
             frame_stack_size,
             bytes_per_frame,
             num_slots,
-            huge.map_or_else(|| false, |x| x),
+            huge.unwrap_or(false),
             handle_path,
         );
 
@@ -213,16 +213,9 @@ impl DectrisFrameStack {
     }
 
     /// use `get_dtype_string` instead
-    #[deprecated]
-    fn get_pixel_type(&self, py: Python<'_>) -> PyResult<String> {
+    #[pyo3(warn(message="get_pixel_type is deprecated, use `get_dtype_string` instead", category=PyDeprecationWarning))]
+    fn get_pixel_type(&self) -> PyResult<String> {
         let meta = self.inner.try_get_inner()?.first_meta();
-        PyErr::warn(
-            py,
-            &py.get_type::<PyDeprecationWarning>(),
-            c"FrameStackHandle.get_pixel_type is deprecated, use get_dtype_string instead.",
-            0,
-        )?;
-
         Ok(match meta.dimaged.type_ {
             PixelType::Uint8 => "uint8",
             PixelType::Uint16 => "uint16",
@@ -232,14 +225,8 @@ impl DectrisFrameStack {
     }
 
     /// use `get_dtype_string` instead, that includes endianess
-    #[deprecated]
-    fn get_endianess(&self, py: Python<'_>) -> PyResult<String> {
-        PyErr::warn(
-            py,
-            &py.get_type::<PyDeprecationWarning>(),
-            c"FrameStackHandle.get_endianess is deprecated, use get_dtype_string instead.",
-            0,
-        )?;
+    #[pyo3(warn(message="get_endianess is deprecated, use `get_dtype_string` instead", category=PyDeprecationWarning))]
+    fn get_endianess(&self) -> PyResult<String> {
         Ok(self
             .inner
             .try_get_inner()?
@@ -249,14 +236,8 @@ impl DectrisFrameStack {
     }
 
     /// implementation detail that Python shouldn't care about
-    #[deprecated]
-    fn get_encoding(&self, py: Python<'_>) -> PyResult<String> {
-        PyErr::warn(
-            py,
-            &py.get_type::<PyDeprecationWarning>(),
-            c"FrameStackHandle.get_encoding is deprecated and will be removed in the future.",
-            0,
-        )?;
+    #[pyo3(warn(message="get_encoding is deprecated", category=PyDeprecationWarning))]
+    fn get_encoding(&self) -> PyResult<String> {
         Ok(self
             .inner
             .try_get_inner()?
@@ -319,19 +300,13 @@ impl CamClient {
             .decode_range_into_buffer(input.get_inner(), out, start_idx, end_idx, py)
     }
 
-    #[deprecated]
+    #[pyo3(warn(message="decompress_frame_stack is deprecated, use decode_range_into_buffer instead", category=PyDeprecationWarning))]
     fn decompress_frame_stack<'py>(
         &self,
         handle: &DectrisFrameStack,
         out: &Bound<'py, PyUntypedArray>,
         py: Python<'py>,
     ) -> PyResult<()> {
-        PyErr::warn(
-            py,
-            &py.get_type::<PyDeprecationWarning>(),
-            c"CamClient.decompress_frame_stack is deprecated, use decode_range_into_buffer instead.",
-            0,
-        )?;
         self.inner.decode_into_buffer(handle.get_inner(), out, py)
     }
 
@@ -360,7 +335,7 @@ mod tests {
     use tempfile::tempdir;
 
     use ipc_test::SharedSlabAllocator;
-    use pyo3::{prepare_freethreaded_python, Python};
+    use pyo3::Python;
     use zerocopy::AsBytes;
 
     use crate::{
@@ -442,10 +417,10 @@ mod tests {
         assert_eq!(fs_handle.len(), 1);
 
         // initialize a Python interpreter so we are able to construct a PyBytes instance:
-        prepare_freethreaded_python();
+        Python::initialize();
 
         // roundtrip serialize/deserialize:
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             let bytes = fs_handle.serialize().unwrap();
             let new_handle = FrameStackHandle::deserialize_impl(&bytes).unwrap();
             assert_eq!(fs_handle, new_handle);
@@ -456,7 +431,7 @@ mod tests {
             println!("slice: {:x?}", slice);
         });
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let client = CamClient::new(py, socket_as_path.to_str().unwrap()).unwrap();
 
             let flat: Vec<u16> = (0..256).collect();
@@ -538,10 +513,10 @@ mod tests {
         assert_eq!(fs_handle.len(), 1);
 
         // initialize a Python interpreter so we are able to construct a PyBytes instance:
-        prepare_freethreaded_python();
+        Python::initialize();
 
         // roundtrip serialize/deserialize:
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             let bytes = fs_handle.serialize().unwrap();
             let new_handle = FrameStackHandle::deserialize_impl(&bytes).unwrap();
             assert_eq!(fs_handle, new_handle);
@@ -564,7 +539,7 @@ mod tests {
             println!("slice:           {:x?}", slice);
         });
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let client = CamClient::new(py, socket_as_path.to_str().unwrap()).unwrap();
 
             let flat: Vec<u16> = (0..256).collect();

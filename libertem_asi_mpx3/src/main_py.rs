@@ -147,8 +147,8 @@ impl ServalConnection {
     ) -> PyResult<Self> {
         let _trace_guard = span_from_py(py, "ServalConnection::new")?;
 
-        let num_slots = num_slots.map_or_else(|| 2000, |x| x);
-        let bytes_per_frame = bytes_per_frame.map_or_else(|| 512 * 512 * 2, |x| x);
+        let num_slots = num_slots.unwrap_or(2000);
+        let bytes_per_frame = bytes_per_frame.unwrap_or(512 * 512 * 2);
 
         let config = ASIMpxDetectorConnConfig::new(
             data_uri,

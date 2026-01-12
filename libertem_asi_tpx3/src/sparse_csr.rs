@@ -370,7 +370,7 @@ mod tests {
         let view_mut: CSRViewMut<u16, u16, u16> = CSRViewMut::from_bytes(&mut buf, &SIZES);
 
         // generate some predictable pattern:
-        let values: Vec<u16> = (0..12).map(|i| (1 << (i % 16))).collect();
+        let values: Vec<u16> = (0..12).map(|i| 1 << (i % 16) ).collect();
         println!("values: {values:?}");
         assert_eq!(values.len(), 12);
         view_mut.values.copy_from_slice(&values);
@@ -447,7 +447,7 @@ mod tests {
         let view_mut: CSRViewMut<u16, u16, u16> = CSRViewMut::from_bytes(&mut buf, &SIZES);
 
         // generate some predictable pattern:
-        let values: Vec<u16> = (0..12).map(|i| (1 << (i % 16))).collect();
+        let values: Vec<u16> = (0..12).map(|i| 1 << (i % 16) ).collect();
         println!("values: {values:?}");
         assert_eq!(values.len(), 12);
         view_mut.values.copy_from_slice(&values);

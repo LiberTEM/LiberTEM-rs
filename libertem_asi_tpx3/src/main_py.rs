@@ -126,7 +126,7 @@ impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
         loop {
             py.check_signals()?;
 
-            let recv_result = py.allow_threads(|| {
+            let recv_result = py.detach(|| {
                 let next: Result<Option<ResultMsg>, Infallible> =
                     Ok(recv.next_timeout(Duration::from_millis(100)));
                 next
@@ -216,13 +216,13 @@ impl ASITpx3Connection {
         py: Python,
     ) -> PyResult<Self> {
         let _tracing_guard = span_from_py(py, "ASITpx3Connection::new")?;
-        let num_slots = num_slots.map_or_else(|| 2000, |x| x);
-        let bytes_per_chunk = bytes_per_chunk.map_or_else(|| 512 * 512 * 2, |x| x);
+        let num_slots = num_slots.unwrap_or(2000);
+        let bytes_per_chunk = bytes_per_chunk.unwrap_or(512 * 512 * 2);
         let slot_size = chunks_per_stack * bytes_per_chunk;
         let shm = match SharedSlabAllocator::new(
             num_slots,
             slot_size,
-            huge.map_or_else(|| false, |x| x),
+            huge.unwrap_or(false),
             &PathBuf::from(handle_path),
         ) {
             Ok(shm) => shm,
@@ -260,7 +260,7 @@ impl ASITpx3Connection {
         loop {
             py.check_signals()?;
 
-            let res = py.allow_threads(|| {
+            let res = py.detach(|| {
                 let timeout_rem = deadline - Instant::now();
                 let this_timeout = timeout_rem.min(step);
                 self.receiver.next_timeout(this_timeout)
