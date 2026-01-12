@@ -175,11 +175,42 @@ jobs:
         name: wheels-macos-${{ matrix.crate }}-${{ matrix.target }}
         path: ${{ matrix.crate }}/dist
 
+  libertem-live:
+    runs-on: ubuntu-latest
+    needs: [ linux ]
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - uses: actions/checkout@v6
+      with:
+        repository: libertem/libertem-live
+        path: libertem-live
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.13' 
+    - uses: actions/download-artifact@v7
+      with:
+        pattern: wheels-linux-*
+        merge-multiple: true
+        path: ./wheels/
+    - run: sudo apt-get update && sudo apt-get -y install libcap-dev
+    - run: pwd && find
+    - run: python3 -m venv venv
+    - run: echo "VIRTUAL_ENV=$PWD/venv/" >> $GITHUB_ENV
+    - run: env
+    - run: ./venv/bin/pip install uv
+    - run: ./venv/bin/uv pip install numpy opentelemetry-api
+    - run: ./venv/bin/uv pip install libertem_dectris libertem_asi_tpx3 libertem_qd_mpx --find-links=./wheels/ --no-index
+    - run: ./venv/bin/uv pip install ./libertem-live/ -r ./libertem-live/test_requirements.txt
+    - run: ../venv/bin/pytest tests/
+      working-directory: libertem-live
+  
   release:
     name: Release
     runs-on: ubuntu-latest
     if: "startsWith(github.ref, 'refs/tags/')"
-    needs: [ macos, windows, linux, linux-test, windows-test, macos-test ]
+    needs: [ macos, windows, linux, linux-test, windows-test, macos-test, libertem-live ]
     steps:
       - uses: actions/download-artifact@v7
         with:
