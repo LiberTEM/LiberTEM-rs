@@ -13,6 +13,6 @@ also be used stand-alone.
 
 ## Changelog
 
-### v0.2.XXX
+### v0.3.XXX
 
 - Initial release of LiberTEM-asi-mpx
