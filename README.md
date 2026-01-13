@@ -15,6 +15,19 @@ Please clone using `git clone --recurse-submodules ...` to include vendored
 code in submodules. After cloning, remember to enable pre-commit hooks, for example
 using `uvx pre-commit install --install-hooks`.
 
+### Making a release
+
+- Bump the versions in the Cargo.toml files belonging to the Python packages
+  you want to include. Use the same version for all packages.
+- Add a small changelog paragraph to their README.md files
+- Merge these changes as a PR into the main branch
+- Wait for CI to finish for the main branch
+- Once this is done, create a new release with a new tag (vX.Y.Z) matching the
+  version selected above. Feel free to use the "generate release notes" button
+  in the release UI and add a short "human-readable" summary of the release highlights.
+- Once the release is published, CI will run another workflow for the new tag,
+  and publish the wheels to PyPI and the GitHub release.
+
 ## Contents
 
 - `bs-sys`: rust bindings to `bitshuffle`.
