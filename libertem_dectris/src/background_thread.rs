@@ -244,6 +244,7 @@ fn passive_acquisition(
     from_thread_s: &Sender<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
     socket: &Socket,
     frame_stack_size: usize,
+    max_latency_per_stack: Option<Duration>,
     shm: &mut SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     loop {
@@ -293,6 +294,7 @@ fn passive_acquisition(
                 socket,
                 dheader.series,
                 frame_stack_size,
+                max_latency_per_stack,
                 shm,
             )?;
 
@@ -308,6 +310,7 @@ fn passive_acquisition(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn acquisition(
     detector_config: DetectorConfig,
     to_thread_r: &Receiver<DectrisControlMsg>,
@@ -315,6 +318,7 @@ fn acquisition(
     socket: &Socket,
     series: u64,
     frame_stack_size: usize,
+    max_latency_per_stack: Option<Duration>,
     shm: &mut SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     let t0 = Instant::now();
@@ -342,6 +346,8 @@ fn acquisition(
 
     debug!("starting receive loop");
 
+    let mut stack_t0 = Instant::now();
+
     loop {
         if last_control_check.elapsed() > Duration::from_millis(300) {
             last_control_check = Instant::now();
@@ -366,12 +372,22 @@ fn acquisition(
             });
         }
 
-        if !frame_stack.can_fit(msg_image.len()) || frame_stack.len() >= frame_stack_size {
+        let deadline_exceeded = if let Some(latency) = max_latency_per_stack {
+            Instant::now() > stack_t0 + latency
+        } else {
+            false
+        };
+
+        if !frame_stack.can_fit(msg_image.len())
+            || frame_stack.len() >= frame_stack_size
+            || deadline_exceeded
+        {
             // send to our queue:
             let handle = {
                 let new_frame_stack =
                     make_frame_stack(shm, frame_stack_size, approx_size_bytes, to_thread_r)?;
                 let old_frame_stack = replace(&mut frame_stack, new_frame_stack);
+                stack_t0 = Instant::now();
                 old_frame_stack.writing_done(shm)
             };
             match handle {
@@ -408,9 +424,9 @@ fn acquisition(
         expected_frame_id += 1;
 
         // we will be done after this frame:
-        let done = meta.dimage.frame == detector_config.get_num_images() - 1;
+        let acquisition_done = meta.dimage.frame == detector_config.get_num_images() - 1;
 
-        if done {
+        if acquisition_done {
             let elapsed = t0.elapsed();
             info!("done in {elapsed:?}, reading acquisition footer...");
 
@@ -450,9 +466,17 @@ fn background_thread_wrap(
     from_thread_s: &Sender<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
     uri: String,
     frame_stack_size: usize,
+    max_latency_per_stack: Option<Duration>,
     shm: SharedSlabAllocator,
 ) {
-    if let Err(err) = background_thread(to_thread_r, from_thread_s, uri, frame_stack_size, shm) {
+    if let Err(err) = background_thread(
+        to_thread_r,
+        from_thread_s,
+        uri,
+        frame_stack_size,
+        max_latency_per_stack,
+        shm,
+    ) {
         log::error!("background_thread err'd: {}", err.to_string());
         // NOTE: `shm` is dropped in case of an error, so anyone who tries to connect afterwards
         // will get an error
@@ -508,6 +532,7 @@ fn background_thread(
     from_thread_s: &Sender<ReceiverMsg<DectrisFrameMeta, DectrisPendingAcquisition>>,
     uri: String,
     frame_stack_size: usize,
+    max_latency_per_stack: Option<Duration>,
     mut shm: SharedSlabAllocator,
 ) -> Result<(), AcquisitionError> {
     'outer: loop {
@@ -532,6 +557,7 @@ fn background_thread(
                         from_thread_s,
                         &socket,
                         frame_stack_size,
+                        max_latency_per_stack,
                         &mut shm,
                     ) {
                         Ok(_) => {}
@@ -601,6 +627,7 @@ fn background_thread(
                         &socket,
                         series,
                         frame_stack_size,
+                        max_latency_per_stack,
                         &mut shm,
                     ) {
                         Ok(_) => {}
@@ -705,6 +732,7 @@ impl DectrisBackgroundThread {
                         &from_thread_s,
                         config.uri.clone(),
                         config.frame_stack_size,
+                        config.max_latency_per_stack,
                         shm,
                     )
                 })
@@ -727,6 +755,9 @@ pub struct DectrisDetectorConnConfig {
     /// with `frame_stack_size`
     pub bytes_per_frame: usize,
 
+    /// Maximum latency per frame stack
+    max_latency_per_stack: Option<Duration>,
+
     num_slots: usize,
     enable_huge_pages: bool,
     shm_handle_path: String,
@@ -736,6 +767,7 @@ impl DectrisDetectorConnConfig {
     pub fn new(
         uri: &str,
         frame_stack_size: usize,
+        max_latency_per_stack: Option<Duration>,
         bytes_per_frame: usize,
         num_slots: usize,
         enable_huge_pages: bool,
@@ -744,6 +776,7 @@ impl DectrisDetectorConnConfig {
         Self {
             uri: uri.to_owned(),
             frame_stack_size,
+            max_latency_per_stack,
             bytes_per_frame,
             num_slots,
             enable_huge_pages,

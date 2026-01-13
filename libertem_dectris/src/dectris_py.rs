@@ -88,11 +88,13 @@ struct DectrisConnection {
 #[pymethods]
 impl DectrisConnection {
     #[new]
-    #[pyo3(signature=(uri,frame_stack_size,handle_path,num_slots=None,bytes_per_frame=None,huge=None))]
+    #[pyo3(signature=(uri,frame_stack_size,handle_path,max_latency_per_stack=None,num_slots=None,bytes_per_frame=None,huge=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         uri: &str,
         frame_stack_size: usize,
         handle_path: &str,
+        max_latency_per_stack: Option<Duration>,
         num_slots: Option<usize>,
         bytes_per_frame: Option<usize>,
         huge: Option<bool>,
@@ -105,6 +107,7 @@ impl DectrisConnection {
         let config = DectrisDetectorConnConfig::new(
             uri,
             frame_stack_size,
+            max_latency_per_stack,
             bytes_per_frame,
             num_slots,
             huge.unwrap_or(false),
