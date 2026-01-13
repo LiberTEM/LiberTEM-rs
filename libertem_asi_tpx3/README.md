@@ -13,6 +13,12 @@ Needs to have a Python environment active, and a recent rust toolchain installed
 
 ## Changelog
 
+### v0.3.0
+
+- Support for recent Python versions
+- Switch to abi3-py39
+- Updated dependencies (pyO3 etc)
+
 ### v0.2.13
 
 - Updated dependencies and improved error handling
