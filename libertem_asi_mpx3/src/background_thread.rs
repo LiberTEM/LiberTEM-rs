@@ -11,7 +11,7 @@ use std::{
 
 use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
-    frame_stack::{FrameStackForWriting, FrameStackWriteError},
+    frame_stack::{FrameStackForWriting, FrameStackWriteError, WriteFrameError},
     tcp::{self, ReadExactError},
     utils::{num_from_byte_slice, three_way_shift, NumParseError},
 };
@@ -264,8 +264,29 @@ enum AcquisitionError {
     #[error("error writing to shm: {0}")]
     WriteError(#[from] FrameStackWriteError),
 
+    #[error("frame stack slot too small: {frame_size_bytes} > {available}")]
+    TooSmallError {
+        frame_size_bytes: usize,
+        available: usize,
+    },
+
     #[error("shm access error: {0}")]
     ShmError(#[from] ShmError),
+}
+
+impl From<WriteFrameError<AcquisitionError>> for AcquisitionError {
+    fn from(value: WriteFrameError<AcquisitionError>) -> Self {
+        match value {
+            WriteFrameError::TooSmall {
+                frame_size_bytes,
+                available,
+            } => Self::TooSmallError {
+                frame_size_bytes,
+                available,
+            },
+            WriteFrameError::CallbackError { inner } => inner,
+        }
+    }
 }
 
 impl From<ParseError> for AcquisitionError {

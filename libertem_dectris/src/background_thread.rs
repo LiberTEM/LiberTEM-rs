@@ -12,7 +12,7 @@ use std::{
 
 use common::{
     background_thread::{self, BackgroundThread, ControlMsg, ReceiverMsg},
-    frame_stack::{FrameStackForWriting, FrameStackWriteError},
+    frame_stack::{FrameStackForWriting, FrameStackWriteError, WriteFrameError},
     generic_connection::DetectorConnectionConfig,
 };
 use ipc_test::{slab::ShmError, SharedSlabAllocator};
@@ -106,6 +106,27 @@ enum AcquisitionError {
 
     #[error("SHM access error: {err}")]
     ShmAccessError { err: ShmError },
+
+    #[error("frame stack slot too small: {frame_size_bytes} > {available}")]
+    TooSmallError {
+        frame_size_bytes: usize,
+        available: usize,
+    },
+}
+
+impl From<WriteFrameError<Infallible>> for AcquisitionError {
+    fn from(value: WriteFrameError<Infallible>) -> Self {
+        match value {
+            WriteFrameError::TooSmall {
+                frame_size_bytes,
+                available,
+            } => Self::TooSmallError {
+                frame_size_bytes,
+                available,
+            },
+            WriteFrameError::CallbackError { inner: _ } => unreachable!(),
+        }
+    }
 }
 
 impl<T> From<SendError<T>> for AcquisitionError {
@@ -379,12 +400,10 @@ fn acquisition(
             data_length_bytes: msg_image.len(),
         };
 
-        frame_stack
-            .write_frame(&meta, |buf| {
-                buf.copy_from_slice(&msg_image);
-                Ok::<_, Infallible>(())
-            })
-            .unwrap();
+        frame_stack.write_frame(&meta, |buf| {
+            buf.copy_from_slice(&msg_image);
+            Ok::<_, Infallible>(())
+        })?;
 
         expected_frame_id += 1;
 
