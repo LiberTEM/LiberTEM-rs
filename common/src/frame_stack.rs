@@ -50,6 +50,18 @@ pub enum FrameStackWriteError {
     ShmAccessError(#[from] ShmError),
 }
 
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum WriteFrameError<E> {
+    #[error("slot too small; available={available}, frame size={frame_size_bytes}")]
+    TooSmall {
+        frame_size_bytes: usize,
+        available: usize,
+    },
+
+    #[error("error in callback: {inner}")]
+    CallbackError { inner: E },
+}
+
 impl From<FrameStackWriteError> for PyErr {
     fn from(value: FrameStackWriteError) -> Self {
         match value {
@@ -122,14 +134,6 @@ where
         self.slot.size - self.cursor >= num_bytes
     }
 
-    pub fn should_fit(&self, num_bytes: usize) -> Result<(), FrameStackWriteError> {
-        if self.can_fit(num_bytes) {
-            Ok(())
-        } else {
-            Err(FrameStackWriteError::TooSmall)
-        }
-    }
-
     pub fn slot_size(&self) -> usize {
         self.slot.size
     }
@@ -148,11 +152,21 @@ where
         &mut self,
         meta: &M,
         mut fill_buffer: impl FnMut(&mut [u8]) -> Result<(), E>,
-    ) -> Result<(), E> {
+    ) -> Result<(), WriteFrameError<E>> {
         let start = self.cursor;
         let stop = start + meta.get_data_length_bytes();
-        let dest = &mut self.slot.as_slice_mut()[start..stop];
-        fill_buffer(dest)?;
+        let full_slice = &mut self.slot.as_slice_mut();
+
+        if stop > full_slice.len() {
+            return Err(WriteFrameError::TooSmall {
+                frame_size_bytes: meta.get_data_length_bytes(),
+                available: full_slice.len() - start,
+            });
+        }
+
+        let dest = &mut full_slice[start..stop];
+
+        fill_buffer(dest).map_err(|e| WriteFrameError::CallbackError { inner: e })?;
 
         self.meta.push(meta.clone());
         self.offsets.push(self.cursor);
@@ -427,7 +441,7 @@ impl<'b, M: FrameMeta> WriteGuard<'b, M> {
         &mut self,
         meta: &M,
         fill_buffer: impl FnMut(&mut [u8]) -> Result<(), E>,
-    ) -> Result<(), E> {
+    ) -> Result<(), WriteFrameError<E>> {
         if let Some(inner) = &mut self.for_writing {
             inner.write_frame(meta, fill_buffer)
         } else {
@@ -438,14 +452,6 @@ impl<'b, M: FrameMeta> WriteGuard<'b, M> {
     pub fn can_fit(&self, num_bytes: usize) -> bool {
         if let Some(inner) = &self.for_writing {
             inner.can_fit(num_bytes)
-        } else {
-            panic!("must not take without consuming self or dropping");
-        }
-    }
-
-    pub fn should_fit(&self, num_bytes: usize) -> Result<(), FrameStackWriteError> {
-        if let Some(inner) = &self.for_writing {
-            inner.should_fit(num_bytes)
         } else {
             panic!("must not take without consuming self or dropping");
         }
@@ -519,7 +525,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use tempfile::{tempdir, TempDir};
 
-    use crate::frame_stack::FrameStackForWriting;
+    use crate::frame_stack::{FrameStackForWriting, WriteFrameError};
 
     use super::FrameMeta;
 
@@ -632,5 +638,88 @@ mod tests {
         shm.free_idx(b.slot.slot_idx).unwrap();
 
         assert_eq!(shm.num_slots_free().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_write_frame_bounds() {
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 1, 256);
+        let meta = MyMeta { data_length: 8192 };
+        assert_eq!(fs.cursor, 0);
+        assert!(matches!(
+            fs.write_frame(&meta, |mut buf| buf.write_all(&[42])),
+            Err(WriteFrameError::TooSmall { .. })
+        ));
+        assert_eq!(fs.cursor, 0);
+
+        let _fs_handle = fs.writing_done(&mut shm);
+    }
+
+    #[test]
+    fn test_write_frame_bounds_2_off_by_one() {
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 1, 256);
+        let meta = MyMeta { data_length: 4097 };
+        assert_eq!(fs.cursor, 0);
+
+        assert!(matches!(
+            fs.write_frame(&meta, |mut buf| buf.write_all(&[42])),
+            Err(WriteFrameError::TooSmall { .. })
+        ));
+        assert_eq!(fs.cursor, 0);
+
+        let _fs_handle = fs.writing_done(&mut shm);
+    }
+
+    #[test]
+    fn test_write_frame_bounds_3_exactly_in_bounds() {
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 1, 256);
+        let meta = MyMeta { data_length: 4096 };
+        assert_eq!(fs.cursor, 0);
+        assert!(matches!(
+            fs.write_frame(&meta, |mut buf| buf.write_all(&[42])),
+            Ok(())
+        ));
+        assert_eq!(fs.cursor, 4096);
+
+        let _fs_handle = fs.writing_done(&mut shm);
+    }
+
+    #[test]
+    fn test_write_frame_bounds_4_multiple_writes() {
+        let (_socket_dir, socket_as_path) = get_socket_path();
+        let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();
+        let slot = shm.get_mut().expect("get a free shm slot");
+        let mut fs = FrameStackForWriting::new(slot, 1, 256);
+        let meta = MyMeta { data_length: 1024 };
+        assert_eq!(fs.cursor, 0);
+        assert!(matches!(
+            fs.write_frame(&meta, |mut buf| buf.write_all(&[42])),
+            Ok(())
+        ));
+        assert_eq!(fs.cursor, 1024);
+
+        let meta = MyMeta { data_length: 1024 };
+        assert!(matches!(
+            fs.write_frame(&meta, |mut buf| buf.write_all(&[42])),
+            Ok(())
+        ));
+        assert_eq!(fs.cursor, 2048);
+
+        let meta = MyMeta { data_length: 4096 };
+        assert!(matches!(
+            fs.write_frame(&meta, |mut buf| buf.write_all(&[42])),
+            Err(WriteFrameError::TooSmall { .. })
+        ));
+        assert_eq!(fs.cursor, 2048);
+
+        let _fs_handle = fs.writing_done(&mut shm);
     }
 }

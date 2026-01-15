@@ -12,7 +12,9 @@ use std::{
 
 use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
-    frame_stack::{FrameMeta, FrameStackForWriting, FrameStackWriteError, WriteGuard},
+    frame_stack::{
+        FrameMeta, FrameStackForWriting, FrameStackWriteError, WriteFrameError, WriteGuard,
+    },
     tcp::{self, ReadExactError},
     utils::{num_from_byte_slice, NumParseError},
 };
@@ -58,6 +60,12 @@ pub enum AcquisitionError {
     #[error("error writing to shm: {0}")]
     WriteError(#[from] FrameStackWriteError),
 
+    #[error("frame stack slot too small: {frame_size_bytes} > {available}")]
+    TooSmallError {
+        frame_size_bytes: usize,
+        available: usize,
+    },
+
     #[error("I/O error: {source}")]
     IOError {
         #[from]
@@ -66,6 +74,21 @@ pub enum AcquisitionError {
 
     #[error("peek error: could not peek {nbytes}")]
     PeekError { nbytes: usize },
+}
+
+impl From<WriteFrameError<AcquisitionError>> for AcquisitionError {
+    fn from(value: WriteFrameError<AcquisitionError>) -> Self {
+        match value {
+            WriteFrameError::TooSmall {
+                frame_size_bytes,
+                available,
+            } => Self::TooSmallError {
+                frame_size_bytes,
+                available,
+            },
+            WriteFrameError::CallbackError { inner } => inner,
+        }
+    }
 }
 
 impl From<NumParseError> for AcquisitionError {
@@ -448,7 +471,6 @@ fn acquisition(
                 frame_stack: handle,
             })?;
             frame_stack = make_frame_stack(shm, config, first_frame_meta, to_thread_r)?;
-            frame_stack.should_fit(payload_size)?;
             frame_stack.write_frame(&meta, |dest_buf| {
                 read_frame_payload_into(stream, to_thread_r, &meta, dest_buf)
             })?;
