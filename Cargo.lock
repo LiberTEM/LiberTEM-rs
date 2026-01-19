@@ -2322,7 +2322,7 @@ checksum = "561d97a539a36e26a9a5fad1ea11a3039a67714694aaa379433e580854bc3dc5"
 
 [[package]]
 name = "libertem-asi-mpx3"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "common",
  "env_logger",
@@ -2342,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "libertem-asi-tpx3"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bincode",
  "common",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "libertem-dectris"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bs_sys",
  "clap 3.2.25",
@@ -2394,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "libertem_qd_mpx"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "common",
  "criterion",
