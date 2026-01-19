@@ -84,6 +84,11 @@ finally:
 
 ## Changelog
 
+### v0.3.1
+
+- `frame_stack_size` is not an upper limit
+- add parameter `max_latency_per_stack` to control maximum latency
+
 ### v0.3.0
 
 - Support for recent Python versions
