@@ -34,7 +34,7 @@ ipc-test = { path = "../ipc_test" }
 stats = { path = "../stats" }
 common = { path = "../common" }
 nix = "0.29.0"
-lz4 = "1.24.0"
+lz4 = "1.25.0"
 zerocopy = { workspace = true }
 md5 = "0.7.0"
 num = "0.4.3"
