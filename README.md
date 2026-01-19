@@ -15,6 +15,10 @@ Please clone using `git clone --recurse-submodules ...` to include vendored
 code in submodules. After cloning, remember to enable pre-commit hooks, for example
 using `uvx pre-commit install --install-hooks`.
 
+To keep the `THIRDPARTY.yml` files updated, please run
+`cargo bundle-licenses --format yaml --output THIRDPARTY.yml`
+in the respective crate folders, whenever dependencies or versions change.
+
 ### Making a release
 
 - Bump the versions in the Cargo.toml files belonging to the Python packages

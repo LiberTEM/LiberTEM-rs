@@ -41,6 +41,19 @@ jobs:
         name: wheels-linux-${{ matrix.crate }}
         path: ${{ matrix.crate }}/target/dist
 
+  license-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: rustup ${{ matrix.toolchain }}
+      run: rustup default ${{ matrix.toolchain }}
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2.8.2
+    - run: cargo install cargo-bundle-licenses
+    - run: ./check-licenses-ci.sh
+
   linux-test:
     runs-on: ubuntu-latest
     strategy:
