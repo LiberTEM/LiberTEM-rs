@@ -5,8 +5,8 @@ use ipc_test::{
     SharedSlabAllocator,
 };
 use multiversion::multiversion;
-use ndarray::ArrayViewMut3;
 use num::cast::AsPrimitive;
+use numpy::ndarray::ArrayViewMut3;
 
 use crate::{
     decoder::{Decoder, DecoderError, DecoderTargetPixelType},
