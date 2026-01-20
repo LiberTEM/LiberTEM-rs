@@ -1,8 +1,8 @@
 use std::{any::type_name, fmt::Debug, mem::size_of};
 
 use ipc_test::SharedSlabAllocator;
-use ndarray::ArrayViewMut3;
 use num::{cast::AsPrimitive, Bounded, Num, NumCast, ToPrimitive};
+use numpy::ndarray::ArrayViewMut3;
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::frame_stack::{FrameMeta, FrameStackHandle};
