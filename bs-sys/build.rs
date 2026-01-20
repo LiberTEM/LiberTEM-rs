@@ -48,7 +48,7 @@ fn main() {
         .header("vendor/wrapper.h")
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .clang_arg("-Ivendor/bitshuffle/src/")
         .allowlist_function("bshuf_compress_lz4")
         .allowlist_function("bshuf_decompress_lz4")

@@ -11,7 +11,6 @@ use futures_util::{stream::SplitSink, Sink, SinkExt, StreamExt};
 use log::{error, info, warn};
 use tokio_tungstenite::connect_async;
 use tungstenite::Message;
-use url::Url;
 
 use crate::{
     app::ConnectionStatus,
@@ -23,8 +22,8 @@ fn message_part_from_msg(
 ) -> Result<MessagePart, CommError> {
     let msg = msg?;
     match msg {
-        Message::Text(msg) => Ok(MessagePart::from_text(msg)?),
-        Message::Binary(msg) => Ok(MessagePart::from_binary(msg)),
+        Message::Text(msg) => Ok(MessagePart::from_text(msg.to_string())?),
+        Message::Binary(msg) => Ok(MessagePart::from_binary(msg.to_vec())),
         Message::Ping(_) => Ok(MessagePart::Empty),
         _ => Err(CommError::UnknownMessageError),
         // Message::Ping(_) => todo!(),
@@ -48,7 +47,7 @@ where
     tungstenite::Error: From<<S as Sink<Message>>::Error>,
 {
     let msg = serde_json::to_string(params).unwrap();
-    ws_write.send(Message::Text(msg)).await?;
+    ws_write.send(Message::Text(msg.into())).await?;
     Ok(())
 }
 
@@ -64,8 +63,8 @@ pub(crate) fn receiver_thread(
     rt.block_on(async {
         'outer: loop {
             info!("Connecting...");
-            let (socket, _) = match connect_async(Url::parse("ws://localhost:8444").unwrap()).await
-            {
+            let url = "ws://localhost:8444";
+            let (socket, _) = match connect_async(url).await {
                 Ok(s) => s,
                 Err(e) => {
                     error!("Could not connect: {e}; trying to reconnect...");

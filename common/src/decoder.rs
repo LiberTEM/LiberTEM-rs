@@ -106,7 +106,7 @@ where
         Debug,
     <ItemType as num::traits::FromBytes>::Bytes: 'a,
 {
-    if input.len() % std::mem::size_of::<ItemType>() != 0 {
+    if !input.len().is_multiple_of(std::mem::size_of::<ItemType>()) {
         return Err(DecoderError::FrameDecodeFailed {
             msg: format!(
                 "input length {} is not divisible by item size {}",

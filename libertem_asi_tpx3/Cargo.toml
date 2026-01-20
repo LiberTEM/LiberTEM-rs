@@ -26,7 +26,7 @@ ipc-test = { path = "../ipc_test" }
 stats = { path = "../stats" }
 common = { path = "../common" }
 zerocopy = { workspace = true }
-page_size = "0.5.0"
+page_size = "0.6.0"
 opentelemetry = { workspace = true }
 thiserror = { workspace = true }
 

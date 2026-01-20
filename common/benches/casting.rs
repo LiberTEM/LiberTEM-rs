@@ -1,8 +1,9 @@
 //! Explorative benchmark to check the overhead of different casting methods
 //! and different dtype combinations
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use num::{cast::AsPrimitive, NumCast, ToPrimitive};
+use std::hint::black_box;
 
 fn bench_ref_u8(input: &[u8], output: &mut [f32]) {
     output.iter_mut().zip(input.iter()).for_each(|(dest, src)| {

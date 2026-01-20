@@ -265,7 +265,7 @@ pub trait RawType {
         O: Copy + ToPrimitive + NumCast + Num + Bounded + Debug + 'a + 'static,
         Self::Intermediate: AsPrimitive<O>,
     {
-        if input.len() % 8 != 0 {
+        if !input.len().is_multiple_of(8) {
             return Err(DecoderError::FrameDecodeFailed {
                 msg: format!("input length {} is not divisible by 8", input.len()),
             });
@@ -451,7 +451,7 @@ pub trait RawType {
         I: Copy + ToPrimitive + PrimInt + NumCast + Debug + 'a,
         II: Iterator<Item = &'a I> + ExactSizeIterator,
     {
-        if output.len() % 8 != 0 {
+        if !output.len().is_multiple_of(8) {
             return Err(DecoderError::FrameDecodeFailed {
                 msg: format!("output length {} is not divisible by 8", output.len()),
             });
@@ -650,9 +650,9 @@ mod test {
     where
         R::Intermediate: AsPrimitive<u32>,
     {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut input_data = vec![0; SIZE_PX];
-        input_data.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
+        input_data.fill_with(|| rng.random::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
 
         let input_data = input_data;
 
@@ -674,9 +674,9 @@ mod test {
     {
         const ENCODED_SIZE: usize = 16;
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut input_data = vec![0; SIZE_PX];
-        input_data.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
+        input_data.fill_with(|| rng.random::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
 
         let input_data = input_data;
 
@@ -711,9 +711,9 @@ mod test {
     ) where
         R::Intermediate: AsPrimitive<u32>,
     {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut input_data = vec![0; SIZE_PX];
-        input_data.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
+        input_data.fill_with(|| rng.random::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
 
         let mut encoded = vec![0u8; ENCODED_SIZE];
         R::encode_2x2_raw(&input_data, &mut encoded).unwrap();
@@ -748,10 +748,10 @@ mod test {
         const SIZE_PX_W_GAP: usize = 514 * 514;
         let layout = Layout::L2x2G;
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let input_data = {
             let mut input = vec![0; SIZE_PX_PAYLOAD];
-            input.fill_with(|| rng.gen::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
+            input.fill_with(|| rng.random::<u32>() % (2u32.pow(R::COUNTER_DEPTH as u32)));
             input
         };
 

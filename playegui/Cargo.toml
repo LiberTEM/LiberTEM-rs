@@ -18,12 +18,12 @@ log = { workspace = true }
 crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
 ndarray = { workspace = true, features = ["rayon"] }
 bs_sys = { path = "../bs-sys" }
-ndarray-stats = "0.5.1"
+ndarray-stats = "0.7.0"
 tokio = { version = "1.25.0", features = ["rt-multi-thread"] }
-tokio-tungstenite = "0.18.0"
+tokio-tungstenite = "0.28.0"
 url = "2.3.1"
 futures-util = "0.3.26"
-tungstenite = "0.18.0"
+tungstenite = "0.28.0"
 rayon = "1.6.1"
 egui_extras = { version = "0.22", features = ["image"] }
 image = "0.24.5"

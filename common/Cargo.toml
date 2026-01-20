@@ -21,15 +21,15 @@ log = { workspace = true }
 ndarray = { workspace = true }
 zerocopy = { workspace = true }
 num = "0.4.3"
-multiversion = "0.7.4"
+multiversion = "0.8.0"
 opentelemetry = { workspace = true }
-opentelemetry-otlp = "0.25.0"
-opentelemetry-semantic-conventions = "0.25.0"
-opentelemetry_sdk = { version = "0.25.0", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "trace"] }
+opentelemetry-semantic-conventions = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 tokio = { version = "1", features = ["rt", "net", "time", "sync", "io-util", "rt-multi-thread"] } 
 
 [dev-dependencies]
-criterion = "0.5.1"
+criterion = "0.8.1"
 
 [[bench]]
 name = "casting"

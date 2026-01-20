@@ -3,29 +3,31 @@ use std::time::Duration;
 
 use opentelemetry::global::BoxedTracer;
 use opentelemetry::trace::{
-    self, SpanContext, SpanId, TraceContextExt, TraceError, TraceFlags, TraceId, TraceState, Tracer,
+    self, SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer,
 };
-use opentelemetry::{global, Context, ContextGuard, KeyValue};
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{runtime, trace as sdktrace, Resource};
+use opentelemetry::{global, Context, ContextGuard};
+use opentelemetry_otlp::{ExporterBuildError, SpanExporter, WithExportConfig};
+use opentelemetry_sdk::trace::{BatchSpanProcessor, SdkTracerProvider};
+use opentelemetry_sdk::Resource;
 use pyo3::types::{PyAnyMethods, PyModule};
 use pyo3::{PyResult, Python};
 
-fn init_tracer(service_name: String, otlp_endpoint: String) -> Result<(), TraceError> {
-    opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(otlp_endpoint),
-        )
-        .with_trace_config(
-            sdktrace::Config::default().with_resource(Resource::new(vec![KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name.to_owned(),
-            )])),
-        )
-        .install_batch(runtime::Tokio)?;
+fn init_tracer(service_name: String, otlp_endpoint: String) -> Result<(), ExporterBuildError> {
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(otlp_endpoint)
+        .build()?;
+
+    let processor = BatchSpanProcessor::builder(exporter).build();
+    // let processor = SimpleSpanProcessor::new(exporter);
+
+    let provider = SdkTracerProvider::builder()
+        .with_resource(Resource::builder().with_service_name(service_name).build())
+        .with_span_processor(processor)
+        .build();
+
+    global::set_tracer_provider(provider);
+
     Ok(())
 }
 
