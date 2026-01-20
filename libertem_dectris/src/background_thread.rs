@@ -250,60 +250,63 @@ fn passive_acquisition(
         // block until we get a message:
         recv_part(&mut msg, socket, control_channel)?;
 
-        if msg[0] == b'{' {
-            let dheader_res: Result<DHeader, _> = serde_json::from_str(msg.as_str().unwrap());
-            let dheader: DHeader = match dheader_res {
-                Ok(header) => header,
-                Err(_err) => {
-                    // not a DHeader, ignore
-                    continue;
-                }
-            };
-            debug!("dheader: {dheader:?}");
+        check_for_control(control_channel)?;
 
-            if dheader.header_detail.deref() == "none" {
-                return Err(AcquisitionError::ConfigurationError {
-                    msg: "header_detail must be 'basic' or 'all', is 'none'".to_string(),
-                });
-            }
-
-            // second message: the header itself
-            recv_part(&mut msg, socket, control_channel)?;
-
-            let detector_config: DetectorConfig = if let Some(msg_str) = msg.as_str() {
-                debug!("detector config: {}", msg_str);
-                match serde_json::from_str(msg_str) {
+        match msg.as_str() {
+            Some(msg_str) => {
+                let dheader_res: Result<DHeader, _> = serde_json::from_str(msg_str);
+                let dheader: DHeader = match dheader_res {
                     Ok(header) => header,
-                    Err(err) => {
-                        serialization_error(from_thread_s, &msg, &err);
+                    Err(_err) => {
+                        // not a DHeader, ignore
                         continue;
                     }
+                };
+                debug!("dheader: {dheader:?}");
+
+                if dheader.header_detail.deref() == "none" {
+                    return Err(AcquisitionError::ConfigurationError {
+                        msg: "header_detail must be 'basic' or 'all', is 'none'".to_string(),
+                    });
                 }
-            } else {
-                warn!("non-string received as detector config! ignoring message.");
+
+                // second message: the header itself
+                recv_part(&mut msg, socket, control_channel)?;
+
+                let detector_config: DetectorConfig = if let Some(msg_str) = msg.as_str() {
+                    debug!("detector config: {}", msg_str);
+                    match serde_json::from_str(msg_str) {
+                        Ok(header) => header,
+                        Err(err) => {
+                            serialization_error(from_thread_s, &msg, &err);
+                            continue;
+                        }
+                    }
+                } else {
+                    warn!("non-string received as detector config! ignoring message.");
+                    continue;
+                };
+
+                acquisition(
+                    detector_config,
+                    control_channel,
+                    from_thread_s,
+                    socket,
+                    dheader.series,
+                    frame_stack_size,
+                    max_latency_per_stack,
+                    shm,
+                )?;
+
+                let free = shm.num_slots_free()?;
+                let total = shm.num_slots_total();
+                info!("passive acquisition done; free slots: {}/{}", free, total);
+            }
+            None => {
+                // probably a binary message: skip this
                 continue;
-            };
-
-            acquisition(
-                detector_config,
-                control_channel,
-                from_thread_s,
-                socket,
-                dheader.series,
-                frame_stack_size,
-                max_latency_per_stack,
-                shm,
-            )?;
-
-            let free = shm.num_slots_free()?;
-            let total = shm.num_slots_total();
-            info!("passive acquisition done; free slots: {}/{}", free, total);
-        } else {
-            // probably a binary message: skip this
-            continue;
+            }
         }
-
-        check_for_control(control_channel)?;
     }
 }
 
