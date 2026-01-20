@@ -19,10 +19,10 @@ path = "src/main.rs"
 [dependencies]
 thiserror = { workspace = true }
 bs_sys = { path = "../bs-sys" }
-clap = { version = "3.2.16", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
 env_logger = { workspace = true }
 log = { workspace = true }
-memmap2 = "0.5.6"
+memmap2 = "0.9.9"
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 serde = { workspace = true }
@@ -33,11 +33,11 @@ zmq = { version = "0.10.0", features = [] }
 ipc-test = { path = "../ipc_test" }
 stats = { path = "../stats" }
 common = { path = "../common" }
-nix = "0.29.0"
+nix = { workspace = true }
 lz4 = "=1.25.0"
 lz4-sys = "=1.9.5"
 zerocopy = { workspace = true }
-md5 = "0.7.0"
+md5 = "0.8.0"
 num = "0.4.3"
 opentelemetry = { workspace = true }
 

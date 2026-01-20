@@ -331,12 +331,12 @@ impl ASITpx3Connection {
             &mut self.remainder,
             &mut self.stats,
         )?;
-        iter.get_next_stack_impl(py, max_size).map(|maybe_stack| {
-            if let Some(frame_stack) = &maybe_stack {
-                self.stats.count_stats_item(frame_stack);
-            }
-            maybe_stack
-        })
+        iter.get_next_stack_impl(py, max_size)
+            .inspect(|maybe_stack| {
+                if let Some(frame_stack) = maybe_stack {
+                    self.stats.count_stats_item(frame_stack);
+                }
+            })
     }
 
     fn log_shm_stats(&self) -> PyResult<()> {

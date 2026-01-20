@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn test_cam_client() {
         let socket_dir = tempdir().unwrap();
-        let socket_as_path = socket_dir.into_path().join("stuff.socket");
+        let socket_as_path = socket_dir.as_ref().join("stuff.socket");
         let handle_path = socket_as_path.to_str().unwrap();
 
         let mut shm = SharedSlabAllocator::new(1, 4096, false, &socket_as_path).unwrap();

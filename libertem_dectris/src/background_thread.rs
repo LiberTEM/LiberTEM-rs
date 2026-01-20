@@ -191,10 +191,7 @@ fn serialization_error(
     msg: &Message,
     err: &serde_json::Error,
 ) {
-    log::error!(
-        "background_thread: serialization error: {}",
-        err.to_string()
-    );
+    log::error!("background_thread: serialization error: {}", err);
     from_thread_s
         .send(ReceiverMsg::FatalError {
             error: Box::new(AcquisitionError::SerdeError {
@@ -477,7 +474,7 @@ fn background_thread_wrap(
         max_latency_per_stack,
         shm,
     ) {
-        log::error!("background_thread err'd: {}", err.to_string());
+        log::error!("background_thread err'd: {}", err);
         // NOTE: `shm` is dropped in case of an error, so anyone who tries to connect afterwards
         // will get an error
         from_thread_s

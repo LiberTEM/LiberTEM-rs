@@ -413,7 +413,7 @@ fn background_thread_wrap(
     shm: SharedSlabAllocator,
 ) {
     if let Err(err) = background_thread(to_thread_r, from_thread_s, uri, frame_stack_size, shm) {
-        log::error!("background_thread err'd: {}", err.to_string());
+        log::error!("background_thread err'd: {}", err);
         // NOTE: `shm` is dropped in case of an error, so anyone who tries to connect afterwards
         // will get an error
         from_thread_s
