@@ -14,6 +14,7 @@ resolver = "2"
 
 [workspace.package]
 rust-version = "1.87"
+edition = "2024"
 
 [profile.release]
 debug = true
