@@ -2521,7 +2521,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "libertem_qd_mpx"
+name = "libertem-qd-mpx"
 version = "0.3.1"
 dependencies = [
  "common",
