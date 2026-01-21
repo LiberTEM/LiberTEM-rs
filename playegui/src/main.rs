@@ -8,6 +8,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "LiberTEM-live preview",
         native_options,
-        Box::new(|cc| Box::new(TemplateApp::new(cc))),
+        Box::new(|cc| Ok(Box::new(TemplateApp::new(cc)))),
     )
 }
