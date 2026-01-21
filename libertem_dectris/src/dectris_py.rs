@@ -343,7 +343,7 @@ mod tests {
 
     use crate::{
         base_types::DectrisFrameMeta,
-        dectris_py::{CamClient, DectrisFrameStack, _PyDectrisFrameStack},
+        dectris_py::{_PyDectrisFrameStack, CamClient, DectrisFrameStack},
     };
     use tempfile::TempDir;
 

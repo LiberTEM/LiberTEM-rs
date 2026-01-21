@@ -2,18 +2,19 @@ use std::{
     collections::HashMap,
     f64::consts::PI,
     sync::{
-        atomic::{AtomicBool, Ordering::Relaxed},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering::Relaxed},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use crossbeam::channel::{unbounded, Receiver, Sender};
+use crossbeam::channel::{Receiver, Sender, unbounded};
 use eframe::epaint::ahash::HashSet;
 use egui::{
+    ColorImage, TextureHandle, TextureOptions, Ui,
     plot::{Corner, HLine, Legend, MarkerShape, Plot, PlotImage, PlotPoint, Points, Polygon},
-    vec2, ColorImage, TextureHandle, TextureOptions, Ui,
+    vec2,
 };
 use egui_extras::RetainedImage;
 use log::trace;

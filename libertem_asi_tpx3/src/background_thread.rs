@@ -5,8 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError};
-use ipc_test::{slab::ShmError, SHMHandle, SharedSlabAllocator};
+use crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender, TryRecvError, unbounded};
+use ipc_test::{SHMHandle, SharedSlabAllocator, slab::ShmError};
 use log::{debug, error, info, trace, warn};
 use opentelemetry::Context;
 
@@ -14,7 +14,7 @@ use crate::{
     chunk_stack::{ChunkCSRLayout, ChunkStackForWriting, ChunkStackHandle},
     csr_view_raw::CSRViewRaw,
     headers::{AcquisitionEnd, AcquisitionStart, HeaderTypes, ScanEnd, ScanStart},
-    stream::{stream_recv_chunk, stream_recv_header, StreamError},
+    stream::{StreamError, stream_recv_chunk, stream_recv_header},
 };
 
 #[derive(PartialEq, Eq, Debug)]
@@ -354,7 +354,10 @@ fn handle_scan(
                     })?;
                 }
 
-                trace!("got an ArrayChunk of size {nbytes} bytes at {frame_counter}; size={}; header={header:?}", header.nframes);
+                trace!(
+                    "got an ArrayChunk of size {nbytes} bytes at {frame_counter}; size={}; header={header:?}",
+                    header.nframes
+                );
                 frame_counter += header.nframes as u64;
 
                 let sizes = header.get_sizes(&acquisition_header);

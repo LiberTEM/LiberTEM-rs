@@ -2,8 +2,8 @@ use std::{
     io::ErrorKind,
     net::TcpStream,
     sync::{
-        mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
         Mutex,
+        mpsc::{Receiver, RecvTimeoutError, SendError, Sender, TryRecvError, channel},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -13,9 +13,9 @@ use common::{
     background_thread::{BackgroundThread, BackgroundThreadSpawnError, ControlMsg, ReceiverMsg},
     frame_stack::{FrameStackForWriting, FrameStackWriteError, WriteFrameError},
     tcp::{self, ReadExactError},
-    utils::{num_from_byte_slice, three_way_shift, NumParseError},
+    utils::{NumParseError, num_from_byte_slice, three_way_shift},
 };
-use ipc_test::{slab::ShmError, SharedSlabAllocator};
+use ipc_test::{SharedSlabAllocator, slab::ShmError};
 use log::{debug, error, info, trace, warn};
 use opentelemetry::Context;
 use serval_client::{DetectorConfig, ServalClient, ServalError};
@@ -580,7 +580,9 @@ fn background_thread(
             let control = to_thread_r.recv_timeout(Duration::from_millis(100));
             match control {
                 Ok(ControlMsg::CancelAcquisition) => {
-                    warn!("background_thread: ControlMsg::CancelAcquisition without running acquisition");
+                    warn!(
+                        "background_thread: ControlMsg::CancelAcquisition without running acquisition"
+                    );
                 }
                 Ok(ControlMsg::StartAcquisitionPassive) => {
                     match passive_acquisition(

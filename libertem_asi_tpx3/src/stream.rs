@@ -1,6 +1,6 @@
 use std::net::TcpStream;
 
-use common::tcp::{read_exact_interruptible, ReadExactError};
+use common::tcp::{ReadExactError, read_exact_interruptible};
 
 use crate::{
     background_thread::ControlError,

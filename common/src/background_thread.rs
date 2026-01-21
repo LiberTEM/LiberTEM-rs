@@ -2,8 +2,8 @@ use std::{
     fmt::Debug,
     io,
     sync::{
-        mpsc::{Receiver, Sender},
         Mutex,
+        mpsc::{Receiver, Sender},
     },
 };
 

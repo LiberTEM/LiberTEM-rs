@@ -1,13 +1,13 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 use crossbeam::channel::{Receiver, Sender, TryRecvError};
-use futures_util::{stream::SplitSink, Sink, SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt, stream::SplitSink};
 use log::{error, info, warn};
 use tokio_tungstenite::connect_async;
 use tungstenite::Message;

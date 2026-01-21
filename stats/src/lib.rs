@@ -78,7 +78,13 @@ impl Stats {
         let efficiency = self.payload_size_sum as f32 / self.slots_size_sum as f32;
         info!(
             "Stats: frames seen: {}, total payload size: {}, total slot size used: {}, min size: {}, max size: {}, splits: {}, shm efficiency: {}",
-            self.num_frames, self.payload_size_sum, self.slots_size_sum, self.frame_size_min, self.frame_size_max, self.split_count, efficiency,
+            self.num_frames,
+            self.payload_size_sum,
+            self.slots_size_sum,
+            self.frame_size_min,
+            self.frame_size_max,
+            self.split_count,
+            efficiency,
         );
     }
 }

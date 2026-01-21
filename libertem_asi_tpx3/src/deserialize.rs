@@ -1,6 +1,6 @@
 use serde::{
-    de::{self},
     Deserialize, Deserializer,
+    de::{self},
 };
 
 use serde::de::Visitor;

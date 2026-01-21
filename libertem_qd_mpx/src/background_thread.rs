@@ -3,8 +3,8 @@ use std::{
     net::TcpStream,
     ops::{Deref, DerefMut},
     sync::{
-        mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
         Mutex,
+        mpsc::{Receiver, RecvTimeoutError, SendError, Sender, TryRecvError, channel},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -16,15 +16,15 @@ use common::{
         FrameMeta, FrameStackForWriting, FrameStackWriteError, WriteFrameError, WriteGuard,
     },
     tcp::{self, ReadExactError},
-    utils::{num_from_byte_slice, NumParseError},
+    utils::{NumParseError, num_from_byte_slice},
 };
-use ipc_test::{slab::ShmError, SharedSlabAllocator};
+use ipc_test::{SharedSlabAllocator, slab::ShmError};
 use log::{debug, error, info, trace, warn};
 use opentelemetry::Context;
 
 use crate::base_types::{
-    AcqHeaderParseError, FrameMetaParseError, QdAcquisitionConfig, QdAcquisitionHeader,
-    QdDetectorConnConfig, QdFrameMeta, RecoveryStrategy, PREFIX_SIZE,
+    AcqHeaderParseError, FrameMetaParseError, PREFIX_SIZE, QdAcquisitionConfig,
+    QdAcquisitionHeader, QdDetectorConnConfig, QdFrameMeta, RecoveryStrategy,
 };
 
 type QdControlMsg = ControlMsg<()>;
@@ -404,7 +404,7 @@ fn make_frame_stack<'a>(
                         meta.get_data_length_bytes(),
                     ),
                     shm,
-                ))
+                ));
             }
             Err(ShmError::NoSlotAvailable) => {
                 trace!("shm is full; waiting and creating backpressure...");
@@ -525,7 +525,9 @@ impl Drop for TcpStreamGuard {
             RecoveryStrategy::DrainThenReconnect => {
                 warn!("RecoveryStrategy::DrainThenReconnect");
                 if let Err(e) = self.stream.set_read_timeout(Some(self.drain_timeout)) {
-                    warn!("could not set read timeout when draining; in case there is no timeout set, no draining will happen; error: {e}");
+                    warn!(
+                        "could not set read timeout when draining; in case there is no timeout set, no draining will happen; error: {e}"
+                    );
                     return;
                 }
                 let mut tmp = vec![0; 1024 * 1024]; // keep this buffer large for efficient draining
@@ -802,7 +804,7 @@ mod test {
     use common::generic_connection::{ConnectionError, ConnectionStatus, GenericConnection};
     use ipc_test::SharedSlabAllocator;
     use log::info;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
     use tokio::{
         io::AsyncWriteExt,
         net::{TcpListener, TcpStream},
@@ -2038,10 +2040,11 @@ End
             }
 
             // that was the last stack:
-            assert!(conn
-                .get_next_stack(1, || Ok::<_, std::io::Error>(()))
-                .unwrap()
-                .is_none());
+            assert!(
+                conn.get_next_stack(1, || Ok::<_, std::io::Error>(()))
+                    .unwrap()
+                    .is_none()
+            );
 
             // allow the server thread to end:
             shutdown_s.send(()).unwrap();

@@ -1,14 +1,14 @@
 //#![forbid(clippy::unwrap_used)]
 //! Raw memory backend using the `shared_memory` crate
 use std::{
-    fs::{remove_file, OpenOptions},
+    fs::{OpenOptions, remove_file},
     io::Write,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Mutex,
 };
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use shared_memory::{Shmem, ShmemConf};
 
 use crate::common::ShmConnectError;
@@ -126,7 +126,7 @@ pub type Shm = SharedMemory;
 
 #[cfg(test)]
 mod tests {
-    use crate::{shm::SharedMemory, test_utils::TempDir, SlabInfo};
+    use crate::{SlabInfo, shm::SharedMemory, test_utils::TempDir};
 
     #[test]
     fn test_debug_send() {

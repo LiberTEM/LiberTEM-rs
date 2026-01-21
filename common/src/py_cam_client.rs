@@ -41,13 +41,13 @@ macro_rules! impl_py_cam_client {
             };
             use ipc_test::SharedSlabAllocator;
             use num::{
+                NumCast,
                 cast::AsPrimitive,
                 complex::{Complex32, Complex64},
-                NumCast,
             };
             use numpy::{
-                dtype, Element, PyArray3, PyArrayDescrMethods, PyArrayMethods, PyUntypedArray,
-                PyUntypedArrayMethods,
+                Element, PyArray3, PyArrayDescrMethods, PyArrayMethods, PyUntypedArray,
+                PyUntypedArrayMethods, dtype,
             };
             use pyo3::{create_exception, exceptions::PyException, prelude::*};
             use zerocopy::{AsBytes, FromBytes};
@@ -188,6 +188,6 @@ macro_rules! impl_py_cam_client {
             }
         }
 
-        use impl_cam_client::{$name, PyCamClientError};
+        use impl_cam_client::{PyCamClientError, $name};
     };
 }

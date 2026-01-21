@@ -1,7 +1,7 @@
 use std::any::TypeId;
 
 use common::{
-    decoder::{try_cast_if_safe, Decoder, DecoderError, DecoderTargetPixelType},
+    decoder::{Decoder, DecoderError, DecoderTargetPixelType, try_cast_if_safe},
     frame_stack::FrameStackHandle,
 };
 use ipc_test::SharedSlabAllocator;

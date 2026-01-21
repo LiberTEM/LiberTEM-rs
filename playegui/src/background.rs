@@ -1,16 +1,16 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
+use crossbeam::channel::{Receiver, Sender, TryRecvError, unbounded};
 use egui::ColorImage;
 use log::{error, info};
-use ndarray::{s, Array2, ArrayViewMut2};
+use ndarray::{Array2, ArrayViewMut2, s};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
@@ -174,7 +174,7 @@ impl BackgroundState {
                     ended_ids.push(ended.id);
                 }
                 MessagePart::AcquisitionBinaryPart(_) => {
-                    return Err(ParseError::UnexpectedMessage(front_msg.clone()))
+                    return Err(ParseError::UnexpectedMessage(front_msg.clone()));
                 }
                 MessagePart::AcquisitionResultHeader(result_header) => {
                     let num_expected = result_header.channels.len();

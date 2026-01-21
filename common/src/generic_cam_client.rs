@@ -1,8 +1,8 @@
 use std::fmt::Debug;
 
 use ipc_test::{
-    slab::{ShmError, SlabInitError},
     SharedSlabAllocator,
+    slab::{ShmError, SlabInitError},
 };
 use multiversion::multiversion;
 use num::cast::AsPrimitive;
