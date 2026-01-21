@@ -11,12 +11,8 @@ use std::{
 
 use crossbeam::channel::{Receiver, Sender, unbounded};
 use eframe::epaint::ahash::HashSet;
-use egui::{
-    ColorImage, TextureHandle, TextureOptions, Ui,
-    plot::{Corner, HLine, Legend, MarkerShape, Plot, PlotImage, PlotPoint, Points, Polygon},
-    vec2,
-};
-use egui_extras::RetainedImage;
+use egui::{Color32, ColorImage, TextureHandle, TextureOptions, Ui, vec2};
+use egui_plot::{Corner, Legend, MarkerShape, Plot, PlotImage, PlotPoint, Points, Polygon};
 use log::trace;
 use ndarray::Array2;
 
@@ -111,7 +107,6 @@ pub struct TemplateApp {
     stats: AggregateStats,
     previous_stats: Option<(AggregateStats, AggregateStats)>,
     conn_status: Arc<Mutex<ConnectionStatus>>,
-    logo: RetainedImage,
 }
 
 fn circle_points(cx: f64, cy: f64, r: f64) -> Vec<[f64; 2]> {
@@ -155,9 +150,6 @@ impl TemplateApp {
         let (join_handle, data_source, control_channel) =
             Self::connect(Arc::clone(&stop_event), Arc::clone(&conn_status));
 
-        let image_bytes = include_bytes!("./logo.png");
-        let logo = RetainedImage::from_image_bytes("LiberTEM logo", image_bytes).unwrap();
-
         Self {
             ring_params: Default::default(),
             data_source,
@@ -169,7 +161,6 @@ impl TemplateApp {
             bg_thread: Some(join_handle),
             control_channel,
             conn_status,
-            logo,
         }
     }
 
@@ -311,6 +302,8 @@ impl TemplateApp {
                         let tex_options: TextureOptions = TextureOptions {
                             magnification: egui::TextureFilter::Nearest,
                             minification: egui::TextureFilter::Linear,
+                            wrap_mode: egui::TextureWrapMode::ClampToEdge,
+                            mipmap_mode: None,
                         };
                         ui.ctx().load_texture(format!("{id:?}"), img, tex_options)
                     }
@@ -325,7 +318,7 @@ impl TemplateApp {
 impl eframe::App for TemplateApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_acq_messages();
         ctx.request_repaint(); // "continuous mode"
 
@@ -339,10 +332,10 @@ impl eframe::App for TemplateApp {
         #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
-            egui::menu::bar(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Quit").clicked() {
-                        frame.close();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
             });
@@ -387,7 +380,11 @@ impl eframe::App for TemplateApp {
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                self.logo.show_max_size(ui, vec2(250.0, 200.0));
+                ui.add(
+                    egui::Image::new(egui::include_image!("./logo.png"))
+                        .max_size(vec2(250.0, 200.0)),
+                );
+                ui.image(egui::include_image!("./logo.png"));
 
                 ui.label(format!(
                     "Connection: {:?}",
@@ -442,23 +439,18 @@ impl eframe::App for TemplateApp {
                         })
                         .unwrap();
                     if let Some(item) = self.acquisitions.get(id) {
-                        let (img_or_texture, bbox, _data) = item;
+                        let (img_or_texture, _bbox, _data) = item;
                         if let ImageOrTexture::Texture(texture_id) = img_or_texture {
                             let pos =
                                 PlotPoint::new(idx as f32 + texture_id.aspect_ratio() / 2.0, 0.5);
                             let image = PlotImage::new(
+                                format!("acquisition {id:?}"),
                                 texture_id,
                                 pos,
                                 vec2(texture_id.aspect_ratio(), 1.0),
                             );
                             let img = image; // .name(format!("Acquisition {id:?}"));
                             plot_ui.image(img);
-                            if false {
-                                plot_ui.hline(
-                                    HLine::new(1.0 - (bbox.ymax as f32 / texture_id.size_vec2().y))
-                                        .name("Scan"),
-                                );
-                            }
                         }
                     }
                 });
@@ -466,25 +458,23 @@ impl eframe::App for TemplateApp {
                 let plot_cx = (self.ring_params.cx / 516.0 + 1.0) as f64;
                 let plot_cy = 1.0 - (self.ring_params.cy / 516.0) as f64;
 
-                let marker = Points::new(vec![[plot_cx, plot_cy]])
+                let marker = Points::new("center", vec![[plot_cx, plot_cy]])
                     .filled(true)
                     .radius(3.0)
                     .shape(MarkerShape::Square);
 
-                let polygon: Polygon = Polygon::new(circle_points(
-                    plot_cx,
-                    plot_cy,
-                    self.ring_params.ri as f64 / 516.0,
-                ))
-                .fill_alpha(0.0);
+                let polygon: Polygon = Polygon::new(
+                    "ring inner",
+                    circle_points(plot_cx, plot_cy, self.ring_params.ri as f64 / 516.0),
+                )
+                .fill_color(Color32::from_rgba_unmultiplied(1, 0, 0, 0));
                 plot_ui.polygon(polygon);
 
-                let polygon: Polygon = Polygon::new(circle_points(
-                    plot_cx,
-                    plot_cy,
-                    self.ring_params.ro as f64 / 516.0,
-                ))
-                .fill_alpha(0.0);
+                let polygon: Polygon = Polygon::new(
+                    "ring outer",
+                    circle_points(plot_cx, plot_cy, self.ring_params.ro as f64 / 516.0),
+                )
+                .fill_color(Color32::from_rgba_unmultiplied(1, 0, 0, 0));
                 plot_ui.polygon(polygon);
 
                 plot_ui.points(marker);
