@@ -1,5 +1,5 @@
-use common::decoder::{try_cast_if_safe, Decoder, DecoderError, DecoderTargetPixelType};
-use numpy::ndarray::{s, ArrayViewMut3};
+use common::decoder::{Decoder, DecoderError, DecoderTargetPixelType, try_cast_if_safe};
+use numpy::ndarray::{ArrayViewMut3, s};
 use zerocopy::FromBytes;
 
 use crate::base_types::{ASIMpxFrameMeta, DType};

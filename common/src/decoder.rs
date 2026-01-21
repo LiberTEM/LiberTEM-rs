@@ -1,7 +1,7 @@
 use std::{any::type_name, fmt::Debug, mem::size_of};
 
 use ipc_test::SharedSlabAllocator;
-use num::{cast::AsPrimitive, Bounded, Num, NumCast, ToPrimitive};
+use num::{Bounded, Num, NumCast, ToPrimitive, cast::AsPrimitive};
 use numpy::ndarray::ArrayViewMut3;
 use zerocopy::{AsBytes, FromBytes};
 

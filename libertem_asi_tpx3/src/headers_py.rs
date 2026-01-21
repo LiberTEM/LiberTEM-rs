@@ -1,5 +1,5 @@
 use log::debug;
-use pyo3::{pyfunction, pymethods, types::PyByteArray, Bound, Python};
+use pyo3::{Bound, Python, pyfunction, pymethods, types::PyByteArray};
 
 use crate::{
     chunk_stack::ChunkCSRLayout,

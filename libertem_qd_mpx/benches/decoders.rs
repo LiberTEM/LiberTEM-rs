@@ -1,11 +1,11 @@
 use std::{fmt::Debug, hint::black_box};
 
 use criterion::{
-    criterion_group, criterion_main, measurement::Measurement, BenchmarkGroup, Criterion,
-    Throughput,
+    BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main,
+    measurement::Measurement,
 };
-use libertem_qd_mpx::decoder::{RawType, R1, R12, R6};
-use num::{cast::AsPrimitive, Bounded, Num, NumCast, ToPrimitive};
+use libertem_qd_mpx::decoder::{R1, R6, R12, RawType};
+use num::{Bounded, Num, NumCast, ToPrimitive, cast::AsPrimitive};
 
 fn bench_raw_generic<'a, O, M: Measurement>(
     group: &mut BenchmarkGroup<M>,

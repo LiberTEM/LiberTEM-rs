@@ -15,11 +15,7 @@ pub enum DType {
 
 impl DType {
     pub fn from_maxval(maxval: u32) -> Self {
-        if maxval < 256 {
-            DType::U8
-        } else {
-            DType::U16
-        }
+        if maxval < 256 { DType::U8 } else { DType::U16 }
     }
 
     pub fn num_bytes(&self) -> usize {

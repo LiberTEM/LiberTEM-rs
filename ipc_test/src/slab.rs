@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam::channel::{bounded, Sender};
+use crossbeam::channel::{Sender, bounded};
 use raw_sync::locks::{LockImpl, LockInit, Mutex};
 use serde::{Deserialize, Serialize};
 
@@ -457,7 +457,7 @@ impl Drop for SharedSlabAllocator {
 #[cfg(test)]
 mod test {
     use std::{path::PathBuf, time::Duration};
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     use crate::{
         align_to,

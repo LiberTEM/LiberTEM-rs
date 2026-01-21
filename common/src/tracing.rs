@@ -5,10 +5,10 @@ use opentelemetry::global::BoxedTracer;
 use opentelemetry::trace::{
     self, SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer,
 };
-use opentelemetry::{global, Context, ContextGuard};
+use opentelemetry::{Context, ContextGuard, global};
 use opentelemetry_otlp::{ExporterBuildError, SpanExporter, WithExportConfig};
-use opentelemetry_sdk::trace::{BatchSpanProcessor, SdkTracerProvider};
 use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::trace::{BatchSpanProcessor, SdkTracerProvider};
 use pyo3::types::{PyAnyMethods, PyModule};
 use pyo3::{PyResult, Python};
 

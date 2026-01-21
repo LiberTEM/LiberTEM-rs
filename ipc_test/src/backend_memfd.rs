@@ -1,7 +1,7 @@
 #![forbid(clippy::unwrap_used)]
 //! Raw memory backend using memfd with huge page support
 use std::{
-    fs::{remove_file, File},
+    fs::{File, remove_file},
     io::{self, Read, Write},
     ops::Deref,
     os::{
@@ -10,8 +10,8 @@ use std::{
     },
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
 };
@@ -21,7 +21,7 @@ use memfd::{FileSeal, HugetlbSize, MemfdOptions};
 use memmap2::{MmapOptions, MmapRaw};
 use nix::poll::{PollFd, PollFlags};
 use sendfd::{RecvWithFd, SendWithFd};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::common::ShmConnectError;
 
@@ -240,7 +240,7 @@ pub type Shm = MemfdShm;
 
 #[cfg(test)]
 mod tests {
-    use crate::{shm::Shm, test_utils::TempDir, SlabInfo};
+    use crate::{SlabInfo, shm::Shm, test_utils::TempDir};
 
     #[test]
     fn test_debug_send() {

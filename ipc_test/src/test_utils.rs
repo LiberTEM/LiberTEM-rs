@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rand::{distr::Alphanumeric, Rng};
+use rand::{Rng, distr::Alphanumeric};
 pub struct TempDir {
     pub path: PathBuf,
 }

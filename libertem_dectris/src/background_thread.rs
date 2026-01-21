@@ -3,8 +3,8 @@ use std::{
     mem::replace,
     ops::Deref,
     sync::{
-        mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
         Mutex,
+        mpsc::{Receiver, RecvTimeoutError, SendError, Sender, TryRecvError, channel},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -15,14 +15,14 @@ use common::{
     frame_stack::{FrameStackForWriting, FrameStackWriteError, WriteFrameError},
     generic_connection::DetectorConnectionConfig,
 };
-use ipc_test::{slab::ShmError, SharedSlabAllocator};
+use ipc_test::{SharedSlabAllocator, slab::ShmError};
 use log::{debug, error, info, trace, warn};
 use opentelemetry::Context;
 use zmq::{Message, Socket};
 
 use crate::base_types::{
-    setup_monitor, DConfig, DHeader, DImage, DImageD, DSeriesAndType, DSeriesEnd, DectrisFrameMeta,
-    DectrisPendingAcquisition, DetectorConfig,
+    DConfig, DHeader, DImage, DImageD, DSeriesAndType, DSeriesEnd, DectrisFrameMeta,
+    DectrisPendingAcquisition, DetectorConfig, setup_monitor,
 };
 
 type DectrisControlMsg = ControlMsg<DectrisExtraControl>;
@@ -401,7 +401,7 @@ fn acquisition(
                     warn!("acquisition: frame stack too small")
                 }
                 Err(FrameStackWriteError::ShmAccessError(e)) => {
-                    return Err(AcquisitionError::ShmAccessError { err: e })
+                    return Err(AcquisitionError::ShmAccessError { err: e });
                 }
             }
         }
@@ -448,7 +448,7 @@ fn acquisition(
                     warn!("acquisition: frame stack too small")
                 }
                 Err(FrameStackWriteError::ShmAccessError(e)) => {
-                    return Err(AcquisitionError::ShmAccessError { err: e })
+                    return Err(AcquisitionError::ShmAccessError { err: e });
                 }
             }
 
@@ -654,7 +654,9 @@ fn background_thread(
                     break 'outer;
                 }
                 Ok(ControlMsg::CancelAcquisition) => {
-                    warn!("background_thread: ignoring ControlMsg::CancelAcquisition outside of running acquisition")
+                    warn!(
+                        "background_thread: ignoring ControlMsg::CancelAcquisition outside of running acquisition"
+                    )
                 }
                 Err(RecvTimeoutError::Timeout) => (), // no message, nothing to do
             }

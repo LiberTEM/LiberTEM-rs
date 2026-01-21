@@ -7,8 +7,8 @@ use std::{
 };
 
 use ipc_test::{
-    slab::{ShmError, SlabInitError},
     SharedSlabAllocator,
+    slab::{ShmError, SlabInitError},
 };
 use log::{debug, info, trace, warn};
 use stats::Stats;
@@ -45,7 +45,9 @@ pub enum ConnectionError {
     #[error("a general fatal error occurred: {0}")]
     FatalError(Box<dyn std::error::Error + 'static + Sync + Send>),
 
-    #[error("could not create SHM area (num_slots={num_slots}, slot_size={slot_size}, total_size={total_size}): {err:?}")]
+    #[error(
+        "could not create SHM area (num_slots={num_slots}, slot_size={slot_size}, total_size={total_size}): {err:?}"
+    )]
     ShmCreateError {
         num_slots: usize,
         slot_size: usize,
@@ -323,7 +325,7 @@ where
                     pending_acquisition,
                 } => return Ok(Some(pending_acquisition)),
                 ReceiverMsg::FatalError { error } => {
-                    return Err(ConnectionError::FatalError(error))
+                    return Err(ConnectionError::FatalError(error));
                 }
                 ReceiverMsg::FrameStack { frame_stack } => {
                     frame_stack.free_slot(&mut self.shm)?;
@@ -421,7 +423,9 @@ where
                     frame_stack.free_slot(&mut self.shm)?;
                 }
                 ReceiverMsg::Finished { frame_stack } => {
-                    warn!("wait_for_status: ignoring FrameStackHandle received in ReceiverMsg::Finished message");
+                    warn!(
+                        "wait_for_status: ignoring FrameStackHandle received in ReceiverMsg::Finished message"
+                    );
                     frame_stack.free_slot(&mut self.shm)?;
                 }
                 ReceiverMsg::FatalError { error } => {

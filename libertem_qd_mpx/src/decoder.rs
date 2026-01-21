@@ -1,11 +1,11 @@
 use std::fmt::Debug;
 
 use common::decoder::{
-    decode_ints_be, try_cast_if_safe, try_cast_primitive, Decoder, DecoderError,
-    DecoderTargetPixelType,
+    Decoder, DecoderError, DecoderTargetPixelType, decode_ints_be, try_cast_if_safe,
+    try_cast_primitive,
 };
 use log::trace;
-use num::{cast::AsPrimitive, Bounded, Num, NumCast, PrimInt, ToPrimitive};
+use num::{Bounded, Num, NumCast, PrimInt, ToPrimitive, cast::AsPrimitive};
 use numpy::ndarray::s;
 use zerocopy::FromBytes;
 
@@ -632,14 +632,14 @@ mod test {
     use num::cast::AsPrimitive;
     use numpy::ndarray::Array3;
     use rand::Rng;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     use crate::{
         base_types::{DType, Layout, QdFrameMeta},
         decoder::R6,
     };
 
-    use super::{QdDecoder, RawType, R1, R12};
+    use super::{QdDecoder, R1, R12, RawType};
 
     fn generic_encode_decode<
         R: RawType,

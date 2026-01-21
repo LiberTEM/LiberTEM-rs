@@ -5,8 +5,8 @@ use common::tracing::{span_from_py, tracing_from_env};
 use numpy::PyUntypedArray;
 use pyo3::types::PyModuleMethods;
 use pyo3::{
-    exceptions::PyValueError, pyclass, pymethods, pymodule, types::PyModule, Bound, PyResult,
-    Python,
+    Bound, PyResult, Python, exceptions::PyValueError, pyclass, pymethods, pymodule,
+    types::PyModule,
 };
 
 use common::{impl_py_cam_client, impl_py_connection};

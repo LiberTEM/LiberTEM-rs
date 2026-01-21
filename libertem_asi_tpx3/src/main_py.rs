@@ -115,7 +115,7 @@ impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
 
         match self.receiver.status {
             ReceiverStatus::Closed => {
-                return Err(exceptions::PyRuntimeError::new_err("receiver is closed"))
+                return Err(exceptions::PyRuntimeError::new_err("receiver is closed"));
             }
             ReceiverStatus::Idle => return Ok(None),
             ReceiverStatus::Running => {}
@@ -147,13 +147,13 @@ impl<'a, 'b, 'c, 'd> ChunkIterator<'a, 'b, 'c, 'd> {
                 Some(ResultMsg::SerdeError { msg, recvd_msg }) => {
                     return Err(exceptions::PyRuntimeError::new_err(format!(
                         "serialization error: {msg}, message: {recvd_msg}",
-                    )))
+                    )));
                 }
                 Some(ResultMsg::AcquisitionError { msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(msg))
+                    return Err(exceptions::PyRuntimeError::new_err(msg));
                 }
                 Some(ResultMsg::ReceiverError { msg }) => {
-                    return Err(exceptions::PyRuntimeError::new_err(msg))
+                    return Err(exceptions::PyRuntimeError::new_err(msg));
                 }
                 Some(ResultMsg::End { frame_stack }) => {
                     self.stats.log_stats();
@@ -228,7 +228,9 @@ impl ASITpx3Connection {
             Ok(shm) => shm,
             Err(e) => {
                 let total_size = num_slots * slot_size;
-                let msg = format!("could not create SHM area (num_slots={num_slots}, slot_size={slot_size} total_size={total_size} huge={huge:?}): {e:?}");
+                let msg = format!(
+                    "could not create SHM area (num_slots={num_slots}, slot_size={slot_size} total_size={total_size} huge={huge:?}): {e:?}"
+                );
                 return Err(ConnectionError::new_err(msg));
             }
         };
@@ -283,10 +285,10 @@ impl ASITpx3Connection {
                 }
                 Some(ResultMsg::ReceiverError { msg }) => return Err(PyRuntimeError::new_err(msg)),
                 Some(ResultMsg::AcquisitionError { msg }) => {
-                    return Err(PyRuntimeError::new_err(msg))
+                    return Err(PyRuntimeError::new_err(msg));
                 }
                 Some(ResultMsg::SerdeError { msg, recvd_msg: _ }) => {
-                    return Err(PyRuntimeError::new_err(msg))
+                    return Err(PyRuntimeError::new_err(msg));
                 }
                 None => {
                     // timeout

@@ -1,5 +1,5 @@
 use bincode::serialize;
-use ipc_test::{slab::ShmError, SharedSlabAllocator, Slot, SlotForWriting, SlotInfo};
+use ipc_test::{SharedSlabAllocator, Slot, SlotForWriting, SlotInfo, slab::ShmError};
 use log::trace;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -323,7 +323,10 @@ impl ChunkStackHandle {
         if !split_found {
             panic!(
                 "split not found! mid={mid} chunks_left.len()={}, chunks_right.len()={} layout={:?} offsets={:?}",
-                chunks_left.len(), chunks_right.len(), self.layout, self.offsets
+                chunks_left.len(),
+                chunks_right.len(),
+                self.layout,
+                self.offsets
             );
         }
 
@@ -478,7 +481,7 @@ mod tests {
 
     use super::ChunkStackForWriting;
     use ipc_test::{SharedSlabAllocator, Slot};
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     fn get_socket_path() -> (TempDir, PathBuf) {
         let socket_dir = tempdir().unwrap();

@@ -14,10 +14,10 @@ use common::{
 use log::{trace, warn};
 use num::Num;
 use pyo3::{
+    Bound, PyResult,
     exceptions::PyValueError,
     pyclass, pymethods,
     types::{PyBytes, PyBytesMethods, PyType},
-    Bound, PyResult,
 };
 use serde::{Deserialize, Serialize};
 
@@ -75,7 +75,7 @@ impl FromStr for DType {
             _ => {
                 return Err(FrameMetaParseError::UnknownVariant {
                     variant: s.to_owned(),
-                })
+                });
             }
         })
     }
@@ -104,7 +104,7 @@ impl FromStr for Layout {
             _ => {
                 return Err(FrameMetaParseError::UnknownVariant {
                     variant: s.to_owned(),
-                })
+                });
             }
         })
     }
@@ -202,7 +202,7 @@ impl FromStr for ColourMode {
             _ => {
                 return Err(FrameMetaParseError::UnknownVariant {
                     variant: s.to_owned(),
-                })
+                });
             }
         })
     }
@@ -231,7 +231,7 @@ impl FromStr for Gain {
             _ => {
                 return Err(FrameMetaParseError::UnknownVariant {
                     variant: s.to_owned(),
-                })
+                });
             }
         })
     }
@@ -670,7 +670,7 @@ impl FromStr for RecoveryStrategy {
             _ => {
                 return Err(RecoveryStrategyError::InvalidVariant {
                     variant: s.to_owned(),
-                })
+                });
             }
         })
     }

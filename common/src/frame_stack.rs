@@ -1,10 +1,10 @@
 use std::fmt::Debug;
 
-use ipc_test::{slab::ShmError, SharedSlabAllocator, SlotForWriting};
+use ipc_test::{SharedSlabAllocator, SlotForWriting, slab::ShmError};
 use log::{error, warn};
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError},
     PyErr,
+    exceptions::{PyRuntimeError, PyValueError},
 };
 use serde::Serialize;
 
@@ -211,7 +211,7 @@ where
 
 // inner mod to enforce invariants via constructor
 mod inner {
-    use ipc_test::{slab::ShmError, SharedSlabAllocator, Slot, SlotInfo};
+    use ipc_test::{SharedSlabAllocator, Slot, SlotInfo, slab::ShmError};
     use serde::{Deserialize, Serialize};
     use stats::GetStats;
 
@@ -523,7 +523,7 @@ mod tests {
 
     use ipc_test::{SharedSlabAllocator, Slot};
     use serde::{Deserialize, Serialize};
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     use crate::frame_stack::{FrameStackForWriting, WriteFrameError};
 

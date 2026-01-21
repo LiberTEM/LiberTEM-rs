@@ -26,8 +26,8 @@ macro_rules! impl_py_connection {
             use ipc_test::SharedSlabAllocator;
             use num::NumCast;
             use numpy::{
-                dtype, Element, PyArray3, PyArrayDescrMethods, PyArrayMethods, PyUntypedArray,
-                PyUntypedArrayMethods,
+                Element, PyArray3, PyArrayDescrMethods, PyArrayMethods, PyUntypedArray,
+                PyUntypedArrayMethods, dtype,
             };
             use pyo3::{
                 create_exception,
@@ -347,6 +347,6 @@ macro_rules! impl_py_connection {
             }
         }
 
-        use impl_connection::{$name, $name_frame_stack, PyConnectionError};
+        use impl_connection::{PyConnectionError, $name, $name_frame_stack};
     };
 }
