@@ -1,4 +1,4 @@
-# LiberTEM-qd-mpx
+# LiberTEM-asi-mpx3
 
 [![LiberTEM-asi-mpx3 on GitHub](https://img.shields.io/badge/GitHub-MIT-informational)](https://github.com/LiberTEM/LiberTEM-rs)
 
@@ -15,4 +15,4 @@ also be used stand-alone.
 
 ### v0.3.XXX
 
-- Initial release of LiberTEM-asi-mpx
+- Initial release of LiberTEM-asi-mpx3

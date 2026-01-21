@@ -156,26 +156,3 @@ finally:
 ### v0.1.0
 
 Initial release!
-
-## Development
-
-This package is using [pyo3](https://pyo3.rs/) with
-[maturin](https://maturin.rs/) to create the Python bindings.  First, make sure
-`maturin` is installed in your Python environment:
-
-```bash
-(venv) $ pip install maturin
-```
-
-Then, after each change to the rust code, run `maturin develop -r` to build and
-install a new version of the wheel.
-
-As we vendor `bitshuffle`, make sure to clone with `git clone --recursive ...`, or manually
-[take care of initializing and updating submodules](https://github.blog/2016-02-01-working-with-submodules/).
-
-## Release
-
-- update changelog above
-- bump version in Cargo.toml if not already bumped, and push
-- create a release from the GitHub UI, creating a new tag vX.Y.Z
-- done!

@@ -15,6 +15,17 @@ Please clone using `git clone --recurse-submodules ...` to include vendored
 code in submodules. After cloning, remember to enable pre-commit hooks, for example
 using `uvx pre-commit install --install-hooks`.
 
+The Python packages are using [pyo3](https://pyo3.rs/) with
+[maturin](https://maturin.rs/) to create the Python bindings.  First, make sure
+`maturin` is installed in your Python environment:
+
+```bash
+(venv) $ pip install maturin[patchelf]
+```
+
+Then, after each change to the rust code, run `maturin develop -r` in one
+of the subdirectories to build and install a new version of the wheel.
+
 To keep the `THIRDPARTY.yml` files updated, please run
 `cargo bundle-licenses --format yaml --output THIRDPARTY.yml`
 in the respective crate folders, whenever dependencies or versions change.
