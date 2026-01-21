@@ -8,12 +8,15 @@ requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
+    "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
     "opentelemetry-api",
 ]
 dynamic = ["version"]
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 
 [project.urls]
 repository = "https://github.com/LiberTEM/LiberTEM-rs/"
