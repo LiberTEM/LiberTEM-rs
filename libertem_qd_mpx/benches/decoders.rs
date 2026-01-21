@@ -1,8 +1,8 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, hint::black_box};
 
 use criterion::{
-    black_box, criterion_group, criterion_main, measurement::Measurement, BenchmarkGroup,
-    Criterion, Throughput,
+    criterion_group, criterion_main, measurement::Measurement, BenchmarkGroup, Criterion,
+    Throughput,
 };
 use libertem_qd_mpx::decoder::{RawType, R1, R12, R6};
 use num::{cast::AsPrimitive, Bounded, Num, NumCast, ToPrimitive};
