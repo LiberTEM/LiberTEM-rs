@@ -1,4 +1,4 @@
-root_name: libertem_qd_mpx
+root_name: libertem-qd-mpx
 third_party_libraries:
 - package_name: addr2line
   package_version: 0.24.2
