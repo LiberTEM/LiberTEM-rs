@@ -3,11 +3,12 @@ requires = ["maturin>=1.11,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "libertem_qd_mpx"
+name = "libertem-qd-mpx"
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
+    "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
     "numpy>=1.16.0",
@@ -15,6 +16,8 @@ dependencies = [
 ]
 dynamic = ["version"]
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 
 [project.urls]
 repository = "https://github.com/LiberTEM/LiberTEM-rs/"
