@@ -11,6 +11,10 @@ also be used stand-alone.
 
 ## Changelog
 
+### v0.3.2
+
+- updated licensing metadata
+
 ### v0.3.0
 
 - Support for recent Python versions

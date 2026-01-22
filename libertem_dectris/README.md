@@ -84,6 +84,11 @@ finally:
 
 ## Changelog
 
+### v0.3.2
+
+- updated licensing metadata
+- Be more resilient when synchronizing to the start of an acquisition (PR [#111](https://github.com/LiberTEM/LiberTEM-rs/pull/111))
+
 ### v0.3.1
 
 - `frame_stack_size` is not an upper limit

@@ -2,7 +2,7 @@
 name = "libertem-asi-mpx3"
 authors = ["Alexander Clausen <a.clausen@fz-juelich.de>"]
 license = "MIT"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 readme = "README.md"
 rust-version.workspace = true
