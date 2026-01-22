@@ -384,7 +384,6 @@ impl eframe::App for TemplateApp {
                     egui::Image::new(egui::include_image!("./logo.png"))
                         .max_size(vec2(250.0, 200.0)),
                 );
-                ui.image(egui::include_image!("./logo.png"));
 
                 ui.label(format!(
                     "Connection: {:?}",
