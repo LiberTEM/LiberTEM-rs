@@ -84,6 +84,10 @@ finally:
 
 ## Changelog
 
+### v0.3.3 (unreleased)
+
+- Include THIRDPARTY.yml in packaging
+
 ### v0.3.2
 
 - updated licensing metadata

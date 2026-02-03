@@ -16,7 +16,7 @@ dependencies = [
 dynamic = ["version"]
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRDPARTY.yml"]
 
 [project.urls]
 repository = "https://github.com/LiberTEM/LiberTEM-rs/"
