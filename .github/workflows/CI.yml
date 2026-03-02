@@ -202,7 +202,7 @@ jobs:
     - uses: actions/setup-python@v6
       with:
         python-version: '3.13' 
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         pattern: wheels-linux-*
         merge-multiple: true
@@ -225,7 +225,7 @@ jobs:
     if: "startsWith(github.ref, 'refs/tags/')"
     needs: [ macos, windows, linux, linux-test, windows-test, macos-test, libertem-live ]
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
